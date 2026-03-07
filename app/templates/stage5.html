@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}Stage 5: Watermark Removal - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>5. Watermark Removal</h1>
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 6
+    </button>
+</div>
+<p class="stage-description">
+    Remove watermarks from extracted images. Preview samples before/after cleaning, or skip if no watermarks detected.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Scan & Controls -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Image Scan</h2>
+                <button class="btn btn-sm" onclick="scanImages()" id="scan-btn">Scan Images</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan Images" to detect images in this session.
+                </div>
+                <div id="controls" style="display: none; margin-top: 12px;">
+                    <div class="btn-group">
+                        <button class="btn" onclick="previewOriginals()" id="preview-orig-btn">Preview Originals</button>
+                        <button class="btn" onclick="previewCleaned()" id="preview-clean-btn">Preview Cleaned</button>
+                        <button class="btn btn-primary" onclick="applyWatermark()" id="apply-btn">Apply Watermark Removal</button>
+                        <button class="btn" onclick="skipWatermark()" id="skip-btn">Skip (No Watermarks)</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header"><h2>Processing Results</h2></div>
+            <div class="card-body">
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- Image Preview Grid -->
+        <div class="card" id="preview-card" style="display: none;">
+            <div class="card-header">
+                <h2 id="preview-title">Image Preview</h2>
+                <button class="btn btn-sm" onclick="loadMorePreview()" id="load-more-btn">Load More</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="preview-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan for images first</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _previewMode = 'original'; // 'original' or 'cleaned'
+
+async function scanImages() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning for images...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/scan');
+        if (r.success) {
+            const d = r.data;
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_images}</div>
+                        <div class="stat-label">Total Images</div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('controls').style.display = 'block';
+            appendLog('success', 'Found ' + d.total_images + ' images');
+
+            if (d.total_images === 0) {
+                appendLog('warning', 'No images found — you can skip this stage');
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan Images';
+}
+
+function previewOriginals() {
+    _previewMode = 'original';
+    loadPreview(false);
+}
+
+function previewCleaned() {
+    _previewMode = 'cleaned';
+    loadPreview(true);
+}
+
+function loadMorePreview() {
+    loadPreview(_previewMode === 'cleaned');
+}
+
+async function loadPreview(cleaned) {
+    const card = document.getElementById('preview-card');
+    const grid = document.getElementById('preview-grid');
+    const title = document.getElementById('preview-title');
+    card.style.display = 'block';
+    grid.innerHTML = '<div style="padding: 12px; color: var(--text-muted);">Loading preview...</div>';
+    title.textContent = cleaned ? 'Before / After Comparison' : 'Original Images';
+    appendLog('info', cleaned ? 'Loading before/after preview...' : 'Loading original images...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/preview?count=7&cleaned=' + cleaned);
+        if (r.success && r.data.samples && r.data.samples.length > 0) {
+            let html = '<div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Showing ' +
+                r.data.samples.length + ' of ' + r.data.total + ' images</div>';
+
+            for (const s of r.data.samples) {
+                html += buildImagePreview(s, cleaned);
+            }
+            grid.innerHTML = html;
+            appendLog('success', 'Loaded ' + r.data.samples.length + ' samples');
+        } else {
+            grid.innerHTML = '<div class="alert alert-warning">No images available</div>';
+        }
+    } catch (e) {
+        grid.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
+    }
+}
+
+function buildImagePreview(sample, showCleaned) {
+    const sizeKB = (sample.size / 1024).toFixed(1);
+    let html = `<div class="preview-item">
+        <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span>${sample.name}</span>
+            <span style="font-size: 11px; color: var(--text-muted);">${sizeKB} KB</span>
+        </div>
+        <div class="preview-item-body">`;
+
+    if (showCleaned && sample.cleaned) {
+        html += `<div class="diff-container">
+            <div class="diff-before">
+                <div class="preview-field-label diff-label-before">ORIGINAL</div>
+                <img src="${sample.original}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />
+            </div>
+            <div class="diff-after">
+                <div class="preview-field-label diff-label-after">CLEANED</div>
+                <img src="${sample.cleaned}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />
+            </div>
+        </div>`;
+    } else {
+        html += `<img src="${sample.original}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />`;
+    }
+
+    html += `</div></div>`;
+    return html;
+}
+
+async function applyWatermark() {
+    const btn = document.getElementById('apply-btn');
+    btn.disabled = true;
+    btn.textContent = 'Processing...';
+    appendLog('info', 'Applying watermark removal to all images...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/apply');
+        if (r.success) {
+            showResults(r.data);
+            document.getElementById('advance-btn').disabled = false;
+            appendLog('success', 'Watermark removal: ' + r.data.processed + '/' + r.data.total + ' processed');
+            btn.textContent = 'Applied \u2713';
+            document.getElementById('skip-btn').disabled = true;
+            // Keep btn disabled after success
+            return;
+        } else {
+            appendLog('error', 'Failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Apply Watermark Removal';
+}
+
+async function skipWatermark() {
+    const skipBtn = document.getElementById('skip-btn');
+    skipBtn.disabled = true;
+    appendLog('info', 'Skipping watermark removal...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/skip');
+        if (r.success) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Watermark removal skipped. ' + r.data.count + ' images copied as-is.</div>';
+            document.getElementById('advance-btn').disabled = false;
+            document.getElementById('apply-btn').disabled = true;
+            skipBtn.textContent = 'Skipped \u2713';
+            appendLog('info', 'Skipped — ' + r.data.count + ' images copied unchanged');
+            return;
+        }
+    } catch (e) {
+        appendLog('error', 'Skip error: ' + e.message);
+    }
+    skipBtn.disabled = false;
+}
+
+function showResults(data) {
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    let html = `<div class="stat-grid">
+        <div class="stat-box"><div class="stat-value">${data.total || 0}</div><div class="stat-label">Total</div></div>
+        <div class="stat-box"><div class="stat-value">${data.processed || 0}</div><div class="stat-label">Cleaned</div></div>
+        <div class="stat-box"><div class="stat-value">${data.failed || 0}</div><div class="stat-label">Failed</div></div>
+    </div>`;
+
+    document.getElementById('results-content').innerHTML = html;
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage5_watermark');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        document.getElementById('controls').style.display = 'block';
+        document.getElementById('apply-btn').disabled = true;
+        document.getElementById('skip-btn').disabled = true;
+        if (d.skipped) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Watermark removal was skipped.</div>';
+            document.getElementById('apply-btn').textContent = 'Skipped';
+        } else {
+            document.getElementById('apply-btn').textContent = 'Applied \u2713';
+            showResults(d);
+        }
+    }
+});
+</script>
+{% endblock %}

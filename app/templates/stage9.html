@@ -1,0 +1,671 @@
+{% extends "base.html" %}
+{% block title %}Stage 9: Quality Verifier - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>9. Quality Verifier</h1>
+    {% if current_stage == 'stage9_quality' or current_stage == 'completed' %}
+    <span class="badge" style="color: var(--success); font-size: 13px;">
+        {% if current_stage == 'completed' %}PIPELINE COMPLETE{% else %}FINAL STAGE{% endif %}
+    </span>
+    {% endif %}
+</div>
+<p class="stage-description">
+    3-model independent QA voting (Gemini Flash + GPT-5-mini + Gemini Pro).
+    Questions pass/fail based on consensus across 14 error types.
+    taggedBy=AITAI/NITAI requires QA; AIT/NIT can skip.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- QA Scan -->
+        <div class="card">
+            <div class="card-header">
+                <h2>QA Overview</h2>
+                <button class="btn btn-sm" onclick="scanQA()" id="scan-btn">Scan</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan" to determine if quality verification is needed for this session.
+                </div>
+            </div>
+        </div>
+
+        <!-- Additional QA Context (user inputs) -->
+        <div class="card" id="context-card">
+            <div class="card-header"><h2>Additional QA Context</h2></div>
+            <div class="card-body">
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+                    Provide extra instructions or context for the QA models. This will be appended to the system prompt
+                    as ground truth (e.g., marking scheme, known errata, subject-specific rules).
+                </p>
+                <textarea id="qa-extra-context" class="form-textarea" rows="6"
+                    style="width: 100%; min-height: 100px; resize: vertical;"
+                    placeholder="e.g., 'Integer answers range from 0 to 9999. Negative marking does not apply to integer questions. Some solutions reference diagrams that may be missing from OCR.'"></textarea>
+                <div style="margin-top: 6px; display: flex; gap: 8px; align-items: center;">
+                    <label class="form-check">
+                        <input type="checkbox" id="strict-mode"> Strict mode (flag borderline cases)
+                    </label>
+                    <label class="form-check">
+                        <input type="checkbox" id="check-latex" checked> Check LaTeX/MathML integrity
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- QA Pipeline Steps -->
+        <div class="card" id="pipeline-card" style="display: none;">
+            <div class="card-header"><h2>QA Pipeline</h2></div>
+            <div class="card-body">
+                <div class="qa-pipeline">
+                    <!-- Step 1: Build -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">1</span>
+                            <strong>Build QA Batches</strong>
+                        </div>
+                        <span style="font-size: 11px; color: var(--text-muted);">Generate batch files for all 3 models</span>
+                        <button class="btn btn-sm" onclick="buildQA()" id="build-btn" style="margin-top: 6px;">Build Batches</button>
+                    </div>
+
+                    <!-- Step 2: Submit 3 Passes -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">2</span>
+                            <strong>Submit Passes</strong>
+                        </div>
+                        <div class="qa-passes" id="pass-buttons">
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass1-indicator"></span>
+                                <span>Pass 1: Gemini Flash</span>
+                                <button class="btn btn-sm" onclick="submitPass('pass1')" id="pass1-btn" disabled>Submit</button>
+                            </div>
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass2-indicator"></span>
+                                <span>Pass 2: GPT-5-mini</span>
+                                <button class="btn btn-sm" onclick="submitPass('pass2')" id="pass2-btn" disabled>Submit</button>
+                            </div>
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass3-indicator"></span>
+                                <span>Pass 3: Gemini Pro</span>
+                                <button class="btn btn-sm" onclick="submitPass('pass3')" id="pass3-btn" disabled>Submit</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Poll -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">3</span>
+                            <strong>Poll Status</strong>
+                        </div>
+                        <button class="btn btn-sm" onclick="pollPasses()" id="poll-btn" disabled style="margin-top: 6px;">Poll All Passes</button>
+                    </div>
+
+                    <!-- Step 4: Vote Merge -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">4</span>
+                            <strong>Merge Votes</strong>
+                        </div>
+                        <span style="font-size: 11px; color: var(--text-muted);">3/3 clean=upload, 2/3=review, 1/3=manual, 0/3=fix</span>
+                        <button class="btn btn-sm" onclick="mergeVotes()" id="vote-btn" disabled style="margin-top: 6px;">Merge Votes</button>
+                    </div>
+                </div>
+
+                <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+                    <button class="btn" onclick="skipQA()" id="skip-btn">Skip QA (AIT/NIT Path)</button>
+                    <button class="btn btn-primary" onclick="completeQA()" id="complete-btn" disabled style="margin-left: 8px;">
+                        Mark Pipeline Complete
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Vote Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header"><h2>QA Results</h2></div>
+            <div class="card-body">
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- Pass Status Table + Detailed Stats -->
+        <div class="card" id="status-card" style="display: none;">
+            <div class="card-header">
+                <h2>Pass Status</h2>
+                <button class="btn btn-sm" onclick="pollPasses()">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="status-content"></div>
+                <!-- Per-pass detailed stats (shown when passes complete) -->
+                <div id="pass-details" style="margin-top: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- Error Types Reference -->
+        <div class="card" id="error-types-card" style="display: none;">
+            <div class="card-header">
+                <h2>14 Error Types Checked</h2>
+                <button class="btn btn-sm" onclick="document.getElementById('error-types-card').style.display='none'">Close</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="error-types-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan to determine QA requirements</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.qa-pipeline { display: flex; flex-direction: column; gap: 12px; }
+.qa-step {
+    padding: 10px 14px; border-radius: 6px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+}
+.qa-step-label { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.qa-step-num {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--primary); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; flex-shrink: 0;
+}
+.qa-passes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.qa-pass-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 10px; border-radius: 4px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+    font-size: 13px;
+}
+.qa-pass-indicator {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--text-muted); flex-shrink: 0;
+}
+.qa-pass-indicator.running { background: var(--warning); animation: pulse-glow 1.5s infinite; }
+.qa-pass-indicator.complete { background: var(--success); }
+.qa-pass-indicator.failed { background: var(--error); }
+.qa-pass-row span:nth-child(2) { flex: 1; }
+@keyframes pulse-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.vote-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-top: 8px;
+}
+.vote-box {
+    padding: 12px; border-radius: 6px; text-align: center;
+    border: 1px solid var(--border);
+}
+.vote-box .vote-value { font-size: 24px; font-weight: 700; }
+.vote-box .vote-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.vote-clean { border-color: var(--success); background: rgba(46,160,67,0.05); }
+.vote-review { border-color: var(--warning); background: rgba(210,153,34,0.05); }
+.vote-manual { border-color: #e08700; background: rgba(224,135,0,0.05); }
+.vote-fix { border-color: var(--error); background: rgba(218,54,51,0.05); }
+
+/* Per-pass detail cards */
+.pass-detail-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    margin-bottom: 10px; overflow: hidden;
+}
+.pass-detail-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; background: var(--bg-secondary);
+    cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.pass-detail-header:hover { background: var(--border); }
+.pass-detail-body { padding: 10px 12px; display: none; }
+.pass-detail-card.expanded .pass-detail-body { display: block; }
+.error-type-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0; font-size: 12px;
+}
+.error-type-bar .et-label { width: 180px; font-family: monospace; color: var(--text-muted); }
+.error-type-bar .et-bar-bg {
+    flex: 1; height: 14px; background: var(--bg-secondary);
+    border-radius: 3px; overflow: hidden; position: relative;
+}
+.error-type-bar .et-bar-fill {
+    height: 100%; border-radius: 3px;
+    transition: width 0.3s ease;
+}
+.et-bar-fill.clean { background: var(--success); }
+.et-bar-fill.error { background: var(--error); }
+.error-type-bar .et-count { min-width: 30px; text-align: right; font-size: 11px; font-weight: 600; }
+</style>
+
+<script>
+const ERROR_TYPES = [
+    "MISSING_QUESTION", "TRUNCATED_QUESTION", "GARBLED_OCR", "WRONG_OPTION_COUNT",
+    "MISSING_ANSWER", "WRONG_ANSWER_FORMAT", "ANSWER_MISMATCH",
+    "MISSING_SOLUTION", "TRUNCATED_SOLUTION", "SOLUTION_MISMATCH",
+    "WRONG_SUBJECT", "WRONG_QUESTION_TYPE", "BROKEN_LATEX", "BROKEN_HTML"
+];
+
+async function scanQA() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning metadata for QA requirements...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage9/scan');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                document.getElementById('scan-result').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Scan';
+                return;
+            }
+
+            // Tagged-by breakdown
+            let tagHtml = '';
+            if (d.tagged_by) {
+                tagHtml = '<div style="margin-top: 8px; font-size: 12px;">';
+                tagHtml += 'Tagged by: ';
+                tagHtml += Object.entries(d.tagged_by).map(([t, c]) => '<strong>' + t + '</strong>: ' + c).join(' | ');
+                tagHtml += '</div>';
+            }
+
+            // Credential status
+            let credHtml = '';
+            if (d.credentials) {
+                const cred = d.credentials;
+                credHtml = '<div style="margin-top: 8px; font-size: 11px;">';
+                credHtml += 'API Keys: OpenAI ' + (cred.openai ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
+                credHtml += ' | Gemini ' + (cred.gemini ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
+                credHtml += '</div>';
+            }
+
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_questions}</div>
+                        <div class="stat-label">Total Questions</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.needs_qa}</div>
+                        <div class="stat-label">Need QA</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.skip_qa}</div>
+                        <div class="stat-label">Skip QA</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.error_types_checked || 14}</div>
+                        <div class="stat-label">Error Types</div>
+                    </div>
+                </div>
+                ${tagHtml}
+                ${credHtml}
+            `;
+
+            if (d.qa_needed) {
+                appendLog('info', `${d.needs_qa} questions need QA verification (AITAI/NITAI tagged)`);
+            } else {
+                appendLog('info', 'No questions need QA — all tagged as AIT/NIT (faculty path)');
+            }
+
+            // Show pipeline
+            document.getElementById('pipeline-card').style.display = 'block';
+
+            // Show error types reference
+            showErrorTypes();
+
+            if (d.can_skip) {
+                appendLog('info', 'QA can be skipped — no AITAI/NITAI questions');
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan';
+}
+
+function showErrorTypes() {
+    const card = document.getElementById('error-types-card');
+    card.style.display = 'block';
+    let html = '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; font-size: 12px;">';
+    for (const et of ERROR_TYPES) {
+        html += '<div style="padding: 4px 8px; background: var(--bg-secondary); border-radius: 3px; font-family: monospace;">' + et + '</div>';
+    }
+    html += '</div>';
+    document.getElementById('error-types-content').innerHTML = html;
+}
+
+async function buildQA() {
+    const btn = document.getElementById('build-btn');
+    btn.disabled = true;
+    btn.textContent = 'Building...';
+    appendLog('info', 'Building QA batch files for 3 models...');
+
+    try {
+        // Collect extra context and options from the form
+        const extraContext = encodeURIComponent(document.getElementById('qa-extra-context').value || '');
+        const strictMode = document.getElementById('strict-mode').checked;
+        const checkLatex = document.getElementById('check-latex').checked;
+        const params = `extra_context=${extraContext}&strict_mode=${strictMode}&check_latex=${checkLatex}`;
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/build?' + params);
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+            } else if (!d.qa_needed) {
+                appendLog('info', d.message || 'QA not needed — you can mark pipeline complete');
+                // Enable complete button directly since QA is not required
+                document.getElementById('complete-btn').disabled = false;
+            } else {
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML = `
+                    <div class="stat-grid">
+                        <div class="stat-box"><div class="stat-value">${d.qa_questions}</div><div class="stat-label">QA Questions</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass1 || 0}</div><div class="stat-label">Pass 1 Reqs</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass2 || 0}</div><div class="stat-label">Pass 2 Reqs</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass3 || 0}</div><div class="stat-label">Pass 3 Reqs</div></div>
+                    </div>
+                `;
+                appendLog('success', `Built ${d.total_requests} total QA requests across 3 passes`);
+
+                // Enable submit buttons
+                document.getElementById('pass1-btn').disabled = false;
+                document.getElementById('pass2-btn').disabled = false;
+                document.getElementById('pass3-btn').disabled = false;
+                document.getElementById('poll-btn').disabled = false;
+                btn.textContent = 'Built \u2713';
+                document.getElementById('skip-btn').disabled = true;
+                return;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Build error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Build Batches';
+}
+
+async function submitPass(passKey) {
+    const btn = document.getElementById(passKey + '-btn');
+    const indicator = document.getElementById(passKey + '-indicator');
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+    indicator.className = 'qa-pass-indicator running';
+    appendLog('info', `Submitting ${passKey}...`);
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + passKey);
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', `${passKey}: ${d.error}`);
+                indicator.className = 'qa-pass-indicator failed';
+            } else if (d.status === 'stub') {
+                appendLog('warning', `${passKey}: ${d.message}`);
+                indicator.className = 'qa-pass-indicator';
+            } else {
+                appendLog('success', `${passKey} submitted: ${d.requests} requests`);
+                indicator.className = 'qa-pass-indicator running';
+                btn.textContent = 'Submitted \u2713';
+                return;
+            }
+        }
+    } catch (e) {
+        appendLog('error', `${passKey} error: ${e.message}`);
+        indicator.className = 'qa-pass-indicator failed';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Submit';
+}
+
+async function pollPasses() {
+    const btn = document.getElementById('poll-btn');
+    btn.disabled = true;
+    btn.textContent = 'Polling...';
+    appendLog('info', 'Polling all QA passes...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage9/poll');
+        if (r.success) {
+            const d = r.data;
+            const card = document.getElementById('status-card');
+            card.style.display = 'block';
+
+            // Summary table
+            let html = '<table class="data-table"><thead><tr><th>Pass</th><th>Model</th><th>Status</th><th>Results</th><th>Approved</th><th>Rejected</th></tr></thead><tbody>';
+
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                const statusClass = info.status === 'completed' ? 'style="color: var(--success)"' :
+                    info.status === 'running' ? 'style="color: var(--warning)"' : '';
+                const approved = info.approved || 0;
+                const rejected = info.rejected || 0;
+                html += `<tr>
+                    <td>${pk}</td>
+                    <td>${escapeHtml(info.model)}</td>
+                    <td ${statusClass}>${info.status}</td>
+                    <td>${info.results || 0}</td>
+                    <td style="color: var(--success); font-weight: 600;">${approved}</td>
+                    <td style="color: var(--error); font-weight: 600;">${rejected}</td>
+                </tr>`;
+
+                // Update indicators
+                const indicator = document.getElementById(pk + '-indicator');
+                if (indicator) {
+                    indicator.className = 'qa-pass-indicator ' +
+                        (info.status === 'completed' ? 'complete' :
+                         info.status === 'running' ? 'running' : '');
+                }
+            }
+            html += '</tbody></table>';
+            document.getElementById('status-content').innerHTML = html;
+
+            // Detailed per-pass breakdown (if any pass completed)
+            let detailsHtml = '';
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                if (info.status === 'completed' && info.error_breakdown) {
+                    detailsHtml += buildPassDetailCard(pk, info);
+                }
+            }
+            document.getElementById('pass-details').innerHTML = detailsHtml;
+
+            appendLog('info', 'Pass statuses updated');
+
+            if (d.can_vote) {
+                document.getElementById('vote-btn').disabled = false;
+                appendLog('success', 'All passes complete — ready to merge votes');
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Poll error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Poll All Passes';
+}
+
+function buildPassDetailCard(passKey, info) {
+    const total = info.results || 1;
+    const approved = info.approved || 0;
+    const rejected = info.rejected || 0;
+    const approvalRate = total > 0 ? ((approved / total) * 100).toFixed(1) : '0.0';
+
+    let html = `<div class="pass-detail-card" onclick="this.classList.toggle('expanded')">
+        <div class="pass-detail-header">
+            <span>${passKey.toUpperCase()}: ${escapeHtml(info.model)}</span>
+            <span style="font-size: 12px;">
+                <span style="color: var(--success);">${approved} approved</span> /
+                <span style="color: var(--error);">${rejected} rejected</span>
+                (${approvalRate}% pass rate)
+            </span>
+        </div>
+        <div class="pass-detail-body">`;
+
+    // Error type breakdown bars
+    if (info.error_breakdown) {
+        const maxCount = Math.max(...Object.values(info.error_breakdown), 1);
+        html += '<div style="font-size: 12px; font-weight: 600; margin-bottom: 6px;">Error Type Breakdown:</div>';
+        for (const et of ERROR_TYPES) {
+            const count = info.error_breakdown[et] || 0;
+            const pct = (count / maxCount) * 100;
+            html += `<div class="error-type-bar">
+                <span class="et-label">${et}</span>
+                <div class="et-bar-bg">
+                    <div class="et-bar-fill error" style="width: ${pct}%;"></div>
+                </div>
+                <span class="et-count">${count}</span>
+            </div>`;
+        }
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+async function mergeVotes() {
+    const btn = document.getElementById('vote-btn');
+    btn.disabled = true;
+    btn.textContent = 'Merging...';
+    appendLog('info', 'Merging votes from all 3 passes...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/vote');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+            } else if (d.status === 'stub') {
+                appendLog('warning', d.message);
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML =
+                    '<div class="alert alert-warning">' + escapeHtml(d.message) + '</div>';
+            } else {
+                const res = d.results || {};
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML = `
+                    <div style="font-size: 13px; margin-bottom: 8px;">${d.votes_merged} questions voted</div>
+                    <div class="vote-grid">
+                        <div class="vote-box vote-clean">
+                            <div class="vote-value">${res.error_1_clean || 0}</div>
+                            <div class="vote-label">error=1 (Clean)</div>
+                        </div>
+                        <div class="vote-box vote-review">
+                            <div class="vote-value">${res.error_2_review || 0}</div>
+                            <div class="vote-label">error=2 (Review)</div>
+                        </div>
+                        <div class="vote-box vote-manual">
+                            <div class="vote-value">${res.error_3_manual || 0}</div>
+                            <div class="vote-label">error=3 (Manual)</div>
+                        </div>
+                        <div class="vote-box vote-fix">
+                            <div class="vote-value">${res.error_4_fix || 0}</div>
+                            <div class="vote-label">error=4 (Fix)</div>
+                        </div>
+                    </div>
+                `;
+                appendLog('success', `Votes merged: ${res.error_1_clean || 0} clean, ${res.error_2_review || 0} review, ${res.error_3_manual || 0} manual, ${res.error_4_fix || 0} fix`);
+                document.getElementById('complete-btn').disabled = false;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Vote merge error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Merge Votes';
+}
+
+async function skipQA() {
+    const skipBtn = document.getElementById('skip-btn');
+    skipBtn.disabled = true;
+    appendLog('info', 'Skipping quality verification...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/skip');
+        if (r.success) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Quality verification skipped. Questions follow the faculty review path (AIT/NIT).</div>';
+            document.getElementById('complete-btn').disabled = false;
+            document.getElementById('build-btn').disabled = true;
+            skipBtn.textContent = 'Skipped \u2713';
+            appendLog('info', 'QA skipped — faculty review required before upload');
+            return;
+        }
+    } catch (e) {
+        appendLog('error', 'Skip error: ' + e.message);
+    }
+    skipBtn.disabled = false;
+}
+
+async function completeQA() {
+    const btn = document.getElementById('complete-btn');
+    btn.disabled = true;
+    btn.textContent = 'Completing...';
+    appendLog('info', 'Marking pipeline as complete...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/complete');
+        if (r.success) {
+            appendLog('success', 'Pipeline complete! Redirecting to summary...');
+            // Redirect to the completed page (Step 10) which shows full stats
+            window.location.href = '/session/{{ session.id }}';
+        }
+    } catch (e) {
+        appendLog('error', 'Complete error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Mark Pipeline Complete';
+    }
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage9_quality');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        document.getElementById('pipeline-card').style.display = 'block';
+        document.getElementById('build-btn').disabled = true;
+        document.getElementById('build-btn').textContent = 'Built \u2713';
+        document.getElementById('skip-btn').disabled = true;
+        document.getElementById('complete-btn').disabled = true;
+        document.getElementById('complete-btn').textContent = 'Completed \u2713';
+        if (d.skipped) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Quality verification was skipped (AIT/NIT path).</div>';
+        } else if (d.votes_merged) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML = `
+                <div class="vote-grid">
+                    <div class="vote-box vote-clean"><div class="vote-value">${d.error_1 || 0}</div><div class="vote-label">Clean</div></div>
+                    <div class="vote-box vote-review"><div class="vote-value">${d.error_2 || 0}</div><div class="vote-label">Review</div></div>
+                    <div class="vote-box vote-manual"><div class="vote-value">${d.error_3 || 0}</div><div class="vote-label">Manual</div></div>
+                    <div class="vote-box vote-fix"><div class="vote-value">${d.error_4 || 0}</div><div class="vote-label">Fix</div></div>
+                </div>
+            `;
+        }
+    }
+});
+</script>
+{% endblock %}

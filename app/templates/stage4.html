@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+{% block title %}Stage 4: Metadata V2 - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>4. Metadata V2 Mapper</h1>
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 5
+    </button>
+</div>
+<p class="stage-description">
+    Convert cleaned questions into the Acadza Metadata V2 schema with QID, question type, subject, and all required fields.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Conversion Settings -->
+        <div class="card">
+            <div class="card-header"><h2>Conversion Settings</h2></div>
+            <div class="card-body">
+                <div class="form-inline" style="margin-bottom: 12px;">
+                    <div class="form-group flex-1">
+                        <label>Source Name</label>
+                        <input type="text" id="source-name" value="" placeholder="e.g. Aakash Preparatory Test-2" class="form-input">
+                    </div>
+                    <div class="form-group" style="max-width: 160px;">
+                        <label>Test Code</label>
+                        <input type="text" id="test-code" value="" placeholder="auto" class="form-input">
+                    </div>
+                </div>
+
+                <div class="form-inline" style="margin-bottom: 12px;">
+                    <div class="form-group" style="max-width: 180px;">
+                        <label>Tagged By</label>
+                        <select id="tagged-by" class="form-select" onchange="updateTagDesc()">
+                            <option value="AITAI" selected>AITAI (default)</option>
+                            <option value="NITAI">NITAI</option>
+                            <option value="AIT">AIT</option>
+                            <option value="NIT">NIT</option>
+                            <option value="NITRAI">NITRAI</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="convertMetadata()" id="convert-btn">
+                        Convert to Metadata V2
+                    </button>
+                </div>
+
+                <div class="tag-description" id="tag-desc">
+                    <strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.
+                </div>
+
+                <!-- PYQ Settings (auto-loaded from session config) -->
+                <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+                    <label class="form-check">
+                        <input type="checkbox" id="is-pyq" onchange="togglePYQ()">
+                        <span>Previous Year Questions (PYQ)</span>
+                    </label>
+                    <div id="pyq-settings" style="display: none; margin-top: 10px;">
+                        <div class="form-inline">
+                            <div class="form-group" style="max-width: 140px;">
+                                <label>Previous Exam</label>
+                                <select id="prev-exam" class="form-select">
+                                    <option value="">Select exam...</option>
+                                    <option value="MAINS">JEE Mains</option>
+                                    <option value="ADVANCED">JEE Advanced</option>
+                                    <option value="NEET">NEET</option>
+                                    <option value="MHCET">MH CET</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="max-width: 100px;">
+                                <label>Year From</label>
+                                <input type="number" id="pyq-year-from" value="2020" min="2000" max="2026" class="form-input">
+                            </div>
+                            <div class="form-group" style="max-width: 100px;">
+                                <label>Year To</label>
+                                <input type="number" id="pyq-year-to" value="2025" min="2000" max="2026" class="form-input">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header">
+                <h2>Metadata V2 Results</h2>
+                <div class="btn-group">
+                    <button class="btn btn-sm" onclick="loadMetaPreview()">Preview Samples</button>
+                    <button class="btn btn-sm" onclick="loadJsonPreview()">View Raw JSON</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="results-summary"></div>
+                <div id="results-table" style="margin-top: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- Sample Preview -->
+        <div class="card" id="preview-card" style="display: none;">
+            <div class="card-header">
+                <h2>Sample Preview</h2>
+                <button class="btn btn-sm" onclick="loadMetaPreview()">Load More</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="preview-content" class="preview-pane"></div>
+            </div>
+        </div>
+
+        <!-- JSON Preview -->
+        <div class="card" id="json-card" style="display: none;">
+            <div class="card-header">
+                <h2>Raw JSON Preview</h2>
+                <button class="btn btn-sm" onclick="document.getElementById('json-card').style.display='none'">Close</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="json-content" class="json-preview"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — configure settings and convert</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TAG_DESCRIPTIONS = {
+    'AITAI': '<strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
+    'NITAI': '<strong>NITAI</strong> — NEET AI-Tagged + AI-Verified. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
+    'AIT': '<strong>AIT</strong> — AI-Tagged for JEE. Pipeline stops at Stage 8 (duplicate check). Faculty review required before upload.',
+    'NIT': '<strong>NIT</strong> — NEET AI-Tagged. For Biology, Physics, Chemistry NEET questions. Pipeline stops at Stage 8. Faculty review required.',
+    'NITRAI': '<strong>NITRAI</strong> — Reserved for future use.',
+};
+
+function updateTagDesc() {
+    const val = document.getElementById('tagged-by').value;
+    document.getElementById('tag-desc').innerHTML = TAG_DESCRIPTIONS[val] || '';
+}
+
+function togglePYQ() {
+    const checked = document.getElementById('is-pyq').checked;
+    document.getElementById('pyq-settings').style.display = checked ? 'block' : 'none';
+}
+
+// Auto-load session config (test_code, PYQ settings)
+async function loadSessionConfig() {
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage2/config');
+        if (r.success && r.data) {
+            const cfg = r.data;
+            // Load test_code if available and field is empty
+            if (cfg.test_code && !document.getElementById('test-code').value) {
+                document.getElementById('test-code').value = cfg.test_code;
+            }
+            // Load PDF filename as source name if field is empty
+            if (cfg.pdf_filename && !document.getElementById('source-name').value) {
+                const stem = cfg.pdf_filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+                document.getElementById('source-name').value = stem;
+            }
+            // Load PYQ config
+            if (cfg.is_pyq) {
+                document.getElementById('is-pyq').checked = true;
+                document.getElementById('pyq-settings').style.display = 'block';
+                if (cfg.prev_exam) {
+                    document.getElementById('prev-exam').value = cfg.prev_exam;
+                }
+                if (cfg.pyq_year_from) {
+                    document.getElementById('pyq-year-from').value = cfg.pyq_year_from;
+                }
+                if (cfg.pyq_year_to) {
+                    document.getElementById('pyq-year-to').value = cfg.pyq_year_to;
+                }
+                appendLog('info', 'Loaded PYQ config: ' + cfg.prev_exam + ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')');
+            }
+        }
+    } catch (e) {
+        // Silently ignore — config may not exist yet
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadSessionConfig);
+
+async function convertMetadata() {
+    const btn = document.getElementById('convert-btn');
+    const source = document.getElementById('source-name').value;
+    const code = document.getElementById('test-code').value;
+    const taggedBy = document.getElementById('tagged-by').value;
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ')...');
+
+    let url = '/api/sessions/{{ session.id }}/stage4/convert?source=' +
+        encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
+        '&tagged_by=' + encodeURIComponent(taggedBy);
+
+    // Add PYQ params if checked
+    const isPYQ = document.getElementById('is-pyq').checked;
+    if (isPYQ) {
+        url += '&is_pyq=true';
+        url += '&prev_exam=' + encodeURIComponent(document.getElementById('prev-exam').value);
+        url += '&pyq_year_from=' + document.getElementById('pyq-year-from').value;
+        url += '&pyq_year_to=' + document.getElementById('pyq-year-to').value;
+        appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value +
+            ' (' + document.getElementById('pyq-year-from').value + '-' + document.getElementById('pyq-year-to').value + ')');
+    }
+
+    try {
+        const r = await apiPost(url);
+        if (r.success) {
+            showResults(r.data);
+            document.getElementById('advance-btn').disabled = false;
+            appendLog('success', 'Metadata V2: ' + r.data.total + ' entries, ' + r.data.triplets + ' triplets' +
+                (r.data.non_triplets_quarantined ? ', ' + r.data.non_triplets_quarantined + ' quarantined' : ''));
+            btn.textContent = 'Converted \u2713';
+            metadataGenerated = true;
+            lastConvertSettings = captureSettings();
+            // Keep btn disabled after success (re-enables on settings change)
+            return;
+        } else {
+            appendLog('error', 'Conversion failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Convert to Metadata V2';
+}
+
+function showResults(data) {
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    const summary = document.getElementById('results-summary');
+    const rate = data.total > 0 ? Math.round(data.triplets / data.total * 100) : 0;
+    const quarantined = data.non_triplets_quarantined || (data.total - data.triplets);
+    summary.innerHTML = `
+        <div class="stat-grid">
+            <div class="stat-box"><div class="stat-value">${data.total}</div><div class="stat-label">Total Entries</div></div>
+            <div class="stat-box"><div class="stat-value">${data.triplets}</div><div class="stat-label">Q+A+S Triplets</div></div>
+            <div class="stat-box"><div class="stat-value">${rate}%</div><div class="stat-label">Triplet Rate</div></div>
+            <div class="stat-box"><div class="stat-value" style="color: ${quarantined > 0 ? 'var(--error)' : 'var(--success)'}">${quarantined}</div><div class="stat-label">Quarantined</div></div>
+        </div>
+    `;
+
+    // Fetch subject breakdown
+    fetchSubjectStats();
+}
+
+async function fetchSubjectStats() {
+    const r = await apiGet('/api/sessions/{{ session.id }}');
+    if (!r.success) return;
+
+    const tableDiv = document.getElementById('results-table');
+    const stats = r.data.stats;
+
+    let html = '<table class="data-table">';
+    html += '<thead><tr><th>Subject</th><th>Count</th></tr></thead><tbody>';
+    for (const [subj, cnt] of Object.entries(stats.by_subject || {})) {
+        html += '<tr><td>' + subj + '</td><td>' + cnt + '</td></tr>';
+    }
+    html += '</tbody></table>';
+
+    html += '<div style="margin-top: 8px; color: var(--text-secondary); font-size: 12px;">';
+    html += 'With Answer: ' + stats.with_answer + ' | With Solution: ' + stats.with_solution;
+    html += ' | Quarantined: ' + stats.quarantined;
+    html += '</div>';
+
+    tableDiv.innerHTML = html;
+}
+
+async function loadMetaPreview() {
+    const card = document.getElementById('preview-card');
+    const content = document.getElementById('preview-content');
+    card.style.display = 'block';
+    document.getElementById('json-card').style.display = 'none';
+    content.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Loading...</div>';
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=7');
+        if (r.success && r.data.samples && r.data.samples.length > 0) {
+            let html = '';
+            for (const s of r.data.samples) {
+                html += buildMetaPreviewItem(s);
+            }
+            content.innerHTML = html;
+            appendLog('success', 'Loaded ' + r.data.samples.length + ' metadata entries');
+        } else {
+            content.innerHTML = '<div class="alert alert-warning">No metadata available. Convert first.</div>';
+        }
+    } catch (e) {
+        content.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
+    }
+}
+
+function buildMetaPreviewItem(meta) {
+    const qtype = meta.questionType;
+    const qdata = meta[qtype] || {};
+
+    return `
+    <div class="preview-item">
+        <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span>${meta.qid} — ${meta.subject} (${qtype})</span>
+            <span style="font-size: 11px;">
+                ans: ${qdata.answer || '?'} | tagged: ${meta.taggedBy}
+                ${meta.isPrevious ? ' | PYQ ' + meta.previousExamYear : ''}
+            </span>
+        </div>
+        <div class="preview-item-body collapsed">
+            <div class="preview-field-label">Question HTML</div>
+            <div class="preview-field-content">${escapeHtml(qdata.question || '')}</div>
+            <div class="preview-field-label">Solution HTML</div>
+            <div class="preview-field-content">${escapeHtml(truncate(qdata.solution || '', 400))}</div>
+            <div class="preview-field-label">Fields</div>
+            <div class="preview-field-content">level: ${meta.level} | class: ${meta.class} | isNEET: ${meta.isNEET} | isPrevious: ${meta.isPrevious}${meta.isPrevious ? ' | exam: ' + meta.previousExam + ' | year: ' + meta.previousExamYear : ''}</div>
+        </div>
+    </div>`;
+}
+
+async function loadJsonPreview() {
+    const card = document.getElementById('json-card');
+    const content = document.getElementById('json-content');
+    card.style.display = 'block';
+    document.getElementById('preview-card').style.display = 'none';
+    content.textContent = 'Loading...';
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=2');
+        if (r.success && r.data.samples) {
+            content.textContent = JSON.stringify(r.data.samples, null, 2);
+        } else {
+            content.textContent = 'No data available';
+        }
+    } catch (e) {
+        content.textContent = 'Error: ' + e.message;
+    }
+}
+
+function truncate(str, max) {
+    if (!str) return '';
+    return str.length > max ? str.substring(0, max) + '...' : str;
+}
+
+// Track whether metadata has been generated (for settings-change re-enable)
+let metadataGenerated = false;
+let lastConvertSettings = null;
+
+function captureSettings() {
+    return JSON.stringify({
+        source: document.getElementById('source-name').value,
+        code: document.getElementById('test-code').value,
+        taggedBy: document.getElementById('tagged-by').value,
+        isPYQ: document.getElementById('is-pyq').checked,
+        prevExam: document.getElementById('prev-exam').value,
+        yearFrom: document.getElementById('pyq-year-from').value,
+        yearTo: document.getElementById('pyq-year-to').value,
+    });
+}
+
+function onSettingsChange() {
+    if (!metadataGenerated) return;
+    const current = captureSettings();
+    if (current !== lastConvertSettings) {
+        // Settings changed — allow re-generation
+        const btn = document.getElementById('convert-btn');
+        btn.disabled = false;
+        btn.textContent = 'Re-generate Metadata V2';
+        appendLog('info', 'Settings changed — click Re-generate to update metadata files');
+    }
+}
+
+// Attach change listeners to all settings inputs
+document.addEventListener('DOMContentLoaded', () => {
+    ['source-name', 'test-code', 'tagged-by', 'is-pyq', 'prev-exam', 'pyq-year-from', 'pyq-year-to'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', onSettingsChange);
+            el.addEventListener('input', onSettingsChange);
+        }
+    });
+});
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        metadataGenerated = true;
+        document.getElementById('convert-btn').disabled = true;
+        document.getElementById('convert-btn').textContent = 'Converted \u2713';
+        lastConvertSettings = captureSettings();
+        // Note: inputs are NOT frozen — user can change settings to re-generate
+        if (d.total !== undefined) {
+            showResults(d);
+        }
+        document.getElementById('advance-btn').disabled = false;
+    }
+});
+</script>
+{% endblock %}

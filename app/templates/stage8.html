@@ -1,0 +1,599 @@
+{% extends "base.html" %}
+{% block title %}Stage 8: Duplicate Check - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>8. Duplicate Check</h1>
+    {% if current_stage == 'stage8_duplicates' %}
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 9
+    </button>
+    {% endif %}
+</div>
+<p class="stage-description">
+    Check for self-duplicates within the session and cross-duplicates against the existing 143K question database.
+    Duplicates can be quarantined to prevent upload.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Scan -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Duplicate Scan</h2>
+                <button class="btn btn-sm" onclick="scanDuplicates()" id="scan-btn">Scan</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan" to check metadata readiness for duplicate detection.
+                </div>
+            </div>
+        </div>
+
+        <!-- Check Controls -->
+        <div class="card" id="controls-card" style="display: none;">
+            <div class="card-header"><h2>Duplicate Checks</h2></div>
+            <div class="card-body">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                    <label style="font-size: 13px;">Similarity Threshold:</label>
+                    <input type="range" id="threshold-slider" min="50" max="100" value="85"
+                        oninput="document.getElementById('threshold-val').textContent = this.value + '%'"
+                        style="flex: 1;">
+                    <span id="threshold-val" style="font-size: 13px; font-weight: 600; min-width: 36px;">85%</span>
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="selfCheck()" id="self-btn">Self-Duplicate Check</button>
+                    <button class="btn" onclick="crossCheck()" id="cross-btn">Cross-DB Check</button>
+                    <button class="btn btn-primary" onclick="runAll()" id="run-all-btn">Run Both Checks</button>
+                    <button class="btn" onclick="skipDuplicates()" id="skip-btn">Skip</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabbed Results Panel -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header">
+                <h2>Duplicate Results</h2>
+            </div>
+            <div class="card-body">
+                <div class="tab-bar">
+                    <button class="tab-btn active" id="tab-self" onclick="switchTab('self')">Self-Duplicates</button>
+                    <button class="tab-btn" id="tab-cross" onclick="switchTab('cross')">Cross-DB Duplicates</button>
+                </div>
+                <!-- Self tab content -->
+                <div class="tab-content" id="tab-content-self">
+                    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
+                        <button class="btn btn-sm" onclick="loadFullReport('self')" id="view-self-report-btn">View Full Report</button>
+                        <button class="btn btn-sm" onclick="downloadCSV('self')">Download CSV</button>
+                    </div>
+                    <div id="self-results-summary"></div>
+                    <div id="self-results-table" style="margin-top: 12px;"></div>
+                </div>
+                <!-- Cross tab content -->
+                <div class="tab-content" id="tab-content-cross" style="display: none;">
+                    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
+                        <button class="btn btn-sm" onclick="loadFullReport('cross')" id="view-cross-report-btn">View Full Report</button>
+                        <button class="btn btn-sm" onclick="downloadCSV('cross')">Download CSV</button>
+                    </div>
+                    <div id="cross-results-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quarantine Actions -->
+        <div class="card" id="quarantine-card" style="display: none;">
+            <div class="card-header">
+                <h2>Quarantine</h2>
+                <button class="btn btn-sm" onclick="quarantineSelected()" id="quarantine-btn">Quarantine Selected</button>
+            </div>
+            <div class="card-body">
+                <div id="quarantine-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan to check duplicate detection readiness</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 12px; }
+.tab-btn { padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: none; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+.tab-btn:hover:not(.active) { color: var(--text-secondary); }
+
+.dup-pair {
+    padding: 8px 10px; margin-bottom: 4px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg-secondary); font-size: 12px;
+}
+.dup-pair .dup-header {
+    display: flex; justify-content: space-between; align-items: center;
+    cursor: pointer;
+}
+.dup-pair .dup-body { display: none; margin-top: 6px; color: var(--text-muted); }
+.dup-pair.expanded .dup-body { display: block; }
+.dup-sim { font-weight: 600; color: var(--warning); }
+.dup-checkbox { margin-right: 8px; }
+</style>
+
+<script>
+let _selfDuplicates = [];
+let _selfDone = false;
+let _crossDone = false;
+let _anyRunning = false;
+
+function updateRunAllState() {
+    const btn = document.getElementById('run-all-btn');
+    if (!btn || btn.dataset.done === 'true') return;
+    // Disable while any check is running
+    if (_anyRunning) {
+        btn.disabled = true;
+        return;
+    }
+    // Disable if both checks are done
+    if (_selfDone && _crossDone) {
+        btn.disabled = true;
+        btn.textContent = 'Completed \u2713';
+        btn.dataset.done = 'true';
+        return;
+    }
+    // Enable if at least one check is undone
+    btn.disabled = false;
+}
+
+async function scanDuplicates() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning metadata for duplicate check readiness...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage8/scan');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                document.getElementById('scan-result').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Scan';
+                return;
+            }
+
+            let subjectHtml = '';
+            if (d.by_subject) {
+                subjectHtml = '<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">Subjects: ';
+                subjectHtml += Object.entries(d.by_subject).map(([s, c]) => s + ': ' + c).join(' | ');
+                subjectHtml += '</div>';
+            }
+
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_questions}</div>
+                        <div class="stat-label">Total Questions</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.db_available ? 'Yes' : 'No'}</div>
+                        <div class="stat-label">Ref DB Available</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.existing_reports}</div>
+                        <div class="stat-label">Existing Reports</div>
+                    </div>
+                </div>
+                ${subjectHtml}
+                <div style="margin-top: 8px; font-size: 11px; color: var(--text-muted);">
+                    Engine: ${escapeHtml(d.embedding_engine || 'unknown')}
+                    ${d.db_available ? ' | DB: ' + escapeHtml(d.db_path) : ''}
+                </div>
+                ${d.engine === 'trigram' ? '<div class="alert alert-warning" style="font-size: 11px; margin-top: 8px; padding: 6px 10px;">Using trigram fallback (slower). Install faiss-cpu + configure OPENAI_API_KEY for faster semantic search.</div>' : ''}
+            `;
+
+            appendLog('success', `${d.total_questions} questions ready. DB: ${d.db_available ? 'available' : 'not found'}`);
+            document.getElementById('controls-card').style.display = 'block';
+
+            if (!d.db_available) {
+                appendLog('warning', 'Reference database not found — cross-check will be limited');
+                document.getElementById('cross-btn').disabled = true;
+                document.getElementById('cross-btn').title = 'Reference database not available — configure DB path in .env';
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan';
+}
+
+function getThreshold() {
+    return parseInt(document.getElementById('threshold-slider').value) / 100;
+}
+
+async function selfCheck() {
+    const btn = document.getElementById('self-btn');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    _anyRunning = true;
+    updateRunAllState();
+    const threshold = getThreshold();
+    appendLog('info', `Running self-duplicate check (threshold: ${(threshold*100).toFixed(0)}%)...`);
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage8/self-check?threshold=' + threshold);
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+            } else {
+                showSelfResults(d);
+                appendLog('success', `Self-check: ${d.duplicates_found} duplicate pairs, ${d.unique_qids_affected} QIDs affected (${d.engine || 'unknown'}, ${d.time_seconds || '?'}s)`);
+                _selfDone = true;
+                btn.dataset.done = 'true';
+                btn.textContent = 'Checked \u2713';
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Self-check error: ' + e.message);
+    }
+    _anyRunning = false;
+    updateRunAllState();
+    if (!btn.dataset.done) {
+        btn.disabled = false;
+        btn.textContent = 'Self-Duplicate Check';
+    }
+}
+
+function switchTab(tabName) {
+    // Toggle tab buttons
+    document.getElementById('tab-self').classList.toggle('active', tabName === 'self');
+    document.getElementById('tab-cross').classList.toggle('active', tabName === 'cross');
+    // Toggle tab content
+    document.getElementById('tab-content-self').style.display = tabName === 'self' ? 'block' : 'none';
+    document.getElementById('tab-content-cross').style.display = tabName === 'cross' ? 'block' : 'none';
+}
+
+function downloadCSV(reportType) {
+    window.open('/api/sessions/{{ session.id }}/stage8/download-csv?report_type=' + reportType, '_blank');
+}
+
+function renderDuplicatePairs(duplicates, containerId, showFull) {
+    const limit = showFull ? duplicates.length : Math.min(duplicates.length, 50);
+    let html = '<div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Showing ' +
+        limit + ' of ' + duplicates.length + ' pairs</div>';
+
+    for (let i = 0; i < limit; i++) {
+        const dup = duplicates[i];
+        // Handle both self-check (qid_a/qid_b) and cross-check (session_qid/db_qid)
+        const idA = dup.qid_a || dup.session_qid || '?';
+        const idB = dup.qid_b || dup.db_qid || '?';
+        const textA = showFull ? (dup.full_text_a || dup.text_a || dup.session_text || '') : (dup.text_a || dup.session_text || '');
+        const textB = showFull ? (dup.full_text_b || dup.text_b || dup.db_text || '') : (dup.text_b || dup.db_text || '');
+        html += `<div class="dup-pair" onclick="this.classList.toggle('expanded')">
+            <div class="dup-header">
+                <span>
+                    <input type="checkbox" class="dup-checkbox" data-qid="${escapeHtml(idB)}" onclick="event.stopPropagation()">
+                    <strong>${escapeHtml(idA)}</strong> = <strong>${escapeHtml(idB)}</strong>
+                    <span style="color: var(--text-muted);">(${dup.subject || '?'})</span>
+                </span>
+                <span class="dup-sim">${(dup.similarity * 100).toFixed(1)}%</span>
+            </div>
+            <div class="dup-body">
+                <div><strong>A:</strong> ${escapeHtml(textA)}</div>
+                <div style="margin-top: 4px;"><strong>B:</strong> ${escapeHtml(textB)}</div>
+            </div>
+        </div>`;
+    }
+
+    document.getElementById(containerId).innerHTML = html;
+}
+
+function showSelfResults(d) {
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+    switchTab('self');
+
+    document.getElementById('self-results-summary').innerHTML = `
+        <div class="stat-grid">
+            <div class="stat-box"><div class="stat-value">${d.total_questions}</div><div class="stat-label">Questions</div></div>
+            <div class="stat-box"><div class="stat-value">${d.pairs_checked}</div><div class="stat-label">Pairs Checked</div></div>
+            <div class="stat-box"><div class="stat-value">${d.duplicates_found}</div><div class="stat-label">Duplicate Pairs</div></div>
+            <div class="stat-box"><div class="stat-value">${d.unique_qids_affected}</div><div class="stat-label">QIDs Affected</div></div>
+        </div>
+    `;
+
+    _selfDuplicates = d.duplicates || [];
+
+    if (_selfDuplicates.length > 0) {
+        renderDuplicatePairs(_selfDuplicates, 'self-results-table', false);
+
+        // Show quarantine card
+        document.getElementById('quarantine-card').style.display = 'block';
+        document.getElementById('quarantine-content').innerHTML =
+            '<div style="font-size: 12px; color: var(--text-muted);">Select duplicate QIDs above (checkboxes) then click "Quarantine Selected".</div>';
+
+        document.getElementById('advance-btn').disabled = false;
+    } else {
+        document.getElementById('self-results-table').innerHTML =
+            '<div class="alert alert-info">No duplicates found!</div>';
+        document.getElementById('advance-btn').disabled = false;
+    }
+}
+
+async function crossCheck() {
+    const btn = document.getElementById('cross-btn');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    _anyRunning = true;
+    updateRunAllState();
+    const threshold = getThreshold();
+    appendLog('info', `Running cross-DB duplicate check (threshold: ${(threshold*100).toFixed(0)}%)...`);
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage8/cross-check?threshold=' + threshold);
+        if (r.success) {
+            const d = r.data;
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            switchTab('cross');
+
+            if (d.error) {
+                document.getElementById('cross-results-content').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>' +
+                    (d.message ? '<p style="font-size: 12px;">' + escapeHtml(d.message) + '</p>' : '');
+                appendLog('error', d.error);
+            } else {
+                let crossHtml = `
+                    <div class="stat-grid">
+                        <div class="stat-box"><div class="stat-value">${d.session_questions}</div><div class="stat-label">Session Qs</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.db_questions?.toLocaleString() || 0}</div><div class="stat-label">DB Questions</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.pairs_checked?.toLocaleString() || 0}</div><div class="stat-label">Pairs Checked</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.duplicates_found}</div><div class="stat-label">Cross-Dupes</div></div>
+                    </div>
+                `;
+                crossHtml += '<div id="cross-results-pairs" style="margin-top: 12px;"></div>';
+                document.getElementById('cross-results-content').innerHTML = crossHtml;
+
+                // Render duplicate pairs if any
+                if (d.duplicates && d.duplicates.length > 0) {
+                    renderDuplicatePairs(d.duplicates, 'cross-results-pairs', false);
+                }
+
+                appendLog('success', `Cross-check: ${d.duplicates_found} duplicates against ${d.db_questions?.toLocaleString() || 0} DB (${d.engine || 'unknown'}, ${d.time_seconds || '?'}s)`);
+                _crossDone = true;
+                btn.dataset.done = 'true';
+                btn.textContent = 'Checked \u2713';
+            }
+
+            document.getElementById('advance-btn').disabled = false;
+        }
+    } catch (e) {
+        appendLog('error', 'Cross-check error: ' + e.message);
+    }
+    _anyRunning = false;
+    updateRunAllState();
+    if (!btn.dataset.done) {
+        btn.disabled = false;
+        btn.textContent = 'Cross-DB Check';
+    }
+}
+
+async function runAll() {
+    const btn = document.getElementById('run-all-btn');
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    _anyRunning = true;
+    document.getElementById('self-btn').disabled = true;
+    document.getElementById('cross-btn').disabled = true;
+    appendLog('info', 'Running both duplicate checks...');
+
+    try {
+        const threshold = getThreshold();
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage8/run-all?threshold=' + threshold);
+        if (r.success) {
+            const d = r.data;
+
+            if (d.self_check) showSelfResults(d.self_check);
+
+            if (d.cross_check) {
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                const c = d.cross_check;
+                let crossHtml = `
+                    <div class="stat-grid">
+                        <div class="stat-box"><div class="stat-value">${c.session_questions || 0}</div><div class="stat-label">Session Qs</div></div>
+                        <div class="stat-box"><div class="stat-value">${c.db_questions?.toLocaleString() || 0}</div><div class="stat-label">DB Questions</div></div>
+                        <div class="stat-box"><div class="stat-value">${c.pairs_checked?.toLocaleString() || 0}</div><div class="stat-label">Pairs Checked</div></div>
+                        <div class="stat-box"><div class="stat-value">${c.duplicates_found || 0}</div><div class="stat-label">Cross-Dupes</div></div>
+                    </div>
+                `;
+                crossHtml += '<div id="cross-results-pairs" style="margin-top: 12px;"></div>';
+                document.getElementById('cross-results-content').innerHTML = crossHtml;
+
+                if (c.duplicates && c.duplicates.length > 0) {
+                    renderDuplicatePairs(c.duplicates, 'cross-results-pairs', false);
+                }
+            }
+
+            appendLog('success', `Total: ${d.total_duplicates || 0} duplicates found`);
+            document.getElementById('advance-btn').disabled = false;
+            _selfDone = true;
+            _crossDone = true;
+            btn.dataset.done = 'true';
+            btn.textContent = 'Completed \u2713';
+            document.getElementById('self-btn').disabled = true;
+            document.getElementById('self-btn').textContent = 'Checked \u2713';
+            document.getElementById('cross-btn').disabled = true;
+            document.getElementById('cross-btn').textContent = 'Checked \u2713';
+            document.getElementById('skip-btn').disabled = true;
+            document.getElementById('skip-btn').textContent = 'Skipped \u2713';
+        }
+    } catch (e) {
+        appendLog('error', 'Run-all error: ' + e.message);
+    }
+    _anyRunning = false;
+    if (!btn.dataset.done) {
+        btn.disabled = false;
+        btn.textContent = 'Run Both Checks';
+        // Re-enable individual buttons if they weren't already done
+        if (!document.getElementById('self-btn').dataset.done) {
+            document.getElementById('self-btn').disabled = false;
+            document.getElementById('self-btn').textContent = 'Self-Duplicate Check';
+        }
+        if (!document.getElementById('cross-btn').dataset.done && !document.getElementById('cross-btn').title) {
+            document.getElementById('cross-btn').disabled = false;
+            document.getElementById('cross-btn').textContent = 'Cross-DB Check';
+        }
+    }
+}
+
+async function quarantineSelected() {
+    const checkboxes = document.querySelectorAll('.dup-checkbox:checked');
+    if (checkboxes.length === 0) {
+        appendLog('warning', 'No duplicates selected for quarantine');
+        return;
+    }
+
+    const qids = Array.from(checkboxes).map(cb => cb.dataset.qid);
+    appendLog('info', `Quarantining ${qids.length} questions...`);
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage8/quarantine', qids);
+        if (r.success) {
+            const d = r.data;
+            appendLog('success', `Quarantined ${d.quarantined} questions — removed ${d.questions_removed || 0} from ${d.files_modified || 0} metadata files`);
+            // Uncheck and disable quarantined checkboxes
+            checkboxes.forEach(cb => {
+                cb.checked = false;
+                cb.disabled = true;
+                cb.closest('tr').style.opacity = '0.4';
+            });
+        }
+    } catch (e) {
+        appendLog('error', 'Quarantine error: ' + e.message);
+    }
+}
+
+async function skipDuplicates() {
+    const skipBtn = document.getElementById('skip-btn');
+    skipBtn.disabled = true;
+    appendLog('info', 'Skipping duplicate checking...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage8/skip');
+        if (r.success) {
+            appendLog('info', 'Duplicate checking skipped');
+            document.getElementById('advance-btn').disabled = false;
+            document.getElementById('self-btn').disabled = true;
+            document.getElementById('cross-btn').disabled = true;
+            document.getElementById('run-all-btn').disabled = true;
+            skipBtn.textContent = 'Skipped \u2713';
+            return;
+        }
+    } catch (e) {
+        appendLog('error', 'Skip error: ' + e.message);
+    }
+    skipBtn.disabled = false;
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage8_duplicates');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        document.getElementById('controls-card').style.display = 'block';
+        // Disable all action buttons
+        ['self-btn', 'cross-btn', 'run-all-btn', 'skip-btn'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
+        if (d.skipped) {
+            document.getElementById('skip-btn').textContent = 'Skipped \u2713';
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('self-results-summary').innerHTML =
+                '<div class="alert alert-info">Duplicate checking was skipped.</div>';
+        } else {
+            document.getElementById('run-all-btn').textContent = 'Completed \u2713';
+            // Show results card with summary from checkpoint
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            let summaryHtml = '<div class="stat-grid">';
+            if (d.self_duplicates !== undefined) {
+                summaryHtml += `<div class="stat-box"><div class="stat-value">${d.self_duplicates}</div><div class="stat-label">Self-Duplicates</div></div>`;
+            }
+            if (d.cross_duplicates !== undefined) {
+                summaryHtml += `<div class="stat-box"><div class="stat-value">${d.cross_duplicates}</div><div class="stat-label">Cross-Duplicates</div></div>`;
+            }
+            summaryHtml += '</div>';
+            document.getElementById('self-results-summary').innerHTML = summaryHtml;
+        }
+    }
+});
+
+async function loadFullReport(reportType) {
+    const label = reportType === 'self' ? 'self-duplicate' : 'cross-DB';
+    appendLog('info', `Loading full ${label} report...`);
+    const btnId = reportType === 'self' ? 'view-self-report-btn' : 'view-cross-report-btn';
+    const btn = document.getElementById(btnId);
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage8/report?report_type=' + reportType);
+        if (r.success && r.data && !r.data.error) {
+            const report = r.data;
+            appendLog('success', `Report loaded: ${report.duplicates_found} pairs, threshold ${report.threshold}`);
+
+            if (reportType === 'self') {
+                const dupes = report.duplicates || [];
+                _selfDuplicates = dupes;
+                if (dupes.length > 0) {
+                    renderDuplicatePairs(dupes, 'self-results-table', true);
+                } else {
+                    document.getElementById('self-results-table').innerHTML =
+                        '<div class="alert alert-info">No duplicates in report.</div>';
+                }
+            } else {
+                const dupes = report.duplicates || [];
+                if (dupes.length > 0) {
+                    let html = `<div class="stat-grid" style="margin-bottom: 12px;">
+                        <div class="stat-box"><div class="stat-value">${report.session_questions || 0}</div><div class="stat-label">Session Qs</div></div>
+                        <div class="stat-box"><div class="stat-value">${(report.db_questions || 0).toLocaleString()}</div><div class="stat-label">DB Questions</div></div>
+                        <div class="stat-box"><div class="stat-value">${report.duplicates_found || 0}</div><div class="stat-label">Cross-Dupes</div></div>
+                    </div>`;
+                    document.getElementById('cross-results-content').innerHTML = html;
+                    // Build a container for the duplicate pairs list
+                    const pairsDiv = document.createElement('div');
+                    pairsDiv.id = 'cross-results-pairs';
+                    document.getElementById('cross-results-content').appendChild(pairsDiv);
+                    renderDuplicatePairs(dupes, 'cross-results-pairs', true);
+                } else {
+                    document.getElementById('cross-results-content').innerHTML =
+                        '<div class="alert alert-info">No cross-DB duplicates in report.</div>';
+                }
+            }
+        } else {
+            appendLog('warning', r.data?.error || 'No report available — run the check first');
+        }
+    } catch (e) {
+        appendLog('error', 'Report error: ' + e.message);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'View Full Report'; }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}Stage 3: Cleaner - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>3. Advanced Cleaner</h1>
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 4
+    </button>
+</div>
+<p class="stage-description">
+    Clean HTML/LaTeX artifacts, normalize formatting, fix broken math blocks. Preview changes before applying.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Cleaning Controls -->
+        <div class="card">
+            <div class="card-header"><h2>Cleaning Controls</h2></div>
+            <div class="card-body">
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="applyCleaning()" id="apply-btn">Apply Cleaning</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header">
+                <h2>Cleaning Results</h2>
+                <button class="btn btn-sm" onclick="loadCleanPreview()" id="clean-preview-btn">View Before/After</button>
+            </div>
+            <div class="card-body">
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- Before/After Preview -->
+        <div class="card" id="diff-card" style="display: none;">
+            <div class="card-header">
+                <h2>Before / After Comparison</h2>
+                <button class="btn btn-sm" onclick="loadCleanPreview()">Load More</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="diff-content" class="preview-pane"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — click Apply Cleaning to clean all questions</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function applyCleaning() {
+    const btn = document.getElementById('apply-btn');
+    btn.disabled = true;
+    btn.textContent = 'Cleaning...';
+    appendLog('info', 'Applying cleaning...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage3/apply');
+        if (r.success) {
+            showResults(r.data);
+            document.getElementById('advance-btn').disabled = false;
+            appendLog('success', 'Cleaned ' + r.data.questions_cleaned + ' questions (' + r.data.fields_modified + ' fields)');
+            btn.textContent = 'Applied \u2713';
+            // Keep btn disabled after success
+            return;
+        } else {
+            appendLog('error', 'Cleaning failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Apply Cleaning';
+}
+
+function showResults(data) {
+    const card = document.getElementById('results-card');
+    const content = document.getElementById('results-content');
+    card.style.display = 'block';
+
+    content.innerHTML = `
+        <div class="alert alert-success">
+            Cleaned <strong>${data.questions_cleaned}</strong> questions.
+            <strong>${data.fields_modified}</strong> fields modified. Backup created.
+        </div>
+    `;
+}
+
+async function loadCleanPreview() {
+    const card = document.getElementById('diff-card');
+    const content = document.getElementById('diff-content');
+    card.style.display = 'block';
+    content.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Loading samples...</div>';
+    appendLog('info', 'Loading before/after comparison...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage3/preview?count=7');
+        if (r.success && r.data.samples && r.data.samples.length > 0) {
+            let html = '';
+            for (const pair of r.data.samples) {
+                html += buildDiffItem(pair);
+            }
+            content.innerHTML = html;
+            appendLog('success', 'Loaded ' + r.data.samples.length + ' before/after samples');
+        } else {
+            content.innerHTML = '<div class="alert alert-warning">No cleaned data available. Apply cleaning first.</div>';
+        }
+    } catch (e) {
+        content.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
+    }
+}
+
+function buildDiffItem(pair) {
+    const b = pair.before;
+    const a = pair.after;
+    const qLabel = b.qid || ('Q' + (b.question_number || '?'));
+
+    // Handle both field name formats (question_content vs question)
+    const bQuestion = b.question_content || b.question || '';
+    const aQuestion = a.question_content || a.question || '';
+    const bSolution = b.solution_content || b.solution || '';
+    const aSolution = a.solution_content || a.solution || '';
+
+    return `
+    <div class="preview-item">
+        <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span>${qLabel} — Before / After</span>
+            <span style="font-size: 11px; color: var(--text-muted);">click to toggle</span>
+        </div>
+        <div class="preview-item-body">
+            <div class="preview-field-label">Question</div>
+            <div class="diff-container">
+                <div class="diff-before">
+                    <div class="preview-field-label diff-label-before" style="font-size: 9px;">BEFORE</div>
+                    <div class="preview-field-content">${escapeHtml(truncate(bQuestion, 300))}</div>
+                </div>
+                <div class="diff-after">
+                    <div class="preview-field-label diff-label-after" style="font-size: 9px;">AFTER</div>
+                    <div class="preview-field-content">${escapeHtml(truncate(aQuestion, 300))}</div>
+                </div>
+            </div>
+            ${bSolution ? `
+            <div class="preview-field-label" style="margin-top: 10px;">Solution</div>
+            <div class="diff-container">
+                <div class="diff-before">
+                    <div class="preview-field-label diff-label-before" style="font-size: 9px;">BEFORE</div>
+                    <div class="preview-field-content">${escapeHtml(truncate(bSolution, 300))}</div>
+                </div>
+                <div class="diff-after">
+                    <div class="preview-field-label diff-label-after" style="font-size: 9px;">AFTER</div>
+                    <div class="preview-field-content">${escapeHtml(truncate(aSolution, 300))}</div>
+                </div>
+            </div>
+            ` : ''}
+        </div>
+    </div>`;
+}
+
+function truncate(str, max) {
+    if (!str) return '';
+    return str.length > max ? str.substring(0, max) + '...' : str;
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage3_cleaning');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        document.getElementById('apply-btn').disabled = true;
+        document.getElementById('apply-btn').textContent = 'Applied \u2713';
+        document.getElementById('advance-btn').disabled = false;
+        if (d.questions_cleaned !== undefined) {
+            showResults(d);
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,785 @@
+{% extends "base.html" %}
+{% block title %}Stage 7: LaTeX + Tagging - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>7. LaTeX + Tagging Batch</h1>
+    {% if current_stage == 'stage7_batch' %}
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 8
+    </button>
+    {% endif %}
+</div>
+<p class="stage-description">
+    Build JSONL batches for concept tagging and LaTeX-to-MathML conversion. Submit to OpenAI Batch API, poll status, download and merge results.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Scan & Controls -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Batch Overview</h2>
+                <button class="btn btn-sm" onclick="scanBatch()" id="scan-btn">Scan Metadata</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan Metadata" to analyze questions for batch processing.
+                </div>
+                <div id="cred-status" style="display: none; margin-top: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- Batch Actions -->
+        <div class="card" id="actions-card" style="display: none;">
+            <div class="card-header"><h2>Batch Pipeline</h2></div>
+            <div class="card-body">
+                <div class="batch-pipeline">
+                    <div class="pipeline-step" id="pipeline-step-1">
+                        <div class="pipeline-step-num" id="step-num-1">1</div>
+                        <div class="pipeline-step-body">
+                            <strong>Convert ALL MathML</strong>
+                            <span style="font-size: 12px; color: var(--text-muted);">Process all questions locally — only failures go to batch</span>
+                        </div>
+                        <button class="btn btn-sm" onclick="convertAllMathML()" id="convert-btn">Convert</button>
+                    </div>
+                    <div class="pipeline-step" id="pipeline-step-2">
+                        <div class="pipeline-step-num" id="step-num-2">2</div>
+                        <div class="pipeline-step-body">
+                            <strong>Build Batch</strong>
+                            <span style="font-size: 12px; color: var(--text-muted);">Generate JSONL for tagging + failed LaTeX</span>
+                        </div>
+                        <button class="btn btn-sm" onclick="buildBatch()" id="build-btn" disabled>Build</button>
+                    </div>
+                    <div class="pipeline-step" id="pipeline-step-3">
+                        <div class="pipeline-step-num" id="step-num-3">3</div>
+                        <div class="pipeline-step-body">
+                            <strong>Submit Batch</strong>
+                            <span style="font-size: 12px; color: var(--text-muted);">Upload JSONL to OpenAI Batch API</span>
+                        </div>
+                        <button class="btn btn-sm" onclick="submitBatch()" id="submit-btn" disabled>Submit</button>
+                    </div>
+                    <div class="pipeline-step" id="pipeline-step-4">
+                        <div class="pipeline-step-num" id="step-num-4">4</div>
+                        <div class="pipeline-step-body">
+                            <strong>Poll Status</strong>
+                            <span style="font-size: 12px; color: var(--text-muted);">Check batch processing progress</span>
+                        </div>
+                        <button class="btn btn-sm" onclick="pollBatch()" id="poll-btn" disabled>Poll</button>
+                    </div>
+                    <div class="pipeline-step" id="pipeline-step-5">
+                        <div class="pipeline-step-num" id="step-num-5">5</div>
+                        <div class="pipeline-step-body">
+                            <strong>Download + Merge</strong>
+                            <span style="font-size: 12px; color: var(--text-muted);">Download results, stitch with Step 1, merge into metadata</span>
+                        </div>
+                        <button class="btn btn-sm" onclick="downloadResults()" id="download-btn" disabled>Download</button>
+                    </div>
+                </div>
+                <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; display: flex; gap: 8px;">
+                    <button class="btn btn-danger btn-sm" onclick="stopBatch()" id="stop-btn" style="display: none;">Stop Batch</button>
+                    <button class="btn" onclick="runInBackground()" id="bg-btn">Run In Background</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Batch Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header"><h2>Batch Results</h2></div>
+            <div class="card-body">
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- MathML Preview -->
+        <div class="card" id="mathml-card" style="display: none;">
+            <div class="card-header">
+                <h2>MathML Preview</h2>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <select id="preview-subject" style="font-size: 12px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary);">
+                        <option value="">All Subjects</option>
+                    </select>
+                    <button class="btn btn-sm" onclick="loadMorePreview()" id="load-more-btn">Load More</button>
+                    <span id="mathml-summary" style="font-size: 11px; color: var(--text-muted);"></span>
+                    <button class="btn btn-sm" onclick="document.getElementById('mathml-card').style.display='none'">Close</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="mathml-content"></div>
+            </div>
+        </div>
+
+        <!-- Batch Status -->
+        <div class="card" id="status-card" style="display: none;">
+            <div class="card-header">
+                <h2>Batch Status</h2>
+                <button class="btn btn-sm" onclick="pollBatch()">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="status-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan metadata to begin batch processing</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.batch-pipeline { display: flex; flex-direction: column; gap: 8px; }
+.pipeline-step {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; border-radius: 6px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    transition: border-color 0.3s;
+}
+.pipeline-step.completed { border-color: rgba(52,211,153,0.4); }
+.pipeline-step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; flex-shrink: 0;
+    transition: background 0.3s;
+}
+.pipeline-step.completed .pipeline-step-num {
+    background: var(--success);
+}
+.pipeline-step-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.pipeline-step-body strong { font-size: 13px; }
+
+/* MathML rendered preview */
+.mathml-rendered-preview {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin-top: 6px;
+    font-size: 14px;
+    line-height: 1.8;
+    color: var(--text-primary);
+    overflow-x: auto;
+}
+.mathml-rendered-preview math {
+    display: inline-block;
+    vertical-align: middle;
+    font-size: 16px;
+}
+.mathml-rendered-preview math[display="block"] {
+    display: block;
+    margin: 8px 0;
+    text-align: center;
+}
+.mathml-rendered-preview img {
+    max-width: 350px;
+    height: auto;
+}
+
+/* Collapsible raw source toggle */
+.mathml-raw-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    cursor: pointer;
+}
+.mathml-raw-toggle:hover {
+    border-color: var(--border-hover);
+    color: var(--text-secondary);
+}
+.mathml-raw-source {
+    display: none;
+    margin-top: 6px;
+}
+.mathml-raw-source.visible {
+    display: block;
+}
+.mathml-raw-source pre {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--text-secondary);
+}
+
+/* Conversion count badges */
+.conv-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+}
+.conv-badge.success { background: rgba(52,211,153,0.15); color: var(--success); }
+.conv-badge.fail { background: rgba(248,113,113,0.15); color: var(--error); }
+</style>
+
+<script>
+// Pipeline step completion tracking (5 steps: Convert, Build, Submit, Poll, Download)
+const stepStatus = {1: false, 2: false, 3: false, 4: false, 5: false};
+
+function markStepComplete(stepNum) {
+    stepStatus[stepNum] = true;
+    const stepEl = document.getElementById('pipeline-step-' + stepNum);
+    const numEl = document.getElementById('step-num-' + stepNum);
+    if (stepEl) stepEl.classList.add('completed');
+    if (numEl) numEl.textContent = '\u2713';
+}
+
+function markStepIncomplete(stepNum) {
+    stepStatus[stepNum] = false;
+    const stepEl = document.getElementById('pipeline-step-' + stepNum);
+    const numEl = document.getElementById('step-num-' + stepNum);
+    if (stepEl) stepEl.classList.remove('completed');
+    if (numEl) numEl.textContent = String(stepNum);
+}
+
+// Toggle raw MathML source visibility
+function toggleRawSource(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('visible');
+}
+
+async function scanBatch() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning metadata for batch processing...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/scan');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                document.getElementById('scan-result').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Scan Metadata';
+                return;
+            }
+
+            let subjectHtml = '';
+            if (d.by_subject) {
+                subjectHtml = '<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">Subjects: ';
+                subjectHtml += Object.entries(d.by_subject).map(([s, c]) => s + ': ' + c).join(' | ');
+                subjectHtml += '</div>';
+            }
+
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_questions}</div>
+                        <div class="stat-label">Total Questions</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.needs_tagging}</div>
+                        <div class="stat-label">Need Tagging</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.needs_latex}</div>
+                        <div class="stat-label">Need LaTeX Conv.</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_latex_blocks}</div>
+                        <div class="stat-label">LaTeX Blocks</div>
+                    </div>
+                </div>
+                ${subjectHtml}
+            `;
+
+            appendLog('success', `${d.total_questions} questions: ${d.needs_tagging} tagging + ${d.needs_latex} LaTeX`);
+
+            // Check credentials
+            checkCredentials();
+
+            // Show action buttons
+            document.getElementById('actions-card').style.display = 'block';
+        } else {
+            appendLog('error', 'Scan failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan Metadata';
+}
+
+async function checkCredentials() {
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/credentials');
+        if (r.success) {
+            const d = r.data;
+            const credDiv = document.getElementById('cred-status');
+            credDiv.style.display = 'block';
+
+            if (d.configured) {
+                credDiv.innerHTML = '<div class="alert alert-info" style="font-size: 12px;">' +
+                    'OpenAI API: ' + escapeHtml(d.openai_api_key) + '</div>';
+                appendLog('info', 'OpenAI API key configured');
+            } else {
+                credDiv.innerHTML = '<div class="alert alert-warning" style="font-size: 12px;">' +
+                    escapeHtml(d.message) + '</div>';
+                appendLog('warning', 'OpenAI API key not configured');
+                document.getElementById('submit-btn').disabled = true;
+            }
+        }
+    } catch (e) {
+        appendLog('warning', 'Could not check credentials: ' + e.message);
+    }
+}
+
+async function convertAllMathML() {
+    const btn = document.getElementById('convert-btn');
+    btn.disabled = true;
+    btn.textContent = 'Converting...';
+    appendLog('info', 'Converting ALL LaTeX to MathML locally...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage7/convert-mathml');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Convert';
+                return;
+            }
+
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.questions_with_latex || 0}</div><div class="stat-label">With LaTeX</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.total_success || 0}</div><div class="stat-label">Blocks Converted</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.fully_converted || 0}</div><div class="stat-label">Fully Converted</div></div>
+                    <div class="stat-box"><div class="stat-value" style="color: ${d.total_fail > 0 ? 'var(--warning)' : 'var(--success)'}">${d.failed_qids_count || 0}</div><div class="stat-label">Need Batch</div></div>
+                </div>
+                <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">
+                    ${d.failed_qids_count === 0
+                        ? 'All LaTeX converted locally — batch LaTeX not needed!'
+                        : d.failed_qids_count + ' questions still have unconverted LaTeX — will be included in batch.'}
+                </div>
+            `;
+
+            appendLog('success', 'MathML conversion: ' + (d.total_success || 0) + ' blocks converted, ' +
+                (d.failed_qids_count || 0) + ' questions need batch LaTeX');
+
+            markStepComplete(1);
+            btn.textContent = 'Converted \u2713';
+            document.getElementById('build-btn').disabled = false;
+
+            // If no failures and no tagging needed, allow skip to advance
+            if (d.failed_qids_count === 0) {
+                appendLog('info', 'No LaTeX failures — batch will only include tagging requests (if any)');
+            }
+            // Show MathML preview with initial samples
+            previewOffset = 0;
+            document.getElementById('mathml-content').innerHTML = '';
+            loadMorePreview();
+            return;
+        }
+    } catch (e) {
+        appendLog('error', 'Convert error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Convert';
+}
+
+async function buildBatch() {
+    const btn = document.getElementById('build-btn');
+    btn.disabled = true;
+    btn.textContent = 'Building...';
+    appendLog('info', 'Building JSONL batch files (only failed LaTeX + tagging)...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage7/build-batch');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+            } else {
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                const tagDisplay = d.tagging_requests === 0
+                    ? '<span style="color:var(--text-muted)">0</span>'
+                    : d.tagging_requests;
+                const tagNote = d.tagging_requests === 0
+                    ? '<div style="margin-top: 4px; font-size: 11px; color: var(--text-muted);">All chapters assigned — no tagging needed</div>'
+                    : '';
+                document.getElementById('results-content').innerHTML = `
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="stat-value">${tagDisplay}</div>
+                            <div class="stat-label">Tagging Requests</div>
+                            ${tagNote}
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">${d.latex_requests}</div>
+                            <div class="stat-label">LaTeX Requests</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">${d.total_requests}</div>
+                            <div class="stat-label">Total Requests</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">
+                        Batch files saved. Ready to submit.
+                    </div>
+                `;
+                // Show clearer message when tagging = 0
+                const tagLabel = d.tagging_requests === 0
+                    ? 'No tagging needed (all chapters assigned)'
+                    : d.tagging_requests + ' tagging';
+                appendLog('success', `Batch built: ${tagLabel} + ${d.latex_requests} LaTeX`);
+                // Disable Build, enable Submit
+                btn.disabled = true;
+                btn.textContent = 'Built \u2713';
+                document.getElementById('submit-btn').disabled = false;
+                markStepComplete(2);
+
+                // If no batch requests at all, enable advance directly
+                if (d.total_requests === 0) {
+                    appendLog('info', 'No batch requests needed — you can advance to the next stage');
+                    document.getElementById('advance-btn').disabled = false;
+                }
+            }
+        } else {
+            appendLog('error', 'Build failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Build error: ' + e.message);
+    }
+    if (!stepStatus[2]) {
+        btn.disabled = false;
+        btn.textContent = 'Build';
+    }
+}
+
+async function submitBatch() {
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+    appendLog('info', 'Submitting batch to OpenAI API...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage7/submit');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', d.error);
+                if (d.message) appendLog('info', d.message);
+            } else if (d.status === 'stub') {
+                appendLog('warning', d.message);
+            } else {
+                appendLog('success', 'Batch submitted successfully');
+                document.getElementById('poll-btn').disabled = false;
+                document.getElementById('stop-btn').style.display = 'inline-flex';
+                // Disable submit after success
+                btn.disabled = true;
+                btn.textContent = 'Submitted \u2713';
+                markStepComplete(3);
+                return;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Submit error: ' + e.message);
+    }
+    if (!stepStatus[3]) {
+        btn.disabled = false;
+        btn.textContent = 'Submit';
+    }
+}
+
+
+
+async function pollBatch() {
+    const btn = document.getElementById('poll-btn');
+    btn.disabled = true;
+    btn.textContent = 'Polling...';
+    appendLog('info', 'Checking batch status...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/poll');
+        if (r.success) {
+            const d = r.data;
+            const card = document.getElementById('status-card');
+            card.style.display = 'block';
+
+            function statusBadge(status, progress) {
+                if (status === 'completed' && progress === 100)
+                    return '<span style="color:var(--success);font-weight:600">completed</span>';
+                if (status === 'completed')
+                    return '<span style="color:var(--success)">completed</span>';
+                if (status === 'in_progress' || status === 'validating')
+                    return '<span style="color:var(--warning)">' + status + '</span>';
+                if (status === 'not_submitted')
+                    return '<span style="color:var(--text-muted)">not submitted</span>';
+                if (status === 'failed' || status === 'error')
+                    return '<span style="color:var(--error)">' + status + '</span>';
+                return '<span>' + (status || 'unknown') + '</span>';
+            }
+
+            const tagStatus = d.tagging_batch?.status || 'not_submitted';
+            const tagProgress = d.tagging_batch?.progress || 0;
+            const latexStatus = d.latex_batch?.status || 'not_submitted';
+            const latexProgress = d.latex_batch?.progress || 0;
+
+            let html = '<table class="data-table"><thead><tr><th>Batch</th><th>Status</th><th>Progress</th></tr></thead><tbody>';
+            html += `<tr><td>Tagging</td><td>${statusBadge(tagStatus, tagProgress)}</td><td>${tagStatus === 'not_submitted' ? '—' : tagProgress + '%'}</td></tr>`;
+            html += `<tr><td>LaTeX</td><td>${statusBadge(latexStatus, latexProgress)}</td><td>${latexStatus === 'not_submitted' ? '—' : latexProgress + '%'}</td></tr>`;
+            html += '</tbody></table>';
+
+            if (d.message) {
+                html += '<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">' + escapeHtml(d.message) + '</div>';
+            }
+
+            document.getElementById('status-content').innerHTML = html;
+            appendLog('info', 'Tagging: ' + (d.tagging_batch?.status || 'n/a') + ' | LaTeX: ' + (d.latex_batch?.status || 'n/a'));
+
+            // Enable download if both batches are done (completed or not_submitted)
+            const tagDone = tagStatus === 'completed' || tagStatus === 'not_submitted';
+            const latexDone = latexStatus === 'completed' || latexStatus === 'not_submitted';
+            // At least one must be actually completed (not both skipped)
+            const anyCompleted = tagStatus === 'completed' || latexStatus === 'completed';
+            if (tagDone && latexDone && anyCompleted) {
+                document.getElementById('download-btn').disabled = false;
+                markStepComplete(4);
+                btn.disabled = true;
+                btn.textContent = 'Complete \u2713';
+                return;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Poll error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Poll';
+}
+
+async function stopBatch() {
+    if (!confirm('Stop batch processing? Partial results will be saved. You can resume later.')) return;
+    const btn = document.getElementById('stop-btn');
+    btn.disabled = true;
+    btn.textContent = 'Stopping...';
+    appendLog('info', 'Requesting batch stop...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage7/stop');
+        if (r.success) {
+            appendLog('warning', 'Batch stop requested — partial results saved');
+            btn.style.display = 'none';
+            // Re-enable poll to check final status
+            document.getElementById('poll-btn').disabled = false;
+        }
+    } catch (e) {
+        appendLog('error', 'Stop error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Stop Batch';
+}
+
+async function runInBackground() {
+    // Check if a batch is actually submitted first
+    if (!stepStatus[3]) {
+        appendLog('warning', 'No batch submitted yet — submit a batch before running in background');
+        return;
+    }
+    if (!confirm('Run batch in background? You can advance to Stage 8 and return later to check results.')) return;
+    appendLog('info', 'Batch running in background — you can now advance to Stage 8');
+    document.getElementById('advance-btn').disabled = false;
+    document.getElementById('bg-btn').disabled = true;
+    document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
+    // Save background state to checkpoint so we know to show poll on revisit
+    apiPost('/api/sessions/{{ session.id }}/stage7/background');
+}
+
+async function downloadResults() {
+    const btn = document.getElementById('download-btn');
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+    appendLog('info', 'Downloading and merging batch results...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage7/download');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', d.error);
+            } else if (d.status === 'stub') {
+                appendLog('warning', d.message);
+            } else {
+                appendLog('success', `Merged: ${d.tags_merged} tags + ${d.latex_merged} LaTeX + ${d.mathml_converted} MathML`);
+                document.getElementById('advance-btn').disabled = false;
+                markStepComplete(5);
+                btn.textContent = 'Downloaded \u2713';
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('bg-btn').disabled = true;
+                // Keep btn disabled
+            }
+
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.tags_merged || 0}</div><div class="stat-label">Tags Merged</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.latex_merged || 0}</div><div class="stat-label">LaTeX Merged</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.mathml_converted || 0}</div><div class="stat-label">MathML</div></div>
+                </div>
+                ${d.message ? '<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">' + escapeHtml(d.message) + '</div>' : ''}
+            `;
+            if (!d.error && d.status !== 'stub') return; // keep btn disabled
+        }
+    } catch (e) {
+        appendLog('error', 'Download error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Download';
+}
+
+let previewOffset = 0;
+const PREVIEW_BATCH = 5;
+
+async function loadMorePreview() {
+    const btn = document.getElementById('load-more-btn');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    const subject = document.getElementById('preview-subject').value;
+
+    try {
+        const params = new URLSearchParams({offset: previewOffset, count: PREVIEW_BATCH});
+        if (subject) params.append('subject', subject);
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/preview?' + params.toString());
+        if (r.success && r.data.samples) {
+            const card = document.getElementById('mathml-card');
+            card.style.display = 'block';
+            const content = document.getElementById('mathml-content');
+
+            // Populate subject dropdown on first load
+            if (r.data.subjects && previewOffset === 0) {
+                const sel = document.getElementById('preview-subject');
+                const current = sel.value;
+                sel.innerHTML = '<option value="">All Subjects</option>';
+                r.data.subjects.forEach(s => {
+                    sel.innerHTML += `<option value="${escapeHtml(s)}" ${s === current ? 'selected' : ''}>${escapeHtml(s)}</option>`;
+                });
+            }
+
+            // Append samples
+            r.data.samples.forEach((s, i) => {
+                const idx = previewOffset + i;
+                const statusBadge = s.has_mathml
+                    ? '<span class="conv-badge success">MathML OK</span>'
+                    : '<span class="conv-badge fail">Has LaTeX</span>';
+                content.innerHTML += `
+                    <div style="margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 6px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                            <strong style="font-size: 12px;">${escapeHtml(s.qid)} — ${escapeHtml(s.subject || '')}</strong>
+                            ${statusBadge}
+                        </div>
+                        <div class="mathml-rendered-preview">${s.question_html || '<em>No question content</em>'}</div>
+                        <button class="mathml-raw-toggle" onclick="toggleRawSource('raw-${idx}')">View Source</button>
+                        <div class="mathml-raw-source" id="raw-${idx}"><pre>${escapeHtml(s.question_html || '')}</pre></div>
+                    </div>
+                `;
+            });
+
+            previewOffset += r.data.samples.length;
+            document.getElementById('mathml-summary').textContent =
+                `Showing ${previewOffset} of ${r.data.total_available}`;
+
+            if (r.data.samples.length < PREVIEW_BATCH) {
+                btn.textContent = 'No More';
+                btn.disabled = true;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Preview error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Load More';
+}
+
+// Reset preview when subject changes
+document.getElementById('preview-subject')?.addEventListener('change', () => {
+    previewOffset = 0;
+    document.getElementById('mathml-content').innerHTML = '';
+    loadMorePreview();
+});
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage7_batch');
+    if (cp) {
+        const d = cp.data || {};
+        document.getElementById('actions-card').style.display = 'block';
+
+        if (cp.status === 'completed') {
+            if (d.skipped) {
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML =
+                    '<div class="alert alert-info">Batch processing was skipped.</div>';
+            } else {
+                // Mark all 5 steps complete
+                for (let i = 1; i <= 5; i++) markStepComplete(i);
+                // Disable all pipeline buttons
+                ['convert-btn', 'build-btn', 'submit-btn', 'poll-btn', 'download-btn'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) { el.disabled = true; }
+                });
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('bg-btn').disabled = true;
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML = `
+                    <div class="stat-grid">
+                        <div class="stat-box"><div class="stat-value">${d.tags_merged || 0}</div><div class="stat-label">Tags Merged</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.latex_merged || 0}</div><div class="stat-label">LaTeX Merged</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.mathml_converted || 0}</div><div class="stat-label">MathML</div></div>
+                    </div>
+                `;
+            }
+        } else if (cp.status === 'background' || d.background) {
+            // Batch was left running in background — show poll option
+            appendLog('info', 'Batch is running in background. Use Poll to check status.');
+            document.getElementById('poll-btn').disabled = false;
+            document.getElementById('stop-btn').style.display = 'inline-flex';
+            document.getElementById('bg-btn').disabled = true;
+            document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
+            // Mark completed steps from checkpoint data
+            if (d.convert_done) markStepComplete(1);
+            if (d.build_done) markStepComplete(2);
+            if (d.submit_done) markStepComplete(3);
+        }
+    }
+});
+</script>
+{% endblock %}

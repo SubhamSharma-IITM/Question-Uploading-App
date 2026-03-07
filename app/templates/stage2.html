@@ -1,0 +1,595 @@
+{% extends "base.html" %}
+{% block title %}Stage 2: LLM Mapper - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>2. LLM Cached Mapper</h1>
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 3
+    </button>
+</div>
+<p class="stage-description">
+    Pass raw MMD to an LLM (Gemini or Claude) for structured question extraction. Produces Q + A + S triplets per subject.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Resume Card (shown if partial results exist) -->
+        <div class="card" id="resume-card" style="display: none;">
+            <div class="card-header"><h2>Previous Extraction Found</h2></div>
+            <div class="card-body">
+                <div id="resume-info" style="font-size: 13px; margin-bottom: 10px;"></div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="startMapping(true)" id="resume-btn">Resume Extraction</button>
+                    <button class="btn" onclick="confirmFreshStart()" id="fresh-btn">Start Fresh</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Extraction Settings -->
+        <div class="card">
+            <div class="card-header"><h2>Extraction Settings</h2></div>
+            <div class="card-body">
+                <div class="form-inline">
+                    <div class="form-group" style="max-width: 160px;">
+                        <label>LLM Provider</label>
+                        <select id="llm-provider" class="form-select" onchange="onProviderChange()">
+                            <option value="gemini" selected>Gemini Flash</option>
+                            <option value="anthropic">Claude Sonnet 4.6</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="max-width: 120px;">
+                        <label>Max Questions</label>
+                        <input type="number" id="max-q" value="30" min="1" max="500" class="form-input" onchange="onSettingsChange()">
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+                        <button class="btn btn-sm" onclick="testApiKey()" id="test-api-btn">
+                            Test API Key
+                        </button>
+                        <button class="btn btn-primary" onclick="startMapping(false)" id="start-btn">
+                            Start Extraction
+                        </button>
+                        <!-- Part buttons (shown when document is split) -->
+                        <button class="btn btn-primary" onclick="startMapping(false, 1)" id="start-part1-btn" style="display: none;">
+                            Process Part 1
+                        </button>
+                        <button class="btn btn-primary" onclick="startMapping(false, 2)" id="start-part2-btn" style="display: none;">
+                            Process Part 2
+                        </button>
+                        <button class="btn btn-sm" style="display: none; background: var(--error); color: white;" onclick="confirmStop()" id="stop-btn">
+                            Stop
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Progress -->
+                <div id="progress-section" style="display: none; margin-top: 12px;">
+                    <div class="progress-bar" data-progress="stage2_mapping">
+                        <div class="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-msg" data-progress="stage2_mapping"
+                         style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Source Configuration -->
+        <div class="card">
+            <div class="card-header"><h2>Source Configuration</h2></div>
+            <div class="card-body">
+                <label class="form-check">
+                    <input type="checkbox" id="is-pyq" onchange="togglePYQ(); onSettingsChange();">
+                    <span>These are Previous Year Questions (PYQ)</span>
+                </label>
+
+                <div id="pyq-settings" class="conditional-section hidden">
+                    <div class="form-inline" style="margin-bottom: 10px;">
+                        <div class="form-group" style="max-width: 140px;">
+                            <label>Previous Exam</label>
+                            <select id="prev-exam" class="form-select" onchange="onSettingsChange()">
+                                <option value="">Select exam...</option>
+                                <option value="MAINS">JEE Mains</option>
+                                <option value="ADVANCED">JEE Advanced</option>
+                                <option value="NEET">NEET</option>
+                                <option value="MHCET">MH CET</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="max-width: 100px;">
+                            <label>Year From</label>
+                            <input type="number" id="pyq-year-from" value="2020" min="2000" max="2026" class="form-input" onchange="onSettingsChange()">
+                        </div>
+                        <div class="form-group" style="max-width: 100px;">
+                            <label>Year To</label>
+                            <input type="number" id="pyq-year-to" value="2025" min="2000" max="2026" class="form-input" onchange="onSettingsChange()">
+                        </div>
+                    </div>
+                    <p class="form-hint">Year range and exam type will be fed to the LLM for accurate PYQ tagging.</p>
+                </div>
+
+                <div class="form-group" style="margin-top: 12px;">
+                    <label>Extra Context for LLM (optional)</label>
+                    <textarea id="extra-context" class="form-textarea" rows="3"
+                        placeholder="e.g. 'Questions and answers are sequential' or 'Questions are followed by the answer key, then solutions' or 'Section A is MCQ, Section B is Integer type'"
+                        onchange="onSettingsChange()"></textarea>
+                    <p class="form-hint">
+                        Explicit instructions here are treated as <strong>ground truth</strong> — they override any conflicting info from the MMD source.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header">
+                <h2>Extraction Results</h2>
+                <button class="btn btn-sm" onclick="loadPreview()" id="preview-btn">Preview Samples</button>
+            </div>
+            <div class="card-body">
+                <div class="stat-grid" id="results-stats"></div>
+                <div id="results-breakdown" style="margin-top: 10px;"></div>
+            </div>
+        </div>
+
+        <!-- Preview Samples -->
+        <div class="card" id="preview-card" style="display: none;">
+            <div class="card-header">
+                <h2>Sample Preview</h2>
+                <button class="btn btn-sm" onclick="loadPreview()">Load More</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="preview-content" class="preview-pane"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — select LLM provider, configure settings, and start extraction</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let extractionRunning = false;
+let extractionCompleted = false;  // Track if extraction finished successfully
+const verifiedProviders = {};
+let hasParts = false;
+let partsDone = {};  // {1: true, 2: true} when each part is complete
+
+function togglePYQ() {
+    const checked = document.getElementById('is-pyq').checked;
+    document.getElementById('pyq-settings').classList.toggle('hidden', !checked);
+}
+
+function freezeInputs(frozen) {
+    const ids = ['llm-provider', 'max-q', 'is-pyq', 'prev-exam',
+                 'pyq-year-from', 'pyq-year-to', 'extra-context'];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = frozen;
+    });
+    // Also freeze test-api-btn during extraction
+    if (frozen) {
+        document.getElementById('test-api-btn').disabled = true;
+    }
+}
+
+const providerNames = {gemini: 'Gemini', anthropic: 'Claude', openai: 'OpenAI'};
+
+function onProviderChange() {
+    const provider = document.getElementById('llm-provider').value;
+    const btn = document.getElementById('test-api-btn');
+    if (verifiedProviders[provider]) {
+        btn.disabled = true;
+        btn.textContent = (providerNames[provider] || provider) + ' OK \u2713';
+    } else {
+        btn.disabled = false;
+        btn.textContent = 'Test API Key';
+    }
+    // If extraction was completed and user changes provider, allow re-extraction
+    if (extractionCompleted) {
+        enableRestart();
+    }
+}
+
+function onSettingsChange() {
+    // Any settings change after completed extraction re-enables the start button
+    if (extractionCompleted) {
+        enableRestart();
+    }
+}
+
+function enableRestart() {
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn.style.display !== 'none') {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Restart Extraction';
+    }
+    // Also re-enable part buttons if in part mode
+    const p1 = document.getElementById('start-part1-btn');
+    const p2 = document.getElementById('start-part2-btn');
+    if (p1 && p1.style.display !== 'none') {
+        p1.disabled = false;
+        p1.textContent = 'Process Part 1';
+        partsDone = {};
+    }
+    if (p2 && p2.style.display !== 'none') {
+        p2.disabled = false;
+        p2.textContent = 'Process Part 2';
+    }
+    freezeInputs(false);
+    appendLog('info', 'Settings changed — extraction can be restarted (will overwrite previous results).');
+}
+
+async function testApiKey() {
+    const btn = document.getElementById('test-api-btn');
+    const provider = document.getElementById('llm-provider').value;
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    appendLog('info', `Testing ${provider} API key...`);
+
+    try {
+        const r = await apiPost(`/api/sessions/{{ session.id }}/stage2/test-api?provider=${provider}`);
+        if (r.success && r.data) {
+            if (r.data.status === 'ok') {
+                appendLog('success', r.data.message);
+                verifiedProviders[provider] = true;
+                btn.disabled = true;
+                btn.textContent = (providerNames[provider] || provider) + ' OK \u2713';
+                return;
+            } else {
+                appendLog('error', r.data.message);
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'API test error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Test API Key';
+}
+
+function confirmFreshStart() {
+    if (confirm('Start fresh extraction? This will overwrite all previously extracted questions.')) {
+        startMapping(false);
+    }
+}
+
+function confirmStop() {
+    if (confirm('Confirm stop?\n\nNOTE: This shall stop the LLM based extraction process. Partial results will be saved.')) {
+        stopExtraction();
+    }
+}
+
+async function stopExtraction() {
+    const stopBtn = document.getElementById('stop-btn');
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping...';
+    appendLog('info', 'Requesting extraction stop...');
+
+    try {
+        await apiPost(`/api/sessions/{{ session.id }}/stage2/stop`);
+        appendLog('warning', 'Stop requested — waiting for current batch to finish...');
+    } catch (e) {
+        appendLog('error', 'Stop error: ' + e.message);
+    }
+}
+
+async function startMapping(resume, part) {
+    // If re-extracting after completion, confirm overwrite
+    if (extractionCompleted && !resume) {
+        if (!confirm('This will overwrite the previous extraction results. Continue?')) return;
+    }
+
+    // Determine which button triggered this
+    const isPartMode = hasParts && part;
+    const btn = isPartMode ? document.getElementById(`start-part${part}-btn`) : document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const maxQ = document.getElementById('max-q').value;
+    const provider = document.getElementById('llm-provider').value;
+
+    extractionCompleted = false;  // Reset on new extraction
+
+    btn.disabled = true;
+    btn.textContent = isPartMode ? `Extracting Part ${part}...` : 'Extracting...';
+    stopBtn.style.display = 'inline-block';
+    stopBtn.disabled = false;
+    stopBtn.textContent = 'Stop';
+    document.getElementById('progress-section').style.display = 'block';
+    document.getElementById('resume-card').style.display = 'none';
+    freezeInputs(true);
+    extractionRunning = true;
+    window._activeProcess = true;
+    window._activeStopUrl = `/api/sessions/{{ session.id }}/stage2/stop`;
+
+    // Disable other part button during extraction (mutual exclusion)
+    if (isPartMode) {
+        const otherPart = part === 1 ? 2 : 1;
+        const otherBtn = document.getElementById(`start-part${otherPart}-btn`);
+        if (otherBtn) otherBtn.disabled = true;
+    }
+
+    const partLabel = isPartMode ? ` [Part ${part}]` : '';
+    appendLog('info', `Starting ${provider} extraction (max ${maxQ} questions)${partLabel}${resume ? ' [RESUMING]' : ''}...`);
+
+    // Build query params
+    let url = `/api/sessions/{{ session.id }}/stage2/start?max_questions=${maxQ}&llm_provider=${provider}`;
+    if (resume) url += '&resume=true';
+    if (isPartMode) url += `&part=${part}`;
+    const isPYQ = document.getElementById('is-pyq').checked;
+    if (isPYQ) {
+        url += '&is_pyq=true';
+        url += '&prev_exam=' + encodeURIComponent(document.getElementById('prev-exam').value);
+        url += '&pyq_year_from=' + document.getElementById('pyq-year-from').value;
+        url += '&pyq_year_to=' + document.getElementById('pyq-year-to').value;
+    }
+    const extraCtx = document.getElementById('extra-context').value.trim();
+    if (extraCtx) {
+        url += '&extra_context=' + encodeURIComponent(extraCtx);
+    }
+
+    try {
+        const r = await apiPost(url);
+        if (r.success && r.data && !r.data.error) {
+            showResults(r.data);
+            verifiedProviders[provider] = true;
+            stopBtn.style.display = 'none';
+            extractionRunning = false;
+            window._activeProcess = false;
+
+            if (isPartMode) {
+                partsDone[part] = true;
+                btn.textContent = `Part ${part} Done \u2713`;
+                appendLog('success', `Part ${part} extraction complete: ${r.data.questions || 0} questions`);
+                // Re-enable other part button if not done
+                const otherPart = part === 1 ? 2 : 1;
+                const otherBtn = document.getElementById(`start-part${otherPart}-btn`);
+                if (otherBtn && !partsDone[otherPart]) {
+                    otherBtn.disabled = false;
+                }
+                // Enable advance only when ALL parts are done
+                if (Object.keys(partsDone).length >= 2) {
+                    document.getElementById('advance-btn').disabled = false;
+                    appendLog('success', 'All parts extracted! Ready to advance.');
+                    extractionCompleted = true;
+                }
+            } else {
+                document.getElementById('advance-btn').disabled = false;
+                appendLog('success', `Extraction complete: ${r.data.questions || 0} questions, ${r.data.triplets || 0} triplets (${provider})`);
+                btn.textContent = 'Extracted \u2713';
+                extractionCompleted = true;
+            }
+            return;
+        } else {
+            const errMsg = r.data?.error || r.error?.message || 'Unknown error';
+            appendLog('error', 'Extraction failed: ' + errMsg);
+            if (r.data?.questions && r.data.questions > 0) {
+                showResults(r.data);
+                appendLog('info', `Partial results: ${r.data.questions} questions saved`);
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Error: ' + e.message);
+    }
+
+    // Re-enable on error/stop
+    btn.disabled = false;
+    btn.textContent = isPartMode ? `Process Part ${part}` : 'Start Extraction';
+    stopBtn.style.display = 'none';
+    freezeInputs(false);
+    extractionRunning = false;
+    window._activeProcess = false;
+    // Re-enable other part button
+    if (isPartMode) {
+        const otherPart = part === 1 ? 2 : 1;
+        const otherBtn = document.getElementById(`start-part${otherPart}-btn`);
+        if (otherBtn && !partsDone[otherPart]) otherBtn.disabled = false;
+    }
+    onProviderChange();
+}
+
+function showResults(data) {
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    const stats = document.getElementById('results-stats');
+    const rate = data.questions > 0 ? Math.round(data.triplets / data.questions * 100) : 0;
+    stats.innerHTML = `
+        <div class="stat-box"><div class="stat-value">${data.questions}</div><div class="stat-label">Questions</div></div>
+        <div class="stat-box"><div class="stat-value">${data.triplets}</div><div class="stat-label">Q+A+S Triplets</div></div>
+        <div class="stat-box"><div class="stat-value">${rate}%</div><div class="stat-label">Triplet Rate</div></div>
+        <div class="stat-box"><div class="stat-value">${data.provider || '?'}</div><div class="stat-label">Provider</div></div>
+    `;
+
+    // Show subject breakdown if available
+    const breakdown = document.getElementById('results-breakdown');
+    if (data.by_subject) {
+        let html = '<div style="font-size: 12px; color: var(--text-secondary);">';
+        for (const [subj, count] of Object.entries(data.by_subject)) {
+            html += `<span style="margin-right: 12px;">${subj}: <strong>${count}</strong></span>`;
+        }
+        html += '</div>';
+        breakdown.innerHTML = html;
+    }
+}
+
+async function loadPreview() {
+    const card = document.getElementById('preview-card');
+    const content = document.getElementById('preview-content');
+    card.style.display = 'block';
+    content.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Loading samples...</div>';
+    appendLog('info', 'Loading 7 random sample entries...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage2/preview?count=7');
+        if (r.success && r.data.samples) {
+            let html = '';
+            for (const s of r.data.samples) {
+                html += buildPreviewItem(s);
+            }
+            content.innerHTML = html;
+            appendLog('success', 'Loaded ' + r.data.samples.length + ' sample entries');
+        } else {
+            content.innerHTML = '<div class="alert alert-warning">No data available yet</div>';
+        }
+    } catch (e) {
+        content.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
+    }
+}
+
+function buildPreviewItem(sample) {
+    // Handle both old format (question/answer/solution) and new format (question_content/answer_key/solution_content)
+    const qNum = sample.question_number || sample.qid || '?';
+    const qContent = sample.question_content || sample.question || '';
+    const answer = sample.answer_key || sample.answer || '';
+    const solution = sample.solution_content || sample.solution || '';
+    const qType = sample.questionType || sample.question_type || '?';
+
+    const hasA = answer ? '&#x2713;' : '&#x2717;';
+    const hasS = solution ? '&#x2713;' : '&#x2717;';
+    const ansColor = answer ? 'var(--success)' : 'var(--error)';
+    const solColor = solution ? 'var(--success)' : 'var(--error)';
+
+    return `
+    <div class="preview-item">
+        <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span>${sample.qid || 'Q' + qNum} — ${sample.subject || 'Unknown'} (${qType})</span>
+            <span style="font-size: 11px;">
+                Ans: <span style="color: ${ansColor}">${hasA}</span>
+                Sol: <span style="color: ${solColor}">${hasS}</span>
+                ${answer ? '  [' + answer + ']' : ''}
+            </span>
+        </div>
+        <div class="preview-item-body">
+            <div class="preview-field-label">Question</div>
+            <div class="preview-field-content">${escapeHtml(truncate(qContent, 500) || '(empty)')}</div>
+            ${answer ? `
+            <div class="preview-field-label">Answer</div>
+            <div class="preview-field-content">${escapeHtml(answer)}</div>
+            ` : ''}
+            ${solution ? `
+            <div class="preview-field-label">Solution</div>
+            <div class="preview-field-content">${escapeHtml(truncate(solution, 500))}</div>
+            ` : ''}
+        </div>
+    </div>`;
+}
+
+function truncate(str, max) {
+    if (!str) return '';
+    return str.length > max ? str.substring(0, max) + '...' : str;
+}
+
+// beforeunload: warn if extraction is running, send beacon to stop
+window.addEventListener('beforeunload', (e) => {
+    if (extractionRunning) {
+        navigator.sendBeacon(`/api/sessions/{{ session.id }}/stage2/stop`);
+        e.preventDefault();
+        e.returnValue = 'Confirm close the page? The extraction process will be terminated.';
+    }
+});
+
+// Check for partial results on page load (resume support)
+async function checkForPartialResults() {
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage2/progress');
+        if (r.success && r.data && r.data.status === 'running' && r.data.data) {
+            const d = r.data.data;
+            if (d.total_extracted && d.total_extracted > 0) {
+                const card = document.getElementById('resume-card');
+                card.style.display = 'block';
+                document.getElementById('resume-info').innerHTML =
+                    `Found <strong>${d.total_extracted}</strong> questions from a previous extraction run ` +
+                    `(cursor at line ${d.cursor_line || '?'}).`;
+                appendLog('info', `Previous extraction found: ${d.total_extracted} questions. Resume or start fresh?`);
+            }
+        }
+    } catch (e) {
+        // Silently ignore
+    }
+}
+
+// Disable models that exceed context window (from Stage 1 token check)
+function applyTokenCheck() {
+    const configKey = 'token_check_{{ session.id }}';
+    try {
+        const raw = localStorage.getItem(configKey);
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        const select = document.getElementById('llm-provider');
+        for (const opt of select.options) {
+            const provider = opt.value;
+            if (d[provider] && !d[provider].safe) {
+                opt.disabled = true;
+                opt.textContent += ' (exceeds context)';
+                appendLog('warning', `${opt.textContent} disabled — document exceeds ${provider} context window`);
+                // If currently selected, switch to a safe one
+                if (select.value === provider) {
+                    for (const alt of select.options) {
+                        if (!alt.disabled) { select.value = alt.value; break; }
+                    }
+                }
+            }
+        }
+    } catch (e) {}
+}
+
+// Detect if document was split into parts
+function detectParts() {
+    const configKey = 'token_check_{{ session.id }}';
+    try {
+        const raw = localStorage.getItem(configKey);
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (d.has_parts && d.part_count >= 2) {
+            hasParts = true;
+            // Hide single-mode start button, show part buttons
+            document.getElementById('start-btn').style.display = 'none';
+            document.getElementById('start-part1-btn').style.display = 'inline-block';
+            document.getElementById('start-part2-btn').style.display = 'inline-block';
+            appendLog('info', `Document split into ${d.part_count} parts — process each part separately.`);
+        }
+    } catch (e) {}
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    applyTokenCheck();
+    detectParts();
+
+    const cp = _checkpoints.find(c => c.stage === 'stage2_mapping');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        extractionCompleted = true;
+        // Show completed state but keep inputs editable for re-extraction
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('start-btn').textContent = 'Restart Extraction';
+        if (hasParts) {
+            document.getElementById('start-part1-btn').disabled = false;
+            document.getElementById('start-part1-btn').textContent = 'Restart Part 1';
+            document.getElementById('start-part2-btn').disabled = false;
+            document.getElementById('start-part2-btn').textContent = 'Restart Part 2';
+        }
+        // Do NOT freeze inputs — user can change settings and re-run
+        if (d.provider) verifiedProviders[d.provider] = true;
+        if (d.questions || d.triplets) {
+            showResults(d);
+        }
+        document.getElementById('advance-btn').disabled = false;
+        appendLog('info', 'Previous extraction: ' + (d.questions || 0) + ' questions. Change settings or model to re-extract, or advance to Stage 3.');
+    } else {
+        // Check for partial results (resume card)
+        checkForPartialResults();
+    }
+});
+</script>
+{% endblock %}

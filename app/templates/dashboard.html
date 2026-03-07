@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Acadza Question Uploader{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="page-header">
+        <h1>Question Uploading Dashboard</h1>
+        <p class="subtitle">9-stage pipeline: PDF to database-ready questions</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <!-- Create Session -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Create New Session</h2>
+        </div>
+        <div class="card-body">
+            <form id="create-session-form" class="form-inline">
+                <div class="form-group">
+                    <label for="session-name">Session Name</label>
+                    <input type="text" id="session-name" name="name"
+                           placeholder="e.g. Brahmanda Physics BRM-01"
+                           class="form-input" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Create Session</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Session List -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Sessions</h2>
+            <span class="badge">{{ sessions|length }}</span>
+        </div>
+        <div class="card-body">
+            {% if sessions %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Stage</th>
+                        <th>Questions</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in sessions %}
+                    <tr>
+                        <td>
+                            <a href="/session/{{ s.id }}" class="session-link">{{ s.name }}</a>
+                            <span class="text-muted">{{ s.id }}</span>
+                        </td>
+                        <td>
+                            <span class="stage-chip {{ s.current_stage }}">{{ s.current_stage }}</span>
+                        </td>
+                        <td>{{ s.get('stats', {}).get('total', 0) if s.get('stats') else '—' }}</td>
+                        <td>{{ s.created_at[:10] }}</td>
+                        <td>
+                            <a href="/session/{{ s.id }}" class="btn btn-sm">Open</a>
+                            <button class="btn btn-sm btn-danger" onclick="deleteSession('{{ s.id }}', '{{ s.name }}')">Delete</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <p>No sessions yet. Create one to start processing questions.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('create-session-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('session-name').value.trim();
+    if (!name) return;
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+        const resp = await fetch('/api/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name}),
+        });
+        const result = await resp.json();
+        if (result.success) {
+            window.location.href = '/session/' + result.data.session_id;
+        } else {
+            alert('Error: ' + (result.error?.message || 'Unknown error'));
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Session';
+    }
+});
+
+async function deleteSession(id, name) {
+    if (!confirm(`Delete session "${name}"? This will remove all data.`)) return;
+    try {
+        const resp = await fetch(`/api/sessions/${id}`, {method: 'DELETE'});
+        const result = await resp.json();
+        if (result.success) {
+            window.location.reload();
+        } else {
+            alert('Error: ' + (result.error?.message || 'Unknown error'));
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    }
+}
+</script>
+{% endblock %}

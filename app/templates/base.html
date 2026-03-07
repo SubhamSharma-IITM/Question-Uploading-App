@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Acadza Question Uploading App{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <a href="/" class="logo-link">ACADZA Question Uploader</a>
+            </div>
+            <div class="top-bar-right">
+                {% if session %}
+                <span class="session-badge">{{ session.name }}</span>
+                <span class="session-id">{{ session.id }}</span>
+                {% endif %}
+            </div>
+        </header>
+
+        <div class="main-wrapper">
+            <!-- Sidebar (only on session pages) -->
+            {% if sidebar_stages is defined and sidebar_stages %}
+            <nav class="sidebar">
+                <div class="sidebar-section">
+                    <div class="sidebar-label">PIPELINE</div>
+                    {% for s in sidebar_stages %}
+                    <a href="/session/{{ session.id }}?stage={{ s.key }}"
+                       class="sidebar-item {{ 'viewing' if s.key == view_stage else '' }} {{ s.status }} {% if s.status == 'active' %}stage-active{% endif %}"
+                       {% if not s.accessible %}aria-disabled="true"{% endif %}>
+                        <span class="stage-indicator">
+                            {% if s.status == 'completed' %}
+                            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5.5 9.5L2.5 6.5L3.5 5.5L5.5 7.5L10.5 2.5L11.5 3.5Z" fill="currentColor"/></svg>
+                            {% elif s.status == 'active' %}
+                            <span class="pulse-dot"></span>
+                            {% else %}
+                            <span class="lock-dot"></span>
+                            {% endif %}
+                        </span>
+                        <span class="stage-text">{{ s.label }}</span>
+                    </a>
+                    {% endfor %}
+                </div>
+
+                <div class="sidebar-section">
+                    <div class="sidebar-label">NAVIGATION</div>
+                    <a href="/" class="sidebar-item">
+                        <span class="stage-indicator"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1L1 6H3V12H6V9H8V12H11V6H13L7 1Z" fill="currentColor"/></svg></span>
+                        <span class="stage-text">Dashboard</span>
+                    </a>
+                </div>
+
+                {% if stats %}
+                <div class="sidebar-section">
+                    <div class="sidebar-label">STATS</div>
+                    <div class="sidebar-stats">
+                        <div class="stat-row">
+                            <span>Total Qs</span>
+                            <span class="stat-val">{{ stats.total }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Answered</span>
+                            <span class="stat-val">{{ stats.with_answer }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Solved</span>
+                            <span class="stat-val">{{ stats.with_solution }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Quarantined</span>
+                            <span class="stat-val warn">{{ stats.quarantined }}</span>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </nav>
+            {% endif %}
+
+            <!-- Main Content -->
+            <main class="content">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+
+    <script src="/static/js/sse_client.js"></script>
+    <script src="/static/js/app.js"></script>
+    {% if session %}
+    <script>
+        // Stage checkpoint data from server (for restoring button states on revisit)
+        const _checkpoints = {{ checkpoints | tojson if checkpoints else '[]' }};
+        const _viewStage = '{{ view_stage }}';
+
+        // Global active process tracking (set by individual stages)
+        window._activeProcess = false;
+        window._activeStopUrl = '';
+
+        // Global beforeunload: warn if any stage is actively processing
+        window.addEventListener('beforeunload', (e) => {
+            if (window._activeProcess && window._activeStopUrl) {
+                navigator.sendBeacon(window._activeStopUrl);
+                e.preventDefault();
+                e.returnValue = 'Confirm close the page? The process shall be terminated.';
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initLogs('{{ session.id }}');
+
+            // Re-enable advance button if current stage checkpoint is "completed"
+            const cp = _checkpoints.find(c => c.stage === _viewStage);
+            if (cp && cp.status === 'completed') {
+                const advBtn = document.getElementById('advance-btn');
+                if (advBtn) advBtn.disabled = false;
+            }
+        });
+    </script>
+    {% endif %}
+    {% block scripts %}{% endblock %}
+</body>
+</html>
