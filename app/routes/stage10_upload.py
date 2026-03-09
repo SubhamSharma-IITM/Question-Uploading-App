@@ -85,6 +85,37 @@ async def upload_to_db(session_id: str):
     return APIResponse(data=result)
 
 
+@router.post("/absorb")
+async def absorb_to_local_db(session_id: str):
+    """Absorb uploaded questions into local JSONL DB + update FAISS index.
+
+    After upload, this:
+    1. Reads upload_id_map.json for meta_qid → MongoDB _id mappings
+    2. Builds proper DB entries with real _id
+    3. Appends to the local JSONL database
+    4. Generates embeddings and adds to global FAISS cache
+    Only processes error=1/2 entries (not quarantined).
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage10_upload import UploadStage
+    stage = UploadStage(session_id, session_dir)
+    result = await asyncio.to_thread(stage.absorb_to_local_db)
+
+    if "error" not in result:
+        from app.db import insert_log
+        from app.sse import sse_manager
+        msg = f"Absorbed {result.get('absorbed', 0)} entries to local DB, {result.get('embedded', 0)} vectors added to FAISS"
+        insert_log(session_id, "stage10_upload", "success", msg)
+        sse_manager.emit(session_id, {"type": "log", "level": "success", "message": msg})
+
+    return APIResponse(data=result)
+
+
 @router.get("/download-csv")
 async def download_csv(session_id: str):
     """Download the combined upload log CSV."""

@@ -75,6 +75,15 @@
                     <button class="btn" onclick="downloadUploadCSV()" id="csv-btn" disabled>Download CSV</button>
                 </div>
                 <div id="upload-result" style="margin-top: 12px; display: none;"></div>
+
+                <!-- DB Absorption (post-upload) -->
+                <div id="absorb-section" style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+                    <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+                        <strong>Local DB Absorption:</strong> Absorb uploaded questions into local JSONL DB + update FAISS embeddings cache for future duplicate checks.
+                    </div>
+                    <button class="btn btn-primary" onclick="absorbToDB()" id="absorb-btn">Absorb to Local DB + FAISS</button>
+                    <div id="absorb-result" style="margin-top: 8px; display: none;"></div>
+                </div>
             </div>
         </div>
 
@@ -423,6 +432,8 @@ async function uploadToDB() {
             `;
             btn.textContent = 'Uploaded \u2713';
             document.getElementById('dryrun-upload-btn').disabled = true;
+            // Show absorb section after successful upload
+            document.getElementById('absorb-section').style.display = 'block';
         } else {
             appendLog('error', r.error?.message || 'Upload failed');
             btn.disabled = false;
@@ -485,6 +496,45 @@ async function downloadReadyFiles() {
 
     btn.disabled = false;
     btn.textContent = 'Download Ready Files';
+}
+
+async function absorbToDB() {
+    if (!confirm('Absorb uploaded questions into local JSONL DB and update FAISS embeddings cache?\n\nThis appends new entries to the reference DB and adds their vectors to the global index for future duplicate checks.')) return;
+
+    const btn = document.getElementById('absorb-btn');
+    btn.disabled = true;
+    btn.textContent = 'Absorbing...';
+    appendLog('info', 'Absorbing uploaded entries into local DB + FAISS index...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb?session_id={{ session.id }}');
+        if (r.success) {
+            const d = r.data;
+            appendLog('success', `Absorbed ${d.absorbed} entries to local DB, ${d.embedded} vectors added to FAISS`);
+            document.getElementById('absorb-result').style.display = 'block';
+            document.getElementById('absorb-result').innerHTML = `
+                <div class="summary-stat-grid" style="grid-template-columns: repeat(2, 1fr);">
+                    <div class="summary-stat-box highlight-green">
+                        <div class="sv">${d.absorbed || 0}</div>
+                        <div class="sl">Absorbed to DB</div>
+                    </div>
+                    <div class="summary-stat-box highlight-green">
+                        <div class="sv">${d.embedded || 0}</div>
+                        <div class="sl">FAISS Vectors Added</div>
+                    </div>
+                </div>
+            `;
+            btn.textContent = 'Absorbed \u2713';
+        } else {
+            appendLog('error', r.error?.message || 'Absorption failed');
+            btn.disabled = false;
+            btn.textContent = 'Absorb to Local DB + FAISS';
+        }
+    } catch (e) {
+        appendLog('error', 'Absorb error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Absorb to Local DB + FAISS';
+    }
 }
 </script>
 {% endblock %}
