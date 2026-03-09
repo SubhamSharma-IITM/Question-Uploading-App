@@ -159,6 +159,9 @@ class UploadStage(BasePipelineStage):
 
         quarantined = self._load_quarantined_qids()
         upload_dir = self._get_upload_dir()
+        qa_ledger = self._load_qa_ledger()
+        if qa_ledger:
+            self.log("info", f"Loaded QA ledger for {len(qa_ledger)} questions")
 
         total_posted = 0
         total_failed = 0
@@ -242,7 +245,8 @@ class UploadStage(BasePipelineStage):
                         total_failed += 1
                         status = "FAILED"
 
-                csv_rows.append({
+                # Build row with QA ledger columns
+                row = {
                     "Question META ID": qid,
                     "UploadedQuestionID": status,
                     "Question Type": qtype_key,
@@ -250,7 +254,15 @@ class UploadStage(BasePipelineStage):
                     "Question Link": link,
                     "Error Level": error_val,
                     "IMAGE": "TRUE" if has_img else "FALSE",
-                })
+                }
+                # Add model-wise QA verdicts + error descriptions
+                qa = qa_ledger.get(qid, {})
+                for pk in ("pass1", "pass2", "pass3"):
+                    n = pk[-1]  # 1, 2, 3
+                    row[f"Pass{n} Model"] = qa.get(f"{pk}_model", "")
+                    row[f"Pass{n} Verdict"] = qa.get(f"{pk}_verdict", "")
+                    row[f"Pass{n} Errors"] = qa.get(f"{pk}_errors", "")
+                csv_rows.append(row)
 
             # Save per-file CSV
             csv_path = upload_dir / f"{file_name}_upload_log.csv"
@@ -611,32 +623,116 @@ class UploadStage(BasePipelineStage):
 
         return False, None
 
+    def _load_qa_ledger(self) -> Dict[str, Dict]:
+        """Load QA ledger data per QID — model-wise verdicts + error descriptions.
+
+        Returns:
+            {qid: {
+                "pass1_model": "Gemini Flash",
+                "pass1_verdict": "APPROVED"/"REJECTED",
+                "pass1_errors": "error description...",
+                "pass2_model": ..., "pass2_verdict": ..., "pass2_errors": ...,
+                "pass3_model": ..., "pass3_verdict": ..., "pass3_errors": ...,
+            }}
+        """
+        ledger_dir = self.session_dir / "quality_check" / "ledgers"
+        if not ledger_dir.exists():
+            return {}
+
+        qa_data: Dict[str, Dict] = {}
+
+        for ledger_file in sorted(ledger_dir.glob("qa_pass*.json")):
+            try:
+                with open(ledger_file, "r", encoding="utf-8") as f:
+                    entries = json.load(f)
+            except Exception:
+                continue
+
+            if not isinstance(entries, list):
+                continue
+
+            for entry in entries:
+                qid = entry.get("qid", "")
+                if not qid:
+                    continue
+
+                pass_key = entry.get("pass", "")  # pass1, pass2, pass3
+                model = entry.get("model", "")
+                has_error = entry.get("has_error", False)
+                errors = entry.get("errors", [])
+
+                verdict = "REJECTED" if has_error else "APPROVED"
+                # Build error description string
+                err_descs = []
+                for err in errors:
+                    field = err.get("field", "")
+                    etype = err.get("type", "")
+                    detail = err.get("detail", "")
+                    err_descs.append(f"[{field}/{etype}] {detail}")
+                error_str = " | ".join(err_descs) if err_descs else ""
+
+                if qid not in qa_data:
+                    qa_data[qid] = {}
+
+                qa_data[qid][f"{pass_key}_model"] = model
+                qa_data[qid][f"{pass_key}_verdict"] = verdict
+                qa_data[qid][f"{pass_key}_errors"] = error_str
+
+        return qa_data
+
     def _write_csv(self, path: Path, rows: List[Dict]) -> None:
-        """Write upload log CSV."""
+        """Write upload log CSV with model-wise QA ledger columns."""
         if not rows:
             return
-        fieldnames = ["Question META ID", "UploadedQuestionID", "Question Type",
-                       "View Link", "Question Link", "Error Level", "IMAGE"]
+        fieldnames = [
+            "Question META ID", "UploadedQuestionID", "Question Type",
+            "View Link", "Question Link", "Error Level", "IMAGE",
+            "Pass1 Model", "Pass1 Verdict", "Pass1 Errors",
+            "Pass2 Model", "Pass2 Verdict", "Pass2 Errors",
+            "Pass3 Model", "Pass3 Verdict", "Pass3 Errors",
+        ]
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
 
-    def export_csv(self) -> str:
-        """Return the combined upload CSV as a string."""
-        combined = self._get_upload_dir() / "combined_upload_log.csv"
-        if combined.exists():
-            return combined.read_text(encoding="utf-8")
+    def export_csv(self, error_level: Optional[int] = None) -> str:
+        """Return the combined upload CSV as a string, optionally filtered.
 
-        # No combined yet — generate from metadata
-        scan = self.scan()
-        if "error" in scan:
+        Args:
+            error_level: If set (1 or 2), only include rows with that Error Level.
+                         None = return all rows.
+        """
+        combined = self._get_upload_dir() / "combined_upload_log.csv"
+        if not combined.exists():
+            # No combined yet — generate from metadata
+            scan = self.scan()
+            if "error" in scan:
+                return ""
+            self.upload(dry_run=True)
+
+        if not combined.exists():
             return ""
 
-        result = self.upload(dry_run=True)
-        if combined.exists():
-            return combined.read_text(encoding="utf-8")
-        return ""
+        content = combined.read_text(encoding="utf-8")
+
+        if error_level is None:
+            return content
+
+        # Filter by error level
+        import csv as csv_mod
+        reader = csv_mod.DictReader(io.StringIO(content))
+        output = io.StringIO()
+        writer = csv_mod.DictWriter(output, fieldnames=reader.fieldnames)
+        writer.writeheader()
+        for row in reader:
+            try:
+                row_error = int(row.get("Error Level", 0))
+            except (ValueError, TypeError):
+                continue
+            if row_error == error_level:
+                writer.writerow(row)
+        return output.getvalue()
 
     def dry_run(self, **kwargs) -> Dict[str, Any]:
         return self.upload(dry_run=True)

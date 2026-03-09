@@ -117,8 +117,13 @@ async def absorb_to_local_db(session_id: str):
 
 
 @router.get("/download-csv")
-async def download_csv(session_id: str):
-    """Download the combined upload log CSV."""
+async def download_csv(session_id: str, error_level: int = 0):
+    """Download the combined upload log CSV, optionally filtered by error level.
+
+    error_level=0: all entries (default)
+    error_level=1: only error=1 (clean) entries
+    error_level=2: only error=2 (review) entries
+    """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
@@ -127,7 +132,7 @@ async def download_csv(session_id: str):
 
     from app.pipeline.stage10_upload import UploadStage
     stage = UploadStage(session_id, session_dir)
-    csv_content = stage.export_csv()
+    csv_content = stage.export_csv(error_level=error_level if error_level > 0 else None)
 
     if not csv_content:
         return JSONResponse(
@@ -138,8 +143,9 @@ async def download_csv(session_id: str):
             ).model_dump(),
         )
 
+    suffix = f"_error{error_level}" if error_level > 0 else ""
     return StreamingResponse(
         io.StringIO(csv_content),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=upload_log.csv"},
+        headers={"Content-Disposition": f"attachment; filename=upload_log{suffix}.csv"},
     )

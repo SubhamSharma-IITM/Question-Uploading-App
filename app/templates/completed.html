@@ -72,7 +72,9 @@
                     <button class="btn" onclick="scanUpload()" id="scan-upload-btn">Scan Ready</button>
                     <button class="btn" onclick="dryRunUpload()" id="dryrun-upload-btn" disabled>Dry Run (CSV Only)</button>
                     <button class="btn btn-primary" onclick="uploadToDB()" id="upload-db-btn" disabled>Upload to DB</button>
-                    <button class="btn" onclick="downloadUploadCSV()" id="csv-btn" disabled>Download CSV</button>
+                    <button class="btn" onclick="downloadUploadCSV(0)" id="csv-btn" disabled>Download CSV (All)</button>
+                    <button class="btn" onclick="downloadUploadCSV(1)" id="csv-btn-e1" disabled>CSV Error=1</button>
+                    <button class="btn" onclick="downloadUploadCSV(2)" id="csv-btn-e2" disabled>CSV Error=2</button>
                 </div>
                 <div id="upload-result" style="margin-top: 12px; display: none;"></div>
 
@@ -391,7 +393,7 @@ async function dryRunUpload() {
         if (r.success) {
             const d = r.data;
             appendLog('success', `Dry run: ${d.total || 0} total, ${d.skipped || 0} skipped — CSV generated`);
-            document.getElementById('csv-btn').disabled = false;
+            enableCSVButtons();
             document.getElementById('upload-result').style.display = 'block';
             document.getElementById('upload-result').innerHTML = `
                 <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
@@ -421,7 +423,7 @@ async function uploadToDB() {
         if (r.success) {
             const d = r.data;
             appendLog('success', `Upload complete: ${d.posted} posted, ${d.failed} failed, ${d.skipped} skipped`);
-            document.getElementById('csv-btn').disabled = false;
+            enableCSVButtons();
             document.getElementById('upload-result').style.display = 'block';
             document.getElementById('upload-result').innerHTML = `
                 <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
@@ -446,20 +448,29 @@ async function uploadToDB() {
     }
 }
 
-async function downloadUploadCSV() {
-    appendLog('info', 'Downloading upload CSV...');
+function enableCSVButtons() {
+    document.getElementById('csv-btn').disabled = false;
+    document.getElementById('csv-btn-e1').disabled = false;
+    document.getElementById('csv-btn-e2').disabled = false;
+}
+
+async function downloadUploadCSV(errorLevel) {
+    const label = errorLevel > 0 ? `error=${errorLevel}` : 'all';
+    appendLog('info', `Downloading upload CSV (${label})...`);
     try {
-        const url = '/api/sessions/{{ session.id }}/stage10/download-csv?session_id={{ session.id }}';
+        let url = `/api/sessions/{{ session.id }}/stage10/download-csv?session_id={{ session.id }}`;
+        if (errorLevel > 0) url += `&error_level=${errorLevel}`;
         const response = await fetch(url);
         if (!response.ok) { appendLog('error', 'CSV not found'); return; }
 
         const blob = await response.blob();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'upload_log.csv';
+        const suffix = errorLevel > 0 ? `_error${errorLevel}` : '';
+        a.download = `upload_log${suffix}.csv`;
         a.click();
         URL.revokeObjectURL(a.href);
-        appendLog('success', 'CSV download started');
+        appendLog('success', `CSV download started (${label})`);
     } catch (e) {
         appendLog('error', 'CSV download error: ' + e.message);
     }
