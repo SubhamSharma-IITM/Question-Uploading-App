@@ -174,3 +174,43 @@ async def skip_watermark(session_id: str):
     upsert_checkpoint(session_id, "stage5_watermark", "completed", {"skipped": True, "count": count})
 
     return APIResponse(data={"skipped": True, "count": count})
+
+
+# ── SMILES detection + rendering ──────────────────────────────────────
+
+@router.get("/smiles/scan")
+async def scan_smiles(session_id: str):
+    """Scan session metadata for <smiles> tags.
+
+    Called on page load to auto-detect SMILES presence and activate/deactivate
+    the SMILES rendering section in the UI.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage5_watermark import WatermarkStage
+    stage = WatermarkStage(session_id, session_dir)
+    result = stage.scan_smiles()
+    return APIResponse(data=result)
+
+
+@router.post("/smiles/render")
+async def render_smiles(session_id: str):
+    """Render all <smiles> tags to SVG <img> tags in metadata.
+
+    Replaces <smiles>CCO</smiles> with <img src="data:image/svg+xml;base64,...">.
+    These base64 images will be uploaded to CDN in Stage 6 alongside regular images.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage5_watermark import WatermarkStage
+    stage = WatermarkStage(session_id, session_dir)
+    result = await asyncio.to_thread(stage.render_smiles)
+    return APIResponse(data=result)

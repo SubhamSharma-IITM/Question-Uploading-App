@@ -315,8 +315,14 @@ class DuplicateCheckStage(BasePipelineStage):
         return results[:k]
 
     def _save_faiss_index(self, index, id_map, text_map, name: str):
-        """Save a FAISS index to disk for reuse."""
+        """Save a FAISS index to disk for reuse.
+
+        Saves to session-local directory. For 'db_reference' indices, also
+        copies to the global cache so other sessions can reuse it.
+        """
         import faiss
+        import shutil
+
         index_dir = self._get_index_dir() / name
         index_dir.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, str(index_dir / "faiss.index"))
@@ -325,22 +331,62 @@ class DuplicateCheckStage(BasePipelineStage):
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
+        # Also save db_reference to global cache for cross-session reuse
+        if name == "db_reference":
+            from app.config import settings
+            gdir = getattr(settings, "db_index_dir", None)
+            if gdir:
+                global_dest = Path(gdir) / name
+                global_dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(index_dir / "faiss.index", global_dest / "faiss.index")
+                shutil.copy2(index_dir / "metadata.json", global_dest / "metadata.json")
+                self.log("info", f"Copied DB index to global cache: {global_dest}")
+
+    def _get_global_index_dir(self) -> Optional[Path]:
+        """Get global FAISS cache directory from config (shared across sessions)."""
+        from app.config import settings
+        gdir = getattr(settings, "db_index_dir", None)
+        if gdir:
+            p = Path(gdir)
+            if p.exists():
+                return p
+        return None
+
     def _load_faiss_index(self, name: str):
-        """Load a previously saved FAISS index."""
+        """Load a previously saved FAISS index.
+
+        Search order:
+          1. Session-local index (session_dir/duplicate_reports/indices/{name}/)
+          2. Global cache (db_index_dir/{name}/) — shared across sessions
+        """
         import faiss
+
+        # 1. Try session-local
         index_dir = self._get_index_dir() / name
-        if not (index_dir / "faiss.index").exists():
-            return None, None, None
-        index = faiss.read_index(str(index_dir / "faiss.index"))
-        metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
-        self.log("info", f"Loaded cached FAISS index '{name}': {index.ntotal} vectors")
-        return index, metadata["id_map"], metadata["text_map"]
+        if (index_dir / "faiss.index").exists():
+            index = faiss.read_index(str(index_dir / "faiss.index"))
+            metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors")
+            return index, metadata["id_map"], metadata["text_map"]
+
+        # 2. Try global cache
+        global_dir = self._get_global_index_dir()
+        if global_dir:
+            global_index_dir = global_dir / name
+            if (global_index_dir / "faiss.index").exists():
+                index = faiss.read_index(str(global_index_dir / "faiss.index"))
+                metadata = json.loads((global_index_dir / "metadata.json").read_text(encoding="utf-8"))
+                self.log("info", f"Loaded global FAISS index '{name}': {index.ntotal} vectors")
+                return index, metadata["id_map"], metadata["text_map"]
+
+        return None, None, None
 
     # ── Self-duplicate (embedding engine) ────────────────────────────────
 
     def _self_check_embeddings(self, questions: List[Dict], threshold: float) -> Dict[str, Any]:
-        """Self-duplicate check using embeddings + FAISS. O(n log n)."""
+        """Self-duplicate check using embeddings + FAISS batch search. O(n log n)."""
         import numpy as np
+        import faiss
 
         # Stage 1: Extract text
         self.log("info", "Stage 1/4: Extracting question text...")
@@ -362,22 +408,33 @@ class DuplicateCheckStage(BasePipelineStage):
         index, id_map, text_map = self._build_faiss_index(embeddings, ids, texts)
         self._save_faiss_index(index, id_map, text_map, "self_session")
 
-        # Stage 4: Search for duplicates (each question vs all others)
-        self.log("info", "Stage 4/4: Searching for self-duplicates...")
+        # Stage 4: Batch search — single FAISS call for all vectors
+        self.log("info", f"Stage 4/4: Batch searching {len(ids)} vectors (single FAISS call)...")
+        self.progress(50, "Batch FAISS search...")
+
+        vectors = np.array(embeddings, dtype="float32")
+        faiss.normalize_L2(vectors)
+        all_scores, all_indices = index.search(vectors, TOP_K + 1)
+
         subject_map = {qid: subj for qid, subj in zip(ids, subjects)}
         checked_pairs = set()
         duplicates = []
 
-        for i, (emb, qid) in enumerate(zip(embeddings, ids)):
-            if (i + 1) % 100 == 0:
-                self.log("info", f"  Progress: {i+1}/{len(ids)} questions searched")
-                self.progress(50 + (i / len(ids)) * 45, f"Searching: {i+1}/{len(ids)}")
+        for i in range(len(ids)):
+            qid = ids[i]
+            for j in range(all_scores.shape[1]):
+                idx = int(all_indices[i][j])
+                score = float(all_scores[i][j])
 
-            results = self._faiss_search(index, id_map, emb, k=10, exclude_id=qid)
-            for matched_id, score in results:
-                if score < threshold:
+                if idx < 0 or idx >= len(id_map):
                     continue
-                pair = tuple(sorted([qid, matched_id]))
+                matched_id = id_map[idx]
+                if matched_id == qid:
+                    continue
+                if score < threshold:
+                    break  # Scores sorted descending
+
+                pair = (min(qid, matched_id), max(qid, matched_id))
                 if pair in checked_pairs:
                     continue
                 checked_pairs.add(pair)
@@ -386,9 +443,12 @@ class DuplicateCheckStage(BasePipelineStage):
                     "qid_b": matched_id,
                     "subject": subject_map.get(qid, "?"),
                     "similarity": round(score, 3),
-                    "text_a": text_map.get(qid, texts[ids.index(qid)] if qid in ids else "")[:150],
+                    "text_a": text_map.get(qid, "")[:150],
                     "text_b": text_map.get(matched_id, "")[:150],
                 })
+
+            if (i + 1) % 100 == 0:
+                self.progress(50 + (i / len(ids)) * 45, f"Filtering: {i+1}/{len(ids)}")
 
         return {
             "total_questions": len(texts),
@@ -526,29 +586,43 @@ class DuplicateCheckStage(BasePipelineStage):
         self.log("info", "Stage 3/4: Generating session embeddings...")
         sess_embeddings = self._generate_embeddings(sess_texts)
 
-        # Stage 4: Search each session question in DB index
-        self.log("info", f"Stage 4/4: Searching {len(sess_ids)} questions against {db_index.ntotal:,} DB vectors...")
+        # Stage 4: Batch search all session questions against DB index
+        self.log("info", f"Stage 4/4: Batch searching {len(sess_ids)} questions against {db_index.ntotal:,} DB vectors...")
+        self.progress(50, "Batch FAISS search...")
+
+        sess_vectors = np.array(sess_embeddings, dtype="float32")
+        faiss.normalize_L2(sess_vectors)
+        all_scores, all_indices = db_index.search(sess_vectors, 5)
+
         duplicates = []
         duplicate_ids = set()
 
-        for i, (emb, qid, subj) in enumerate(zip(sess_embeddings, sess_ids, sess_subjects)):
-            results = self._faiss_search(db_index, db_id_map, emb, k=5)
-            for matched_id, score in results:
-                if score >= threshold:
-                    duplicate_ids.add(qid)
-                    duplicates.append({
-                        "session_qid": qid,
-                        "db_qid": matched_id,
-                        "subject": subj,
-                        "similarity": round(score, 3),
-                        "session_text": sess_texts[i][:120],
-                        "db_text": db_text_map.get(matched_id, "")[:120],
-                    })
-                    break  # One match is enough
+        for i in range(len(sess_ids)):
+            qid = sess_ids[i]
+            subj = sess_subjects[i]
+            for j in range(all_scores.shape[1]):
+                idx = int(all_indices[i][j])
+                score = float(all_scores[i][j])
+
+                if idx < 0 or idx >= len(db_id_map):
+                    continue
+                if score < threshold:
+                    break  # Scores sorted descending
+
+                matched_id = db_id_map[idx]
+                duplicate_ids.add(qid)
+                duplicates.append({
+                    "session_qid": qid,
+                    "db_qid": matched_id,
+                    "subject": subj,
+                    "similarity": round(score, 3),
+                    "session_text": sess_texts[i][:120],
+                    "db_text": db_text_map.get(matched_id, "")[:120],
+                })
+                break  # One match per session question is enough
 
             if (i + 1) % 50 == 0:
-                self.progress(50 + (i / len(sess_ids)) * 45, f"Cross-check: {i+1}/{len(sess_ids)}")
-                self.log("info", f"  Searched {i+1}/{len(sess_ids)}, {len(duplicates)} matches so far")
+                self.progress(50 + (i / len(sess_ids)) * 45, f"Filtering: {i+1}/{len(sess_ids)}")
 
         return {
             "session_questions": len(entries),

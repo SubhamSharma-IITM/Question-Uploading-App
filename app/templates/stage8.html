@@ -5,7 +5,7 @@
 <div class="stage-header">
     <h1>8. Duplicate Check</h1>
     {% if current_stage == 'stage8_duplicates' %}
-    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+    <button class="btn btn-primary" onclick="advanceWithQuarantine('{{ session.id }}')" id="advance-btn" disabled>
         Advance to Stage 9
     </button>
     {% endif %}
@@ -84,7 +84,11 @@
         <div class="card" id="quarantine-card" style="display: none;">
             <div class="card-header">
                 <h2>Quarantine</h2>
-                <button class="btn btn-sm" onclick="quarantineSelected()" id="quarantine-btn">Quarantine Selected</button>
+                <div class="btn-group">
+                    <button class="btn btn-sm" onclick="selectAllDuplicates()" id="select-all-btn">Select All</button>
+                    <button class="btn btn-sm" onclick="deselectAllDuplicates()" id="deselect-all-btn">Deselect All</button>
+                    <button class="btn btn-sm btn-danger" onclick="quarantineSelected()" id="quarantine-btn">Quarantine Selected (0)</button>
+                </div>
             </div>
             <div class="card-body">
                 <div id="quarantine-content"></div>
@@ -285,10 +289,12 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         const idB = dup.qid_b || dup.db_qid || '?';
         const textA = showFull ? (dup.full_text_a || dup.text_a || dup.session_text || '') : (dup.text_a || dup.session_text || '');
         const textB = showFull ? (dup.full_text_b || dup.text_b || dup.db_text || '') : (dup.text_b || dup.db_text || '');
+        // For self-check, quarantine qid_b (the duplicate); for cross-check, quarantine session_qid
+        const quarantineQid = dup.qid_b || dup.session_qid || idB;
         html += `<div class="dup-pair" onclick="this.classList.toggle('expanded')">
             <div class="dup-header">
                 <span>
-                    <input type="checkbox" class="dup-checkbox" data-qid="${escapeHtml(idB)}" onclick="event.stopPropagation()">
+                    <input type="checkbox" class="dup-checkbox" checked data-qid="${escapeHtml(quarantineQid)}" data-qid-a="${escapeHtml(idA)}" data-qid-b="${escapeHtml(idB)}" onclick="event.stopPropagation(); updateQuarantineCount();">
                     <strong>${escapeHtml(idA)}</strong> = <strong>${escapeHtml(idB)}</strong>
                     <span style="color: var(--text-muted);">(${dup.subject || '?'})</span>
                 </span>
@@ -302,6 +308,8 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
     }
 
     document.getElementById(containerId).innerHTML = html;
+    // Update quarantine count after rendering (checkboxes are checked by default)
+    updateQuarantineCount();
 }
 
 function showSelfResults(d) {
@@ -463,6 +471,22 @@ async function runAll() {
     }
 }
 
+function updateQuarantineCount() {
+    const count = document.querySelectorAll('.dup-checkbox:checked').length;
+    document.getElementById('quarantine-btn').textContent = `Quarantine Selected (${count})`;
+}
+
+function selectAllDuplicates() {
+    document.querySelectorAll('.dup-checkbox:not(:disabled)').forEach(cb => { cb.checked = true; });
+    updateQuarantineCount();
+    appendLog('info', 'Selected all duplicate pairs');
+}
+
+function deselectAllDuplicates() {
+    document.querySelectorAll('.dup-checkbox:not(:disabled)').forEach(cb => { cb.checked = false; });
+    updateQuarantineCount();
+}
+
 async function quarantineSelected() {
     const checkboxes = document.querySelectorAll('.dup-checkbox:checked');
     if (checkboxes.length === 0) {
@@ -470,23 +494,40 @@ async function quarantineSelected() {
         return;
     }
 
-    const qids = Array.from(checkboxes).map(cb => cb.dataset.qid);
+    // Collect unique QIDs to quarantine
+    const qidSet = new Set();
+    checkboxes.forEach(cb => qidSet.add(cb.dataset.qid));
+    const qids = Array.from(qidSet);
     appendLog('info', `Quarantining ${qids.length} questions...`);
+
+    const btn = document.getElementById('quarantine-btn');
+    btn.disabled = true;
+    btn.textContent = 'Quarantining...';
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage8/quarantine', qids);
         if (r.success) {
             const d = r.data;
             appendLog('success', `Quarantined ${d.quarantined} questions — removed ${d.questions_removed || 0} from ${d.files_modified || 0} metadata files`);
-            // Uncheck and disable quarantined checkboxes
+            // Update sidebar quarantine count
+            updateSidebarQuarantineCount(d.quarantined || qids.length);
+            // Disable quarantined checkboxes and dim their pair cards
             checkboxes.forEach(cb => {
                 cb.checked = false;
                 cb.disabled = true;
-                cb.closest('tr').style.opacity = '0.4';
+                const pair = cb.closest('.dup-pair');
+                if (pair) pair.style.opacity = '0.4';
             });
+            btn.textContent = 'Quarantine Selected (0)';
+            btn.disabled = false;
+        } else {
+            btn.disabled = false;
+            updateQuarantineCount();
         }
     } catch (e) {
         appendLog('error', 'Quarantine error: ' + e.message);
+        btn.disabled = false;
+        updateQuarantineCount();
     }
 }
 
@@ -594,6 +635,38 @@ async function loadFullReport(reportType) {
         appendLog('error', 'Report error: ' + e.message);
     }
     if (btn) { btn.disabled = false; btn.textContent = 'View Full Report'; }
+}
+
+async function advanceWithQuarantine(sessionId) {
+    // Auto-quarantine any checked duplicates before advancing
+    const checked = document.querySelectorAll('.dup-checkbox:checked');
+    if (checked.length > 0) {
+        const qidSet = new Set();
+        checked.forEach(cb => qidSet.add(cb.dataset.qid));
+        const qids = Array.from(qidSet);
+        appendLog('info', `Auto-quarantining ${qids.length} selected duplicates before advancing...`);
+        const btn = document.getElementById('advance-btn');
+        btn.disabled = true;
+        btn.textContent = 'Quarantining...';
+        try {
+            const r = await apiPost(`/api/sessions/${sessionId}/stage8/quarantine`, qids);
+            if (r.success) {
+                const d = r.data;
+                appendLog('success', `Quarantined ${d.quarantined} questions`);
+                // Update sidebar quarantine count
+                if (typeof updateSidebarQuarantineCount === 'function') {
+                    updateSidebarQuarantineCount(d.quarantined);
+                }
+            }
+        } catch (e) {
+            appendLog('error', 'Auto-quarantine error: ' + e.message);
+            btn.disabled = false;
+            btn.textContent = 'Advance to Stage 9';
+            return;
+        }
+    }
+    // Now advance
+    advanceStage(sessionId);
 }
 </script>
 {% endblock %}

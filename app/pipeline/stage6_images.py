@@ -52,6 +52,15 @@ IMG_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Regex for base64 data URI images (from SMILES rendering etc.)
+BASE64_IMG_PATTERN = re.compile(
+    r'<img\b[^>]*\bsrc="(?P<src>data:image/(?P<fmt>[a-z+]+);base64,(?P<b64>[A-Za-z0-9+/=]+))"[^>]*/?>',
+    re.IGNORECASE,
+)
+
+import base64 as _b64
+import hashlib as _hashlib
+
 
 def compute_display_dimensions(width_px: int, height_px: int) -> Tuple[int, int]:
     """Compute display dimensions with max-width scaling and min-height clamp."""
@@ -113,6 +122,44 @@ def _extract_img_srcs_from_text(text: str) -> List[str]:
     if not text:
         return []
     return IMG_SRC_PATTERN.findall(text)
+
+
+def _extract_base64_imgs_from_text(text: str) -> List[dict]:
+    """Extract base64 data URI <img> tags from text.
+
+    Returns list of {data_uri, fmt, b64_data, hash} for each base64 image found.
+    """
+    if not text or "data:image/" not in text:
+        return []
+    results = []
+    for match in BASE64_IMG_PATTERN.finditer(text):
+        data_uri = match.group("src")
+        fmt = match.group("fmt")
+        b64_data = match.group("b64")
+        # Use content hash for dedup and filename
+        content_hash = _hashlib.sha256(b64_data.encode("ascii")).hexdigest()[:16]
+        ext = "svg" if "svg" in fmt else "png"
+        results.append({
+            "data_uri": data_uri,
+            "fmt": fmt,
+            "b64_data": b64_data,
+            "hash": content_hash,
+            "ext": ext,
+            "filename": f"smiles_{content_hash}.{ext}",
+        })
+    return results
+
+
+def _save_base64_to_file(b64_data: str, filepath: Path) -> bool:
+    """Decode base64 data and save to file."""
+    try:
+        raw = _b64.b64decode(b64_data)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "wb") as f:
+            f.write(raw)
+        return True
+    except Exception:
+        return False
 
 
 def _extract_img_srcs_from_question(q: dict) -> List[str]:
@@ -389,9 +436,26 @@ class ImageCDNStage(BasePipelineStage):
 
         orphan = len(disk_images - referenced_names)
 
+        # Count base64 data URI images (SMILES SVG, etc.)
+        base64_count = 0
+        for json_file in md_files:
+            with open(json_file, "r", encoding="utf-8") as f:
+                questions = json.load(f)
+            for q in questions:
+                for ck in ("scq", "mcq", "integerQuestion", "subjective",
+                           "passageQuestion", "matchQuestion"):
+                    c = q.get(ck)
+                    if not isinstance(c, dict):
+                        continue
+                    for fk in ("question", "ques", "solution", "sol", "passage"):
+                        text = c.get(fk, "")
+                        if text and "data:image/" in text:
+                            base64_count += len(_extract_base64_imgs_from_text(text))
+
         # Check CDN cache — how many already uploaded
         cdn_cache = self._load_cdn_cache()
         already_cached = sum(1 for src in resolved if src in cdn_cache and "cdn_url" in cdn_cache[src])
+        b64_cached = sum(1 for uri in cdn_cache if uri.startswith("data:image/"))
 
         self.save_checkpoint("scanned", {
             "total_questions": total_qs,
@@ -399,6 +463,7 @@ class ImageCDNStage(BasePipelineStage):
             "resolved": len(resolved),
             "unresolved": len(unresolved),
             "already_cached": already_cached,
+            "base64_images": base64_count,
         })
 
         return {
@@ -410,7 +475,9 @@ class ImageCDNStage(BasePipelineStage):
             "missing_images": len(unresolved),
             "orphan_images": orphan,
             "already_cached": already_cached,
-            "can_skip": len(unique_srcs) == 0,
+            "base64_images": base64_count,
+            "base64_cached": b64_cached,
+            "can_skip": len(unique_srcs) == 0 and base64_count == 0,
             "missing_list": unresolved[:20],
         }
 
@@ -476,6 +543,9 @@ class ImageCDNStage(BasePipelineStage):
         from app.db import get_quarantined_qids
         q_qids = get_quarantined_qids(self.session_id)
 
+        # Also collect base64 data URI images (e.g., SMILES SVG rendered in Stage 5)
+        base64_images = {}  # data_uri -> {filename, b64_data, ext, ...}
+
         total_qs = 0
         for json_file in md_files:
             with open(json_file, "r", encoding="utf-8") as f:
@@ -495,7 +565,42 @@ class ImageCDNStage(BasePipelineStage):
                         else:
                             unresolved_srcs.append(src)
 
-        if not resolved and not unresolved_srcs:
+                # Scan for base64 data URI images in all fields
+                for container_key in ("scq", "mcq", "integerQuestion", "subjective",
+                                      "passageQuestion", "matchQuestion"):
+                    container = q.get(container_key)
+                    if not isinstance(container, dict):
+                        continue
+                    for field in ("question", "ques", "solution", "sol", "passage"):
+                        text = container.get(field, "")
+                        if text and "data:image/" in text:
+                            for b64_img in _extract_base64_imgs_from_text(text):
+                                data_uri = b64_img["data_uri"]
+                                if data_uri not in base64_images:
+                                    base64_images[data_uri] = b64_img
+                                    file_img_refs.setdefault(str(json_file), []).append(
+                                        (qid, data_uri))
+                    # Also check passageQuestion sub-questions
+                    if container_key == "passageQuestion":
+                        for sub_q in container.get("questions", []):
+                            if not isinstance(sub_q, dict):
+                                continue
+                            for sub_key in ("scq", "mcq", "integerQuestion"):
+                                sub_c = sub_q.get(sub_key)
+                                if not isinstance(sub_c, dict):
+                                    continue
+                                for field in ("ques", "question", "solution"):
+                                    text = sub_c.get(field, "")
+                                    if text and "data:image/" in text:
+                                        for b64_img in _extract_base64_imgs_from_text(text):
+                                            data_uri = b64_img["data_uri"]
+                                            if data_uri not in base64_images:
+                                                base64_images[data_uri] = b64_img
+
+        has_local = bool(resolved) or bool(unresolved_srcs)
+        has_base64 = bool(base64_images)
+
+        if not has_local and not has_base64:
             self.log("info", "No image references found — nothing to upload")
             return {
                 "status": "no_images",
@@ -506,7 +611,8 @@ class ImageCDNStage(BasePipelineStage):
                 "message": "No image references found in metadata",
             }
 
-        self.log("info", f"Found {len(resolved)} resolved images, {len(unresolved_srcs)} unresolved")
+        self.log("info", f"Found {len(resolved)} local images, {len(unresolved_srcs)} unresolved, "
+                 f"{len(base64_images)} base64 images (SMILES/SVG)")
 
         # Phase 3: Upload
         cdn_cache = self._load_cdn_cache()
@@ -567,10 +673,76 @@ class ImageCDNStage(BasePipelineStage):
             if i < total_to_upload:
                 time.sleep(UPLOAD_DELAY_S)
 
-        # Final save
+        # Final save after local image uploads
         self._save_cdn_cache(cdn_cache)
+        elapsed_local = time.time() - start_time
+        self.log("info", f"Local upload done: {uploaded} uploaded, {failed} failed, {elapsed_local:.1f}s")
+
+        # Phase 3b: Upload base64 data URI images (SMILES SVG, etc.)
+        b64_uploaded = 0
+        b64_failed = 0
+        if base64_images:
+            b64_temp_dir = self.session_dir / "images_b64_temp"
+            b64_temp_dir.mkdir(parents=True, exist_ok=True)
+
+            # Filter: skip already-cached base64 images
+            b64_to_upload = {uri: info for uri, info in base64_images.items()
+                             if uri not in cdn_cache or "cdn_url" not in cdn_cache[uri]}
+
+            if b64_to_upload:
+                self.log("info", f"Uploading {len(b64_to_upload)} base64 images (SMILES/SVG)...")
+
+            for uri, info in b64_to_upload.items():
+                temp_path = b64_temp_dir / info["filename"]
+
+                # Save base64 to temp file
+                if not _save_base64_to_file(info["b64_data"], temp_path):
+                    b64_failed += 1
+                    failed_items.append((uri[:60] + "...", "Failed to decode base64"))
+                    continue
+
+                # For SVG files, use fixed dimensions (300x250 matches RDKit output)
+                if info["ext"] == "svg":
+                    dw, dh = 300, 250
+                    w, h = 300, 250
+                else:
+                    try:
+                        with PILImage.open(str(temp_path)) as img_obj:
+                            w, h = img_obj.size
+                        dw, dh = compute_display_dimensions(w, h)
+                    except Exception:
+                        dw, dh = MAX_DISPLAY_WIDTH, 169
+                        w, h = dw, dh
+
+                # Upload
+                success, url, err = upload_with_retry(str(temp_path))
+                if success:
+                    cdn_cache[uri] = {
+                        "cdn_url": url,
+                        "source": "base64_smiles",
+                        "width_px": w,
+                        "height_px": h,
+                        "display_width": dw,
+                        "display_height": dh,
+                    }
+                    b64_uploaded += 1
+                    uploaded += 1
+                else:
+                    b64_failed += 1
+                    failed += 1
+                    failed_items.append((info["filename"], err))
+
+                time.sleep(UPLOAD_DELAY_S)
+
+            if b64_uploaded > 0 or b64_failed > 0:
+                self._save_cdn_cache(cdn_cache)
+                self.log("info", f"Base64 upload: {b64_uploaded} uploaded, {b64_failed} failed")
+
+            # Cleanup temp dir
+            import shutil
+            shutil.rmtree(b64_temp_dir, ignore_errors=True)
+
         elapsed = time.time() - start_time
-        self.log("info", f"Upload done: {uploaded} uploaded, {failed} failed, {elapsed:.1f}s")
 
         # Phase 4: Replace img tags in metadata
         self.progress(85, "Replacing image refs in metadata...")
@@ -631,6 +803,8 @@ class ImageCDNStage(BasePipelineStage):
             "replaced": total_replacements,
             "files_modified": files_modified,
             "unresolved": len(unresolved_srcs),
+            "base64_uploaded": b64_uploaded,
+            "base64_failed": b64_failed,
             "elapsed_s": round(elapsed, 1),
             "sample_entries": sample_entries,
             "failed_items": [(s, e) for s, e in failed_items[:10]],

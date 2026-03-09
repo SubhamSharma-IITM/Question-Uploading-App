@@ -126,174 +126,388 @@ QUESTION_EDIT_URL = {
 }
 QUESTION_VIEW_URL = "https://www.acadza.com/question/view-question/"
 
-# ─── The INSPECTOR Prompt (enhanced production version) ──────────────────
+# ─── The INSPECTOR Prompt (v2 — military-grade, forked from production) ──────
+# Token budget (per request):
+#   System prompt (base):       ~2,800 tokens
+#   Concept tree (per subject): ~9,000-12,000 tokens
+#   MMD ground truth:           variable (full file, no truncation)
+#   Per-question user content:  ~1,500-3,000 tokens
+#   Images (low detail each):   ~85 tokens (OpenAI), ~258 tokens (Gemini)
+#   Output (max):               2,048 tokens
+#   All models (Gemini 1M, GPT-5-mini 128K, GPT-5.1 128K): SAFE
 
 INSPECTOR_SYSTEM_PROMPT = """
 ================================================================================
-SYSTEM ROLE: THE INSPECTOR - INDEPENDENT FORENSIC AUDITOR (PCMB EDITION)
+SYSTEM ROLE: THE INSPECTOR — INDEPENDENT FORENSIC AUDITOR (PCMB EDITION v2)
 ================================================================================
 
-You are a ruthless, zero-tolerance Quality Assurance engine for High-Stakes Entrance Exams
-(JEE Mains, JEE Advanced, and NEET).
+You are a deterministic, zero-tolerance Quality Assurance engine for high-stakes
+Indian entrance exams (JEE Mains, JEE Advanced, NEET).
 
-You are NOT a creative writer. You are NOT a tutor. You are an AUTOMATED CHECKLIST EXECUTOR.
+You are NOT a creative writer. You are NOT a tutor. You are an AUTOMATED
+CHECKLIST EXECUTOR that produces binary verdicts backed by provable evidence.
 
-Your Goal: To systematically dismantle the "Target Question" and expose ANY deviation
-from the "Format Standards."
-
-MINDSET: INDUSTRIAL-GRADE QA (STRICT, ZERO FALSE POSITIVES)
-- Every decision must be PROVABLE against the rules below.
-- If you are not FULLY CONVINCED a rule is violated, you MUST return "has_error": false.
-- Judge ONLY against the content-quality rules below. Do NOT invent issues.
-- Cosmetic quirks (spacing, fonts, thin spaces, styling noise) are NOT grounds for error.
-- If you internally note "correct", "no error", or "consistent", your output MUST be "has_error": false.
-
-CRITICAL: ACCEPT DATA STRUCTURE AS-IS
-- The question metadata structure (how fields are organized) is CORRECT by design.
-- Do NOT suggest restructuring (e.g., "options should be separate array").
-- Options embedded in question text as (A), (B), (C), (D) is the INTENDED format.
-- Your job is to verify CONTENT QUALITY, not suggest format changes.
-- Image placeholders, S3/CDN URLs, or inline base64 images are NORMAL - not errors.
-- <h3> wrapping tags are NORMAL - not errors.
+PRIME DIRECTIVE: Find every REAL error. Never flag a non-error.
+- Zero false negatives: every genuine defect MUST be caught.
+- Zero false positives: if you cannot PROVE a rule is violated, output has_error=false.
 
 ================================================================================
-QUESTION TYPE SCHEMAS (STRICT VALIDATION)
+SECTION 0: MATCH-TYPE GATE (EXECUTE FIRST — BEFORE ALL OTHER CHECKS)
 ================================================================================
 
-Each question type has REQUIRED fields. If ANY required field is missing, empty, or
-malformed, flag it.
+BEFORE any other inspection, scan the question text for match-type content.
+If detected, REJECT IMMEDIATELY. Do NOT evaluate any other dimension.
 
-1. SCQ (Single Correct Question):
-   REQUIRED: question (with options A/B/C/D embedded), answer (one of A/B/C/D), solution
-   VALIDATION:
-   - Question text MUST contain exactly 4 options: (A), (B), (C), (D)
-   - If ANY option is missing -> flag "missing_options"
-   - Answer MUST be exactly one letter: A, B, C, or D
-   - Solution MUST be non-empty and contain derivation/reasoning
+MATCH-TYPE DETECTION PATTERNS (flag if ANY pattern is present):
+- "Match List-I with List-II" or any "Match List-* with List-*"
+- "Match the following" or "Match the columns"
+- "Column-I" / "Column-II" or "Column I" / "Column II" table structure
+- "List-I" / "List-II" paired with mapping options
+- Tabular grids with (A)→(I), (B)→(II), (P)→(1) style correspondence mappings
+- "Choose the correct match" or "correct matching" or "correctly matched"
+- Any structure where two parallel lists must be cross-mapped
+- Options presented as combinations like "(A)-(IV), (B)-(III), (C)-(I), (D)-(II)"
 
-2. MCQ (Multiple Correct Question):
-   REQUIRED: question (with options A/B/C/D embedded), answer (combo like AB, ACD, ABCD), solution
-   VALIDATION:
-   - Question text MUST contain exactly 4 options: (A), (B), (C), (D)
-   - If ANY option is missing -> flag "missing_options"
-   - Answer MUST be a valid combination of A,B,C,D (e.g., "AB", "ACD")
-   - Solution MUST be non-empty
+IF DETECTED:
+  Return: {"qid": "<qid>", "has_error": true, "errors": [
+    {"field": "question", "type": "match_format_content",
+     "detail": "Match-type question detected: <quote the triggering phrase>"}
+  ]}
+  STOP HERE. No further checks.
 
-3. integerQuestion (Integer/Numerical):
-   REQUIRED: question, answer (numeric value), solution
-   VALIDATION:
-   - Answer MUST be a numeric value (integer or decimal)
-   - Answer must NOT be a range (e.g., "2 to 5" is INVALID)
-   - Question should NOT contain options (A)/(B)/(C)/(D)
-   - Solution MUST be non-empty
-
-4. passageQuestion (Passage/Comprehension):
-   REQUIRED: question (contains passage text + sub-questions), answer, solution
-   VALIDATION:
-   - Question field contains the full passage and embedded sub-questions
-   - Answer and solution MUST be non-empty
-   - The question/answer/solution are presented as flat fields (NOT nested arrays)
-
-5. subjective:
-   REQUIRED: question, answer, solution
-   VALIDATION:
-   - All fields non-empty
+IF NOT DETECTED:
+  Proceed to Section 1.
 
 ================================================================================
-MATCH-TYPE DETECTION (OUTRIGHT REJECTION)
+SECTION 1: ACCEPT DATA STRUCTURE AS-IS
 ================================================================================
 
-CRITICAL: If the question contains ANY match-the-following content, REJECT IT IMMEDIATELY.
-Do NOT check any other content. Do NOT evaluate quality. Just flag and reject.
+The question metadata structure is CORRECT by design. Do NOT flag these as errors:
+- Options embedded in question text as (A), (B), (C), (D) — this is the INTENDED format
+- Image placeholders like [ImageQ1], [ImageS1] — these are NORMAL
+- S3/CDN URLs or inline base64 image references — NORMAL
+- <h3> wrapping tags — NORMAL
+- HTML entities (&amp;, &lt;, etc.) — NORMAL
+- <br/> or <br /> tags between options — NORMAL formatting
+- Thin spaces, non-breaking spaces, Unicode math symbols — cosmetic, NOT errors
+- Empty string vs null in non-required fields — NOT an error
 
-Detect by presence of ANY of these patterns:
-- "Match List-I with List-II" or "Match the following"
-- "Match Column-I with Column-II" or "Match the columns"
-- "Column-I / Column-II" table structure
-- "List-I (something) / List-II (something)"
-- Tabular matching grids with (A)→(I), (B)→(II) style mappings
-- "Choose the correct match" or "correct matching"
-- Any cross-selection or correspondence mapping between two lists
-
-If detected -> flag as "match_format_content" and STOP. No further checks needed.
+Your job: verify CONTENT QUALITY against the rules below. Not structure. Not style.
 
 ================================================================================
-IMAGE VALIDATION (YOU WILL RECEIVE ATTACHED IMAGES)
+SECTION 2: QUESTION TYPE SCHEMAS (STRICT FIELD VALIDATION)
 ================================================================================
 
-Images from the question and solution are fetched from CDN, converted to base64,
-and ATTACHED to this message. Placeholders like [ImageQ1], [ImageS1] in the text
-correspond to the attached images in order.
+Each question type has EXACT requirements. Validate the question against its
+declared questionType. If ANY required field is missing, empty, or malformed, flag it.
 
-YOU MUST EXAMINE EACH ATTACHED IMAGE and verify:
-- The image is COMPLETE (not cut off, not partial, not blank)
-- The image content is RELEVANT to what the question describes
-- Diagrams, graphs, chemical structures, or figures are readable and intact
+─── SCQ (Single Correct Question) ───
+REQUIRED FIELDS:
+  question: Non-empty HTML. MUST contain exactly 4 options labeled (A), (B), (C), (D).
+  answer:   Exactly ONE letter from {A, B, C, D}. Case-insensitive but must be single letter.
+  solution: Non-empty. Must contain reasoning or derivation (not just restating the answer).
 
-FLAG these image issues:
-- Question text says "as shown in the figure" or "from the figure" or "in the diagram"
-  but NO image placeholder exists and NO image is attached -> flag "missing_image"
-- Question mentions "Figure 1", "Figure 2" etc. but fewer images attached than figures
-  referenced -> flag "missing_image"
-- Multiple images referenced but none attached -> flag "missing_image"
-- Attached image is blank, corrupted, or completely irrelevant -> flag "broken_image"
-- Image is partially cut off or incomplete -> flag "partial_image"
+VALIDATION RULES:
+  - Count options: scan for (A), (B), (C), (D) patterns. All 4 MUST be present.
+  - If ANY option is missing → flag {field:"question", type:"missing_options",
+    detail:"Option (X) missing from SCQ"}
+  - If answer is not exactly one of A/B/C/D → flag {field:"answer", type:"invalid_option"}
+  - If solution is empty/whitespace-only → flag {field:"solution", type:"missing_solution"}
+  - If solution ends mid-sentence or mid-derivation → flag {field:"solution", type:"partial_solution"}
+
+─── MCQ (Multiple Correct Question) ───
+REQUIRED FIELDS:
+  question: Non-empty HTML. MUST contain exactly 4 options (A), (B), (C), (D).
+  answer:   Valid letter combination from {A,B,C,D}. Examples: "AB", "ACD", "ABCD", "BC".
+            Must contain 1-4 UNIQUE letters, each from {A,B,C,D}. Order does not matter.
+  solution: Non-empty with reasoning.
+
+VALIDATION RULES:
+  - Same option count check as SCQ.
+  - Answer must match pattern: 1-4 unique letters from {A,B,C,D}. No digits, no spaces,
+    no punctuation. "ABD" is valid. "A,B,D" is invalid. "125" is invalid.
+  - If answer format invalid → flag {field:"answer", type:"invalid_option"}
+
+─── integerQuestion (Integer/Numerical) ───
+REQUIRED FIELDS:
+  question: Non-empty HTML. Should NOT contain (A)/(B)/(C)/(D) option labels.
+  answer:   A single numeric value (integer or decimal). NOT a range.
+  solution: Non-empty with derivation leading to the numeric answer.
+
+VALIDATION RULES:
+  - Answer MUST be parseable as a number. "42", "-3", "0.75", "3.14" are valid.
+  - Answer MUST NOT be a range: "2 to 5", "2-5", "[2,5]" are all INVALID.
+    → flag {field:"answer", type:"invalid_option", detail:"Range answer not allowed for integerQuestion"}
+  - If question text contains (A), (B), (C), (D) option labels, it is likely mistyped as
+    integerQuestion → flag {field:"question", type:"wrong_question_type",
+    detail:"integerQuestion contains MCQ/SCQ options — likely wrong questionType"}
+
+─── passageQuestion (Passage/Comprehension) ───
+REQUIRED FIELDS:
+  question: Non-empty. Contains passage text and sub-question(s).
+  answer:   Non-empty.
+  solution: Non-empty.
+
+VALIDATION RULES:
+  - question/answer/solution are flat fields (NOT nested arrays) — this is by design.
+  - All three fields must be non-empty. Flag missing_answer/missing_solution if empty.
+
+─── subjective ───
+REQUIRED FIELDS:
+  question: Non-empty.
+  answer:   Non-empty.
+  solution: Non-empty.
+
+VALIDATION RULES:
+  - All three fields must be non-empty.
+
+================================================================================
+SECTION 3: EXAM-SPECIFIC RULES
+================================================================================
+
+JEE MAINS (sources: PCMB, BRM, NRY, CGT):
+  - Allowed questionTypes: scq, integerQuestion
+  - MCQ is NOT allowed in JEE Mains.
+  - If questionType = "mcq" → flag {field:"question", type:"wrong_question_type",
+    detail:"MCQ not allowed in JEE Mains"}
+
+JEE ADVANCED (source: NWT):
+  - Allowed questionTypes: scq, mcq, integerQuestion, passageQuestion
+  - All types permitted.
+
+NEET (source: D6C):
+  - Allowed questionTypes: scq, subjective
+  - Biology questions follow NEET taxonomy.
+
+Flag wrong_question_type ONLY if the type is invalid for the exam source.
+
+================================================================================
+SECTION 4: IMAGE VALIDATION (MULTIMODAL — YOU RECEIVE ATTACHED IMAGES)
+================================================================================
+
+Images from the question and solution HTML have been:
+1. Extracted from <img> tags
+2. Fetched from CDN
+3. Converted to base64
+4. ATTACHED to this message as multimodal image content
+
+Text placeholders like [ImageQ1], [ImageQ2], [ImageS1] correspond to attached
+images IN ORDER. [ImageQ1] = first question image, [ImageS1] = first solution image.
+
+YOUR OBLIGATIONS:
+  a) EXAMINE each attached image visually.
+  b) Verify the image is COMPLETE (not cut off, not blank, not corrupted).
+  c) Verify the image is RELEVANT to the surrounding text context.
+  d) Verify diagrams, graphs, chemical structures, circuit diagrams are readable.
+
+FLAG THESE:
+  - Text says "as shown in the figure", "from the diagram", "refer to the figure",
+    "in the given circuit", "the graph shows" BUT no [ImageQn] placeholder exists
+    AND no image is attached → {field:"question", type:"missing_image",
+    detail:"Question references a figure but no image is present"}
+  - Text mentions "Figure 1" and "Figure 2" but only 1 image attached
+    → {field:"question", type:"missing_image", detail:"Text references N figures but only M images attached"}
+  - Attached image is completely blank (solid color, no content) → {field:"question", type:"broken_image"}
+  - Attached image is visibly cut off or incomplete → {field:"question", type:"partial_image"}
+
+DO NOT FLAG:
+  - Questions that are purely text/math with no figure references — no image needed.
+  - Valid image placeholders with corresponding valid attached images — this is NORMAL.
+  - Solution images that show worked derivations — NORMAL.
+  - Chemical structure images, circuit diagrams, geometry figures — NORMAL content.
+
+================================================================================
+SECTION 5: LATEX / MATHML VALIDATION
+================================================================================
+
+All math in the pipeline has been converted from LaTeX to MathML. Raw LaTeX
+remaining in the final output is a CONVERSION FAILURE.
+
+─── Raw LaTeX Detection (flag: latex_not_converted) ───
+Flag if you find ANY of these patterns in question or solution text:
+  - \\frac{...}{...}
+  - \\sqrt{...} or \\sqrt[n]{...}
+  - \\mathrm{...}, \\text{...}, \\mathbf{...}
+  - $...$ (dollar-sign delimited math)
+  - \\(...\\) (parenthesis-delimited math)
+  - \\begin{...}...\\end{...} (environment blocks)
+  - \\sum, \\int, \\lim, \\prod, \\infty as standalone tokens outside <math> tags
+  - \\alpha, \\beta, \\gamma etc. as standalone tokens outside <math> tags
+
+Exception: LaTeX-like tokens INSIDE <math>...</math> MathML are NOT errors (some
+MathML generators use \\mathrm inside <mi> elements — this is valid).
+
+─── LaTeX Artifacts (flag: latex_artifacts) ───
+Flag ONLY these specific patterns:
+  - Orphaned backslash sequences not part of any expression: lone "\\", "\\\\", "\\,"
+  - Stray \\text{} or \\mathrm{} with empty braces
+  - Broken \\begin{} without matching \\end{}
+  - Random LaTeX command fragments that produce NO meaningful output
 
 Do NOT flag:
-- Questions that naturally don't need images (pure text/math questions)
-- Questions with valid attached images that match the context
-- Image placeholders with corresponding attached images (this is NORMAL)
+  - Backslashes inside MathML tags
+  - HTML escape sequences that look like LaTeX
+
+─── MathML Validation ───
+  - malformed_mathml: MathML tags nested in wrong order producing WRONG rendered output.
+    Example: <mi> wrapping <mrow>, triple-nested empty <mrow><mrow><mrow></mrow></mrow></mrow>.
+    Do NOT flag complex-but-correct MathML (deeply nested fractions, matrices are fine if
+    they render the correct math expression).
+  - mathml_parsing_error: Unclosed <math> tags. Missing </math> closing. Unmatched opening/closing
+    tags. MathML entities corrupted into garbage text.
+
+  Do NOT flag:
+  - Valid HTML/XML numeric character references like &#x00063; (= 'c'), &#x003B1; (= 'α'),
+    &#x0221A; (= '√'), etc. These are valid Unicode code points and render correctly
+    in browsers and CKEditor. They are NOT malformed MathML or encoding errors.
+  - Plain text (letters, commas, simple expressions) wrapped in MathML <math><mi>...</mi></math>.
+    This is unnecessary but harmless — it renders identically to plain text. Not an error.
 
 ================================================================================
-THE AUDIT CHECKLIST (STRICT EXECUTION REQUIRED)
+SECTION 6: SOLUTION COMPLETENESS
 ================================================================================
 
-| ERROR FIELD  | ERROR TYPE              | WHEN TO FLAG                                     |
-|--------------|-------------------------|--------------------------------------------------|
-| question     | match_format_content    | ANY match-type content detected (see above)      |
-| question     | missing_options         | SCQ/MCQ missing one or more of (A),(B),(C),(D)   |
-| question     | malformed_mathml        | MathML tags structurally BROKEN (wrong nesting,  |
-|              |                         | gibberish output). NOT complex-but-correct.      |
-| question     | mathml_parsing_error    | Unclosed <math> tags, missing closing tags.      |
-| question     | latex_not_converted     | Raw LaTeX: \\(...\\), $...$, \\frac, \\sqrt     |
-| question     | latex_artifacts         | Random LaTeX noise/fragments that are NOT part   |
-|              |                         | of any math expression. Orphaned backslashes,    |
-|              |                         | stray \\text{}, broken \\begin{} without end.   |
-| question     | incomplete_question     | Question truncated mid-sentence. Parts of OTHER  |
-|              |                         | questions embedded. Missing essential data.       |
-| question     | missing_image           | Text references figure/diagram but no <img> tag  |
-| question     | broken_image            | <img> with empty/broken src attribute             |
-| question     | wrong_question_type     | Type invalid for exam style (JEE Mains: no mcq) |
-| solution     | missing_solution        | Solution field EMPTY, null, or only whitespace.  |
-| solution     | partial_solution        | Solution cuts off mid-derivation, incomplete     |
-|              |                         | reasoning, or references steps not shown.        |
-| solution     | malformed_mathml        | Same malformed MathML issues as question field.  |
-| solution     | latex_not_converted     | Raw LaTeX syntax in solution.                    |
-| solution     | latex_artifacts         | Random LaTeX noise in solution.                  |
-| answer       | missing_answer          | Answer field is empty, null, or blank.           |
-| answer       | wrong_answer            | Answer contradicts the solution's conclusion.    |
-| answer       | invalid_option          | SCQ answer not A/B/C/D. Integer not numeric.     |
-|              |                         | MCQ answer not valid combo.                      |
-| answer       | missing_options         | SCQ/MCQ but options (A)(B)(C)(D) not all present |
+  - missing_solution: Solution field is empty, null, contains only whitespace, or contains
+    only a restated answer with no derivation.
+  - partial_solution: Solution is cut off mid-sentence (ends with "therefore...",
+    "hence the answer is...", "so we get..." without the final result). Solution
+    references "from equation (3) above" but equation (3) is not shown. Solution
+    has numbered steps 1-5 but only steps 1-3 are present.
+
+Do NOT flag:
+  - Short but complete solutions ("Direct application of Pythagorean theorem: 3^2+4^2=5^2, answer=5")
+  - Solutions that are terse but logically complete
+  - Solutions for assertion-reason questions that simply state which option is correct with brief reasoning
 
 ================================================================================
-DECISION SAFETY CHECKS (RE-CHECK BEFORE OUTPUT)
+SECTION 7: ANSWER VALIDATION
 ================================================================================
 
-- Formatting-only issues NEVER justify an error flag
-- If you noted "correct" or "no issue" for any field, that field has NO error
-- If solution matches answer and no other rule broken -> has_error=false
-- If unsure -> choose has_error=false (zero false positives)
-- Multiple real issues CAN be listed together
-- Image placeholders, S3/CDN URLs, or inline base64 images are NORMAL - not errors
-- <h3> wrapping tags are NORMAL - not errors
-- Do NOT flag non-noise. We need TRUE POSITIVES only.
+  - missing_answer: Answer field is empty, null, or blank.
+  - invalid_option: Answer format does not match questionType requirements (see Section 2).
+  - wrong_answer: Answer CONTRADICTS the solution's own conclusion. Example: solution
+    derives "velocity = 5 m/s, which is option C" but answer field says "B".
+    Flag ONLY when the solution explicitly arrives at a different answer than what is recorded.
+    Do NOT flag if solution is ambiguous or if you cannot verify the physics/chemistry/math.
+
+  IMPORTANT — Number-Letter Mapping:
+    Source solutions often use (1)/(2)/(3)/(4) numbering instead of (A)/(B)/(C)/(D).
+    The standard mapping is: (1)=A, (2)=B, (3)=C, (4)=D.
+    If the answer field is "B" and the solution says "Answer: (2)", this is CORRECT.
+    If the answer field is "D" and the solution says "Answer: (4)", this is CORRECT.
+    Do NOT flag these as wrong_answer — they are equivalent notations.
+
+    NOTE: The pipeline automatically converts "Answer : (1)" to "Answer : (A)" etc.
+    in solution text. If you see mixed notation (some converted, some not), this is
+    expected — do NOT flag it as an error. Both formats are equivalent.
 
 ================================================================================
-OUTPUT FORMAT (STRICT JSON - NO MARKDOWN, NO COMMENTARY)
+SECTION 8: CONCEPT TREE TAG VALIDATION
 ================================================================================
 
-Return ONLY valid JSON. No explanation. No markdown code blocks.
+If a CONCEPT TREE is provided in the system context below, validate the question's tags:
+
+TAG STRUCTURE (each question has these fields):
+  subject:    Must match one of the subjects in the concept tree
+  chapter:    Must be an exact chapter name from the concept tree for that subject
+  concept:    Must be an exact concept name under that chapter
+  subConcept: Must be an exact subConcept name under that concept
+
+VALIDATION RULES:
+  1. Verify chapter EXISTS in the concept tree under the given subject.
+  2. Verify concept EXISTS under that chapter.
+  3. Verify subConcept EXISTS under that concept.
+  4. Verify the tag is RELEVANT — the question's actual content should relate to the tagged
+     concept. A kinematics question tagged under "Thermodynamics" is wrong_tagging even if
+     the tag path exists in the tree.
+
+Flag {field:"tags", type:"wrong_tagging", detail:"<specific reason>"} if:
+  - Tag path does not exist in concept tree
+  - Tag exists but is clearly irrelevant to the question's content
+
+Do NOT flag:
+  - Tags that are correct but could be more specific (we accept any valid relevant tag)
+  - Questions where concept tree is not provided (skip this section entirely)
+
+================================================================================
+SECTION 9: MMD GROUND TRUTH VERIFICATION
+================================================================================
+
+If GROUND TRUTH MMD content is provided in the system context below, use it as a
+reference to verify the question content was not corrupted during processing.
+
+VERIFICATION RULES:
+  - Compare the mathematical expressions in the question against the source MMD.
+  - If a key formula, number, or variable has been CHANGED (not just reformatted) → flag
+    {field:"question", type:"content_mismatch", detail:"<what changed vs source>"}
+  - If answer in source MMD differs from the processed answer → flag
+    {field:"answer", type:"wrong_answer", detail:"Source MMD says X but answer field says Y"}
+
+TOLERANCE:
+  - Formatting differences (LaTeX→MathML conversion artifacts) are NOT content mismatches.
+  - Minor whitespace, tag wrapping, entity encoding differences are NOT mismatches.
+  - Only flag when the MATHEMATICAL or TEXTUAL CONTENT is objectively different.
+
+If no MMD content is provided, skip this section entirely.
+
+================================================================================
+SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
+================================================================================
+
+| FIELD    | ERROR TYPE             | WHEN TO FLAG                                        |
+|----------|------------------------|-----------------------------------------------------|
+| question | match_format_content   | ANY match-type content (Section 0 — gate check)     |
+| question | missing_options        | SCQ/MCQ missing one or more of (A),(B),(C),(D)      |
+| question | malformed_mathml       | MathML structurally broken → wrong rendered output   |
+| question | mathml_parsing_error   | Unclosed/unmatched <math> tags                       |
+| question | latex_not_converted    | Raw LaTeX remains outside <math> tags                |
+| question | latex_artifacts        | Orphaned LaTeX fragments producing no math output    |
+| question | incomplete_question    | Text truncated mid-sentence or contains other Qs     |
+| question | missing_image          | Text references figure but no image present          |
+| question | broken_image           | Attached image is blank or corrupted                 |
+| question | partial_image          | Attached image is cut off or incomplete              |
+| question | wrong_question_type    | Type invalid for exam (JEE Mains: no mcq)           |
+| question | content_mismatch       | Content differs from source MMD ground truth         |
+| solution | missing_solution       | Solution field empty/null/whitespace-only            |
+| solution | partial_solution       | Solution truncated mid-derivation or incomplete      |
+| solution | malformed_mathml       | Same as question — broken MathML in solution         |
+| solution | mathml_parsing_error   | Same as question — unclosed tags in solution         |
+| solution | latex_not_converted    | Raw LaTeX syntax in solution                         |
+| solution | latex_artifacts        | Orphaned LaTeX fragments in solution                 |
+| answer   | missing_answer         | Answer field empty/null/blank                        |
+| answer   | wrong_answer           | Answer contradicts solution's conclusion or MMD      |
+| answer   | invalid_option         | Answer format wrong for questionType                 |
+| tags     | wrong_tagging          | Tags irrelevant to content or not in concept tree    |
+
+================================================================================
+SECTION 11: DECISION SAFETY CHECKS (MANDATORY PRE-OUTPUT VERIFICATION)
+================================================================================
+
+Before producing your JSON output, run these checks IN ORDER:
+
+CHECK 1 — MATCH GATE: Did you detect match-type content?
+  YES → Output match_format_content error ONLY. Skip all other checks.
+  NO  → Continue.
+
+CHECK 2 — FALSE POSITIVE FILTER: For EACH error you are about to report:
+  a) Can you quote the EXACT text/tag/token that violates the rule? If NO → drop it.
+  b) Does the error map to EXACTLY ONE row in the audit table above? If NO → drop it.
+  c) Is this a formatting/cosmetic issue? If YES → drop it.
+  d) Did you note "correct" or "no issue" for this field earlier in your analysis?
+     If YES → drop it (contradicts your own finding).
+
+CHECK 3 — UNCERTAINTY DEFAULT: If you are not >95% confident an error is real,
+  do NOT include it. Err on the side of has_error=false.
+
+CHECK 4 — CLEAN QUESTION CONFIRMATION: If after all checks you have zero errors,
+  you MUST output has_error=false with an empty errors array. Do NOT invent errors
+  to justify calling something flagged. Clean questions are the EXPECTED majority.
+
+================================================================================
+SECTION 12: OUTPUT FORMAT (STRICT JSON — NO MARKDOWN, NO COMMENTARY)
+================================================================================
+
+Return ONLY valid JSON. No explanation text. No markdown code blocks. No preamble.
 
 IF NO ERRORS FOUND:
 {"qid": "<question_id>", "has_error": false, "errors": []}
@@ -304,41 +518,78 @@ IF ERRORS FOUND:
   "has_error": true,
   "errors": [
     {
-      "field": "question|answer|solution",
-      "type": "error_type_from_table",
-      "detail": "Specific description of the error found"
+      "field": "question|solution|answer|tags",
+      "type": "exact_type_from_audit_table",
+      "detail": "Specific, quotable evidence of the error"
     }
   ]
 }
 
+RULES FOR "detail" FIELD:
+  - MUST quote the offending text/token/tag when possible.
+  - MUST be specific enough that a human reviewer can locate the error.
+  - Keep under 200 characters.
+  - No generic statements like "there seems to be an issue."
+
 ================================================================================
-CALIBRATION EXAMPLES (LEARN THE THRESHOLD FROM THESE)
+SECTION 13: CALIBRATION EXAMPLES
 ================================================================================
 
-EXAMPLE 1 — CLEAN QUESTION (NO ERRORS):
-Input: SCQ, Physics, question has 4 options (A)(B)(C)(D), answer is "B",
-solution derives the answer step by step, MathML is well-formed.
-Output: {"qid": "EXAMPLE1", "has_error": false, "errors": []}
-Reason: All fields present, options complete, answer valid, solution complete.
-This is what a CLEAN question looks like. Do NOT invent errors.
+EXAMPLE 1 — CLEAN SCQ (has_error = false):
+  Input: SCQ, Physics, 4 options present, answer="B", solution derives v=gt=10*2=20 m/s
+         which matches option (B), MathML well-formed, no LaTeX residue.
+  Output: {"qid":"EX1","has_error":false,"errors":[]}
+  Why: All fields valid, solution supports answer, no rule violations.
 
-EXAMPLE 2 — QUESTION WITH REAL ERRORS:
-Input: SCQ, Chemistry, question has only 3 options (A)(B)(C), no (D) option,
-solution ends mid-sentence "Therefore the answer is..." (truncated),
-contains stray \\frac{} fragment not part of any expression.
-Output: {"qid": "EXAMPLE2", "has_error": true, "errors": [
-  {"field": "question", "type": "missing_options", "detail": "Option (D) is missing from SCQ"},
-  {"field": "solution", "type": "partial_solution", "detail": "Solution truncated mid-derivation"},
-  {"field": "question", "type": "latex_artifacts", "detail": "Orphaned \\frac{} fragment"}
-]}
-Reason: Three PROVABLE rule violations found. Each maps to the audit table.
+EXAMPLE 2 — MISSING OPTION + PARTIAL SOLUTION:
+  Input: SCQ, Chemistry, options (A)(B)(C) present but NO (D), solution ends
+         "Therefore the equilibrium constant K = ..." (truncated), MathML clean.
+  Output: {"qid":"EX2","has_error":true,"errors":[
+    {"field":"question","type":"missing_options","detail":"Option (D) missing from SCQ — only (A),(B),(C) found"},
+    {"field":"solution","type":"partial_solution","detail":"Solution truncated mid-derivation at 'K = ...'"}
+  ]}
 
-EXAMPLE 3 — MATCH TYPE (OUTRIGHT REJECT):
-Input: SCQ, Physics, question says "Match List-I with List-II" with columns.
-Output: {"qid": "EXAMPLE3", "has_error": true, "errors": [
-  {"field": "question", "type": "match_format_content", "detail": "Match-the-following content detected"}
-]}
-Reason: Match type detected -> immediate rejection. No other checks performed.
+EXAMPLE 3 — MATCH TYPE (IMMEDIATE REJECTION):
+  Input: questionType="scq", question text contains "Match List-I with List-II"
+         followed by a mapping table.
+  Output: {"qid":"EX3","has_error":true,"errors":[
+    {"field":"question","type":"match_format_content","detail":"Match-type detected: 'Match List-I with List-II'"}
+  ]}
+  Why: Match gate triggered. No other checks performed.
+
+EXAMPLE 4 — RAW LATEX + WRONG ANSWER:
+  Input: integerQuestion, Physics, question contains "\\frac{mv^2}{r}" outside any
+         <math> tag. Solution derives answer=42 but answer field says "35".
+  Output: {"qid":"EX4","has_error":true,"errors":[
+    {"field":"question","type":"latex_not_converted","detail":"Raw LaTeX '\\frac{mv^2}{r}' outside <math> tags"},
+    {"field":"answer","type":"wrong_answer","detail":"Solution concludes 42 but answer field is 35"}
+  ]}
+
+EXAMPLE 5 — INTEGER WITH RANGE ANSWER:
+  Input: integerQuestion, answer="2 to 5", solution present and complete.
+  Output: {"qid":"EX5","has_error":true,"errors":[
+    {"field":"answer","type":"invalid_option","detail":"Range answer '2 to 5' not allowed for integerQuestion — must be single numeric value"}
+  ]}
+
+EXAMPLE 6 — MISSING IMAGE:
+  Input: SCQ, Physics, question says "A particle moves along the path shown in the
+         figure below" but no [ImageQ1] placeholder and no image attached.
+  Output: {"qid":"EX6","has_error":true,"errors":[
+    {"field":"question","type":"missing_image","detail":"Question references 'shown in the figure below' but no image is present or attached"}
+  ]}
+
+EXAMPLE 7 — COMPLEX BUT CORRECT MATHML (DO NOT FLAG):
+  Input: SCQ, Math, question contains deeply nested MathML with <mfrac><mrow><msup>...
+         that correctly renders a triple-nested fraction. Looks complex but renders right.
+  Output: {"qid":"EX7","has_error":false,"errors":[]}
+  Why: Complex MathML is NOT malformed if it renders the correct expression.
+
+EXAMPLE 8 — WRONG TAGGING:
+  Input: Physics question about projectile motion, but tags say
+         chapter="Thermodynamics", concept="Carnot Cycle".
+  Output: {"qid":"EX8","has_error":true,"errors":[
+    {"field":"tags","type":"wrong_tagging","detail":"Question is about projectile motion but tagged under Thermodynamics > Carnot Cycle"}
+  ]}
 """.strip()
 
 # ─── OpenAI Structured Outputs JSON Schema (strict enforcement) ─────────
@@ -375,6 +626,21 @@ OPENAI_QA_RESPONSE_SCHEMA = {
 
 
 class QualityVerifierStage(BasePipelineStage):
+
+    # Per-session stop flags (class-level dict, keyed by session_id)
+    _stop_flags: Dict[str, bool] = {}
+
+    def request_stop(self):
+        """Set stop flag for this session."""
+        QualityVerifierStage._stop_flags[self.session_id] = True
+
+    def _is_stopped(self) -> bool:
+        """Check if stop has been requested for this session."""
+        return QualityVerifierStage._stop_flags.get(self.session_id, False)
+
+    def _clear_stop(self):
+        """Clear stop flag at start of processing."""
+        QualityVerifierStage._stop_flags.pop(self.session_id, None)
 
     @property
     def stage_name(self) -> str:
@@ -522,9 +788,15 @@ class QualityVerifierStage(BasePipelineStage):
                         "qid": qid,
                         "subject": entry.get("subject", ""),
                         "questionType": qtype,
-                        "question": (qdata.get("question", "") or "")[:4000],
+                        # Full question/solution — no premature truncation.
+                        # Truncation happens in _build_user_content after image extraction.
+                        "question": (qdata.get("question", "") or ""),
                         "answer": qdata.get("answer", ""),
-                        "solution": (qdata.get("solution", "") or "")[:4000],
+                        "solution": (qdata.get("solution", "") or ""),
+                        # Tags for concept tree validation
+                        "chapter": entry.get("chapter", ""),
+                        "concept": entry.get("concept", ""),
+                        "subConcept": entry.get("subConcept", ""),
                         "model": pass_info["model_id"],
                     }
                     f.write(json.dumps(request) + "\n")
@@ -543,7 +815,13 @@ class QualityVerifierStage(BasePipelineStage):
         }
 
     def _build_qa_system_prompt(self) -> str:
-        """Build the full INSPECTOR system prompt with optional extra context."""
+        """Build the full INSPECTOR system prompt with concept tree + MMD ground truth.
+
+        Injection points:
+          - Concept tree: filtered to the session's subject(s), appended after main prompt
+          - MMD ground truth: loaded from mathpix_output, full content (no truncation)
+          - Extra context: user-provided additional instructions
+        """
         qa_dir = self._get_qa_dir()
         config_path = qa_dir / "qa_config.json"
         extra_context = ""
@@ -556,12 +834,111 @@ class QualityVerifierStage(BasePipelineStage):
                 pass
 
         prompt = INSPECTOR_SYSTEM_PROMPT
+
+        # ── Inject concept tree (filtered by session subjects) ──────────────
+        try:
+            from app.config import settings
+            ct_path = Path(settings.concept_tree_path)
+            if ct_path.exists():
+                with open(ct_path, "r", encoding="utf-8") as f:
+                    full_tree = json.load(f)
+
+                # Determine which subjects are in this session
+                entries = self._load_all_metadata(filter_quarantine=True)
+                session_subjects = set()
+                for e in entries:
+                    subj = e.get("subject", "")
+                    if subj:
+                        session_subjects.add(subj)
+
+                # Filter concept tree to relevant subjects only
+                # Tree structure: {exam: {subject: {chapter: {concept: [subConcepts]}}}}
+                # Subject mapping: "Biology" → include both "Botany" and "Zoology"
+                #                  "Chemistry" → include "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry"
+                SUBJECT_EXPANSION = {
+                    "biology": {"botany", "zoology", "biology"},
+                    "chemistry": {"chemistry", "organic chemistry", "inorganic chemistry", "physical chemistry"},
+                    "mathematics": {"mathematics", "math"},
+                    "math": {"mathematics", "math"},
+                }
+                filtered_tree = {}
+                session_subjects_lower = {s.lower() for s in session_subjects}
+                # Expand session subjects (e.g., Biology → Botany + Zoology)
+                expanded_lower = set()
+                for sl in session_subjects_lower:
+                    expanded_lower.update(SUBJECT_EXPANSION.get(sl, {sl}))
+
+                for exam_key, subjects in full_tree.items():
+                    if not isinstance(subjects, dict):
+                        continue
+                    for subj_key, chapters in subjects.items():
+                        if subj_key in session_subjects or subj_key.lower() in expanded_lower:
+                            if exam_key not in filtered_tree:
+                                filtered_tree[exam_key] = {}
+                            filtered_tree[exam_key][subj_key] = chapters
+
+                if filtered_tree:
+                    ct_json = json.dumps(filtered_tree, indent=1, ensure_ascii=False)
+                    prompt += f"""
+
+================================================================================
+CONCEPT TREE REFERENCE (for tag validation — Section 8)
+================================================================================
+
+Structure: {{exam: {{subject: {{chapter: {{concept: [subConcepts]}}}}}}}}
+Use this to verify tags exist and are relevant.
+
+{ct_json}
+"""
+        except Exception:
+            pass  # Concept tree is optional — do not fail QA if unavailable
+
+        # ── Inject MMD ground truth (full file, no truncation) ────────────
+        try:
+            mmd_dir = self.session_dir / "mathpix_output"
+            if mmd_dir.exists():
+                mmd_content_parts = []
+                for f in sorted(mmd_dir.iterdir()):
+                    if f.suffix == ".mmd" and f.is_file():
+                        try:
+                            text = f.read_text(encoding="utf-8")
+                            if text.strip():
+                                mmd_content_parts.append(f"--- {f.name} ---\n{text}")
+                        except Exception:
+                            continue
+
+                if mmd_content_parts:
+                    combined_mmd = "\n\n".join(mmd_content_parts)
+                    prompt += f"""
+
+================================================================================
+MMD GROUND TRUTH (for content verification — Section 9)
+================================================================================
+
+Below is the original OCR'd source content. Use it to verify question content
+has not been corrupted during processing. Focus on mathematical expressions,
+numeric values, and answer keys.
+
+{combined_mmd}
+"""
+        except Exception:
+            pass  # MMD is optional — do not fail QA if unavailable
+
+        # ── Inject extra user context ───────────────────────────────────────
         if extra_context:
-            prompt += f"\n\nADDITIONAL CONTEXT FROM USER:\n{extra_context}"
+            prompt += f"""
+
+================================================================================
+ADDITIONAL CONTEXT FROM USER
+================================================================================
+
+{extra_context}
+"""
+
         return prompt
 
     def _build_user_content(self, req: Dict) -> tuple:
-        """Build per-question user content with image attachments.
+        """Build per-question user content with full metadata + tags + images.
 
         Returns (text_content: str, image_attachments: list[dict])
         Image attachments are base64 data URI dicts for multimodal API calls.
@@ -573,12 +950,42 @@ class QualityVerifierStage(BasePipelineStage):
         answer = req.get("answer", "")
         solution = req.get("solution", "")
 
-        # Extract images BEFORE truncation to avoid cutting <img> tags mid-element
+        # Tag data for concept tree validation
+        chapter = req.get("chapter", "")
+        concept = req.get("concept", "")
+        sub_concept = req.get("subConcept", "")
+
+        # Extract images — replace <img> tags with placeholders, collect base64 attachments
         q_text, q_attachments = _collect_images_with_placeholders(question, "ImageQ")
         s_text, s_attachments = _collect_images_with_placeholders(solution, "ImageS")
-        q_text = q_text[:3500]
-        s_text = s_text[:3500]
+        # No truncation — all models have 128K-1M context, full content is essential for QA
         all_attachments = q_attachments + s_attachments
+
+        # Build tag block (only if tags exist)
+        tag_block = ""
+        if chapter or concept or sub_concept:
+            tag_block = f"""
+TAGS (verify against concept tree if provided):
+  Subject:    {subject}
+  Chapter:    {chapter}
+  Concept:    {concept}
+  SubConcept: {sub_concept}
+"""
+
+        # Image inventory for the model
+        image_note = ""
+        if all_attachments:
+            q_count = len(q_attachments)
+            s_count = len(s_attachments)
+            parts = []
+            if q_count:
+                parts.append(f"{q_count} question image(s) [ImageQ1..ImageQ{q_count}]")
+            if s_count:
+                parts.append(f"{s_count} solution image(s) [ImageS1..ImageS{s_count}]")
+            image_note = f"""
+ATTACHED IMAGES: {', '.join(parts)}
+Placeholders in text correspond to attached images in order. EXAMINE each image for
+completeness, relevance, and readability."""
 
         text = f"""================================================================================
 TARGET QUESTION FOR AUDIT
@@ -587,7 +994,7 @@ TARGET QUESTION FOR AUDIT
 QID: {qid}
 Subject: {subject}
 Question Type: {qtype}
-
+{tag_block}
 QUESTION HTML:
 {q_text}
 
@@ -595,18 +1002,19 @@ ANSWER: {answer}
 
 SOLUTION HTML:
 {s_text}
-
-{"NOTE: " + str(len(all_attachments)) + " image(s) attached. Placeholders [ImageQ1], [ImageS1] etc. correspond to attached images in order. EXAMINE each image." if all_attachments else ""}
+{image_note}
 ================================================================================
-EXECUTE AUDIT CHECKLIST AND RETURN JSON RESULT
-================================================================================
-
-Return ONLY valid JSON. No markdown. No explanation."""
+EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
+================================================================================"""
 
         return text, all_attachments
 
     def submit_pass(self, pass_key: str) -> Dict[str, Any]:
-        """Submit a QA pass. Uses Gemini for pass1, OpenAI for pass2/pass3."""
+        """Submit a QA pass.
+
+        - Gemini (pass1): Real-time per-question calls (streaming progress)
+        - OpenAI (pass2/pass3): OpenAI Batch API (async, poll for completion)
+        """
         if pass_key not in PASS_MODELS:
             return {"error": f"Invalid pass: {pass_key}. Use pass1, pass2, or pass3"}
 
@@ -630,53 +1038,692 @@ Return ONLY valid JSON. No markdown. No explanation."""
             self.log("info", f"{pass_key} already completed -- results in ledger")
             return {"status": "already_completed", "pass": pass_key, "ledger": str(ledger_path)}
 
-        # Load batch
+        # All passes now use Batch API
+        if pass_info["api"] == "openai":
+            try:
+                result = self._submit_openai_batch(pass_key)
+                return result
+            except Exception as e:
+                self.log("error", f"{pass_key} OpenAI batch submission failed: {e}")
+                return {"error": f"Batch submission failed: {e}"}
+        elif pass_info["api"] == "gemini":
+            try:
+                result = self._submit_gemini_batch(pass_key)
+                return result
+            except Exception as e:
+                self.log("error", f"{pass_key} Gemini batch submission failed: {e}")
+                return {"error": f"Batch submission failed: {e}"}
+
+    def download_pass_results(self, pass_key: str = "") -> Dict[str, Any]:
+        """Download batch results for completed passes (OpenAI or Gemini).
+
+        If pass_key is specified, downloads just that pass. Otherwise downloads all
+        passes that have batch_complete status.
+        """
+        results = {}
+        passes_to_check = [pass_key] if pass_key else list(PASS_MODELS.keys())
+
+        for pk in passes_to_check:
+            qa_dir = self._get_qa_dir()
+            status_path = qa_dir / f"{pk}_status.json"
+            if not status_path.exists():
+                results[pk] = {"status": "not_started"}
+                continue
+
+            with open(status_path, "r") as f:
+                status_data = json.load(f)
+
+            if status_data.get("status") == "completed":
+                results[pk] = {"status": "already_completed"}
+                continue
+
+            if status_data.get("status") != "batch_complete":
+                results[pk] = {"status": status_data.get("status", "unknown"),
+                               "message": "Batch not yet complete -- poll first"}
+                continue
+
+            try:
+                # Dispatch to correct downloader based on API type
+                if status_data.get("api") == "gemini":
+                    result = self._download_gemini_batch_results(pk)
+                else:
+                    result = self._download_openai_batch_results(pk)
+                results[pk] = result
+            except Exception as e:
+                self.log("error", f"Download {pk} results failed: {e}")
+                results[pk] = {"error": str(e)}
+
+        return results
+
+    def _save_pass_status(self, status_path: Path, status: str, total: int,
+                          processed: int, approved: int, rejected: int):
+        """Save incremental pass status to disk for polling."""
+        with open(status_path, "w") as f:
+            json.dump({
+                "status": status,
+                "total": total,
+                "processed": processed,
+                "approved": approved,
+                "rejected": rejected,
+            }, f)
+
+    # ─── OpenAI Batch API methods ──────────────────────────────────────────
+
+    def _build_openai_batch_jsonl(self, requests_list: List[Dict], system_prompt: str,
+                                   model: str, pass_key: str) -> Path:
+        """Build API-ready JSONL for OpenAI Batch API.
+
+        Each line is a complete chat completion request with multimodal content.
+        """
+        qa_dir = self._get_qa_dir()
+        batch_path = qa_dir / f"{pass_key}_openai_batch.jsonl"
+
+        count = 0
+        with open(batch_path, "w", encoding="utf-8") as f:
+            for req in requests_list:
+                qid = req.get("qid", "?")
+                text_content, image_attachments = self._build_user_content(req)
+
+                # Build multimodal user content parts
+                user_parts = [{"type": "text", "text": text_content}]
+                for img in image_attachments:
+                    user_parts.append(img)
+
+                body = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_parts},
+                    ],
+                    "response_format": OPENAI_QA_RESPONSE_SCHEMA,
+                    "max_completion_tokens": 8192,
+                }
+                # gpt-5-mini: reasoning_effort="low" for structured QA
+                if "mini" in model:
+                    body["reasoning_effort"] = "low"
+
+                line = {
+                    "custom_id": f"qa-{pass_key}-{qid}",
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": body,
+                }
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+                count += 1
+
+        self.log("info", f"Built OpenAI batch JSONL for {pass_key}: {count} requests -> {batch_path.name}")
+        return batch_path
+
+    def _submit_openai_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Submit an OpenAI Batch API job for a QA pass.
+
+        Builds API-ready JSONL from the internal batch file, uploads to OpenAI,
+        creates the batch job, and saves the batch_id for polling.
+        """
+        pass_info = PASS_MODELS[pass_key]
+        model = pass_info["model_id"]
+
+        from app.config import settings
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        qa_dir = self._get_qa_dir()
+        internal_batch_path = qa_dir / f"{pass_key}_batch.jsonl"
+
+        if not internal_batch_path.exists():
+            return {"error": f"Batch file not found for {pass_key} -- run Build QA Batch first"}
+
+        # Load internal batch
         requests_list = []
-        with open(batch_path, "r", encoding="utf-8") as f:
+        with open(internal_batch_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     try:
                         requests_list.append(json.loads(line))
                     except json.JSONDecodeError:
                         continue
+
         if not requests_list:
-            return {"error": f"No requests found in {pass_key} batch file"}
+            return {"error": f"No requests in {pass_key} batch file"}
 
+        # Build system prompt
         system_prompt = self._build_qa_system_prompt()
-        model = pass_info["model_id"]
-        ledger = []
 
-        self.log("info", f"Starting {pass_key} ({pass_info['name']}): {len(requests_list)} questions via {model}")
+        # Build API-ready JSONL
+        self.log("info", f"Building OpenAI batch JSONL for {pass_key} ({len(requests_list)} questions)...")
+        batch_jsonl_path = self._build_openai_batch_jsonl(
+            requests_list, system_prompt, model, pass_key
+        )
 
+        # Upload to OpenAI
+        self.log("info", f"Uploading {pass_key} batch file to OpenAI...")
+        with open(batch_jsonl_path, "rb") as f:
+            file_obj = client.files.create(file=f, purpose="batch")
+        self.log("info", f"File uploaded: {file_obj.id}")
+
+        # Create batch job
+        batch = client.batches.create(
+            input_file_id=file_obj.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+            metadata={"session_id": self.session_id, "pass": pass_key, "type": "qa"},
+        )
+
+        # Save batch status
         status_path = qa_dir / f"{pass_key}_status.json"
         with open(status_path, "w") as f:
-            json.dump({"status": "submitted", "total": len(requests_list)}, f)
+            json.dump({
+                "status": "batch_submitted",
+                "batch_id": batch.id,
+                "file_id": file_obj.id,
+                "total": len(requests_list),
+                "processed": 0,
+                "approved": 0,
+                "rejected": 0,
+            }, f)
 
-        if pass_info["api"] == "gemini":
-            ledger = self._run_gemini_pass(requests_list, system_prompt, model, pass_key)
-        else:
-            ledger = self._run_openai_pass(requests_list, system_prompt, model, pass_key)
+        self.log("success", f"{pass_key} batch submitted to OpenAI: {batch.id} ({len(requests_list)} requests)")
+        return {
+            "status": "batch_submitted",
+            "pass": pass_key,
+            "batch_id": batch.id,
+            "total": len(requests_list),
+        }
+
+    def _poll_openai_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Poll OpenAI Batch API status for a QA pass."""
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        if not status_path.exists():
+            return {"status": "not_started", "total": 0, "processed": 0, "approved": 0, "rejected": 0}
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        batch_id = status_data.get("batch_id")
+        if not batch_id:
+            return status_data
+
+        # If already completed/stopped, return cached status
+        if status_data.get("status") in ("completed", "stopped", "failed"):
+            return status_data
+
+        from app.config import settings
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        try:
+            batch = client.batches.retrieve(batch_id)
+            total = batch.request_counts.total if batch.request_counts else 0
+            completed = batch.request_counts.completed if batch.request_counts else 0
+            failed_count = batch.request_counts.failed if batch.request_counts else 0
+
+            result = {
+                "status": batch.status,
+                "batch_id": batch_id,
+                "total": total,
+                "processed": completed + failed_count,
+                "completed": completed,
+                "failed": failed_count,
+                "approved": status_data.get("approved", 0),
+                "rejected": status_data.get("rejected", 0),
+            }
+
+            if batch.status == "completed" and batch.output_file_id:
+                result["output_file_id"] = batch.output_file_id
+                result["status"] = "batch_complete"
+
+            if batch.status == "failed":
+                result["error"] = str(batch.errors) if batch.errors else "Batch failed"
+
+            # Update status file
+            with open(status_path, "w") as f:
+                json.dump(result, f)
+
+            return result
+        except Exception as e:
+            self.log("error", f"{pass_key} batch poll error: {e}")
+            return {**status_data, "error": str(e)}
+
+    def _download_openai_batch_results(self, pass_key: str) -> Dict[str, Any]:
+        """Download OpenAI Batch API results and build a ledger file.
+
+        Called after polling shows batch_complete. Downloads the output file,
+        parses each line's response, and saves the standard ledger format.
+        """
+        pass_info = PASS_MODELS[pass_key]
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        output_file_id = status_data.get("output_file_id")
+        if not output_file_id:
+            return {"error": f"No output file for {pass_key} -- batch may not be complete"}
+
+        from app.config import settings
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        # Download results
+        self.log("info", f"Downloading {pass_key} batch results from OpenAI...")
+        content = client.files.content(output_file_id)
+        results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+        results_path.write_bytes(content.content)
+        self.log("info", f"Downloaded {pass_key} results: {results_path.name}")
+
+        # Parse results into ledger format
+        ledger = []
+        errors_list = []
+        with open(results_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    result = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                custom_id = result.get("custom_id", "")
+                # Extract QID: "qa-pass2-JS_BIO_Q17" -> "JS_BIO_Q17"
+                prefix = f"qa-{pass_key}-"
+                qid = custom_id[len(prefix):] if custom_id.startswith(prefix) else custom_id
+
+                response = result.get("response", {})
+                status_code = response.get("status_code", 0)
+                body = response.get("body", {})
+
+                if status_code != 200:
+                    # API error for this request
+                    error_msg = body.get("error", {}).get("message", f"HTTP {status_code}")
+                    ledger.append({
+                        "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": error_msg}],
+                    })
+                    errors_list.append(f"{qid}: {error_msg}")
+                    continue
+
+                choices = body.get("choices", [])
+                if not choices:
+                    ledger.append({
+                        "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "No choices in response"}],
+                    })
+                    continue
+
+                choice = choices[0]
+                # Check truncation
+                if choice.get("finish_reason") == "length":
+                    ledger.append({
+                        "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "Output truncated (finish_reason=length)"}],
+                    })
+                    continue
+
+                result_text = choice.get("message", {}).get("content", "")
+                result_data = self._parse_qa_response(result_text, qid)
+                ledger.append({
+                    "qid": qid,
+                    "pass": pass_key,
+                    "model": pass_info["model_id"],
+                    "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
+                    "errors": result_data.get("errors", []),
+                })
 
         # Save ledger
+        ledger_dir = self._get_ledger_dir()
+        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
         with open(ledger_path, "w", encoding="utf-8") as f:
             json.dump(ledger, f, indent=2, ensure_ascii=False)
 
-        with open(status_path, "w") as f:
-            json.dump({"status": "completed", "total": len(requests_list), "processed": len(ledger)}, f)
-
-        approved = sum(1 for e in ledger if not e.get("errors"))
+        approved = sum(1 for e in ledger if not e.get("has_error") and not e.get("errors"))
         rejected = len(ledger) - approved
-        self.log("success", f"{pass_key} complete: {approved} approved, {rejected} rejected out of {len(ledger)}")
 
+        # Update status to completed
+        with open(status_path, "w") as f:
+            json.dump({
+                "status": "completed",
+                "batch_id": status_data.get("batch_id"),
+                "total": len(ledger),
+                "processed": len(ledger),
+                "approved": approved,
+                "rejected": rejected,
+            }, f)
+
+        if errors_list:
+            self.log("warning", f"{pass_key} batch had {len(errors_list)} API errors")
+
+        self.log("success", f"{pass_key} batch results parsed: {approved} approved, {rejected} rejected out of {len(ledger)}")
         return {
             "status": "completed",
             "pass": pass_key,
-            "model": pass_info["name"],
-            "requests": len(requests_list),
-            "processed": len(ledger),
+            "total": len(ledger),
+            "approved": approved,
+            "rejected": rejected,
+            "api_errors": len(errors_list),
+        }
+
+    # ─── Gemini Batch API methods ────────────────────────────────────────
+
+    GEMINI_API_VERSION = "v1beta"
+
+    def _get_gemini_batch_client(self):
+        """Get a google.genai Client configured for batch operations."""
+        from app.config import settings
+        from google import genai
+        from google.genai import types
+        return genai.Client(
+            api_key=settings.gemini_api_key,
+            http_options=types.HttpOptions(api_version=self.GEMINI_API_VERSION)
+        )
+
+    def _build_gemini_batch_jsonl(self, requests_list: List[Dict], system_prompt: str,
+                                   model: str, pass_key: str) -> Path:
+        """Build Gemini Batch API JSONL file.
+
+        Gemini batch format (per line):
+        {
+            "key": "<qid>",
+            "request": {
+                "system_instruction": {"parts": [{"text": "..."}]},
+                "contents": [{"role": "user", "parts": [{"text": "..."}, ...]}],
+                "generation_config": {"temperature": 0, "responseMimeType": "application/json", "maxOutputTokens": 8192}
+            }
+        }
+        """
+        qa_dir = self._get_qa_dir()
+        batch_path = qa_dir / f"{pass_key}_gemini_batch.jsonl"
+
+        count = 0
+        with open(batch_path, "w", encoding="utf-8") as f:
+            for req in requests_list:
+                qid = req.get("qid", "?")
+                text_content, image_attachments = self._build_user_content(req)
+
+                # Build content parts: text + inline images
+                user_parts = [{"text": text_content}]
+                for img in image_attachments:
+                    data_uri = img.get("image_url", {}).get("url", "")
+                    if data_uri.startswith("data:"):
+                        header, b64_data = data_uri.split(",", 1)
+                        mime_type = header.split(":")[1].split(";")[0]
+                        user_parts.append({
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": b64_data,
+                            }
+                        })
+
+                line = {
+                    "key": qid,
+                    "request": {
+                        "system_instruction": {"parts": [{"text": system_prompt}]},
+                        "contents": [{"role": "user", "parts": user_parts}],
+                        "generation_config": {
+                            "temperature": 0,
+                            "responseMimeType": "application/json",
+                            "maxOutputTokens": 8192,
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        }
+                    }
+                }
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+                count += 1
+
+        self.log("info", f"Built Gemini batch JSONL for {pass_key}: {count} requests -> {batch_path.name}")
+        return batch_path
+
+    def _submit_gemini_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Submit a Gemini Batch API job for a QA pass."""
+        pass_info = PASS_MODELS[pass_key]
+        model = pass_info["model_id"]
+
+        qa_dir = self._get_qa_dir()
+        internal_batch_path = qa_dir / f"{pass_key}_batch.jsonl"
+
+        if not internal_batch_path.exists():
+            return {"error": f"Batch file not found for {pass_key} -- run Build QA Batch first"}
+
+        # Load internal batch
+        requests_list = []
+        with open(internal_batch_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        requests_list.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+        if not requests_list:
+            return {"error": f"No requests in {pass_key} batch file"}
+
+        # Build system prompt
+        system_prompt = self._build_qa_system_prompt()
+
+        # Build Gemini-format JSONL
+        self.log("info", f"Building Gemini batch JSONL for {pass_key} ({len(requests_list)} questions)...")
+        batch_jsonl_path = self._build_gemini_batch_jsonl(
+            requests_list, system_prompt, model, pass_key
+        )
+
+        # Upload + submit via google.genai SDK
+        from google.genai import types
+        client = self._get_gemini_batch_client()
+
+        self.log("info", f"Uploading {pass_key} batch file to Gemini API...")
+        uploaded = client.files.upload(
+            file=str(batch_jsonl_path),
+            config=types.UploadFileConfig(
+                display_name=f"qa-{pass_key}-{self.session_id[:8]}",
+                mime_type="jsonl",
+            )
+        )
+        self.log("info", f"File uploaded: {uploaded.name}")
+
+        batch_job = client.batches.create(
+            model=f"models/{model}",
+            src=uploaded.name,
+            config=types.CreateBatchJobConfig(
+                display_name=f"qa-{pass_key}-{self.session_id[:8]}",
+            )
+        )
+        self.log("success", f"{pass_key} Gemini batch submitted: {batch_job.name}")
+
+        # Save status
+        status_path = qa_dir / f"{pass_key}_status.json"
+        with open(status_path, "w") as f:
+            json.dump({
+                "status": "batch_submitted",
+                "batch_id": batch_job.name,
+                "file_id": uploaded.name,
+                "total": len(requests_list),
+                "processed": 0,
+                "approved": 0,
+                "rejected": 0,
+                "api": "gemini",
+            }, f)
+
+        return {
+            "status": "batch_submitted",
+            "pass": pass_key,
+            "batch_id": batch_job.name,
+            "total": len(requests_list),
+        }
+
+    def _poll_gemini_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Poll Gemini Batch API status for a QA pass."""
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        if not status_path.exists():
+            return {"status": "not_started", "total": 0, "processed": 0, "approved": 0, "rejected": 0}
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        batch_id = status_data.get("batch_id")
+        if not batch_id or status_data.get("api") != "gemini":
+            return status_data
+
+        if status_data.get("status") in ("completed", "stopped", "failed"):
+            return status_data
+
+        client = self._get_gemini_batch_client()
+
+        try:
+            batch_job = client.batches.get(name=batch_id)
+            state = batch_job.state.name if hasattr(batch_job.state, 'name') else str(batch_job.state)
+
+            result = {
+                "status": state.lower(),
+                "batch_id": batch_id,
+                "total": status_data.get("total", 0),
+                "processed": 0,
+                "approved": status_data.get("approved", 0),
+                "rejected": status_data.get("rejected", 0),
+                "api": "gemini",
+            }
+
+            if batch_job.completion_stats:
+                s = batch_job.completion_stats
+                success = getattr(s, 'successful_count', 0) or 0
+                fail = getattr(s, 'failed_count', 0) or 0
+                result["processed"] = success + fail
+                result["completed"] = success
+                result["failed"] = fail
+
+            if state == "JOB_STATE_SUCCEEDED":
+                result["status"] = "batch_complete"
+                # Save result file reference
+                if batch_job.dest and hasattr(batch_job.dest, 'file_name') and batch_job.dest.file_name:
+                    result["result_file"] = batch_job.dest.file_name
+
+            elif state == "JOB_STATE_FAILED":
+                result["status"] = "failed"
+                result["error"] = "Gemini batch job failed"
+
+            with open(status_path, "w") as f:
+                json.dump(result, f)
+
+            return result
+        except Exception as e:
+            self.log("error", f"{pass_key} Gemini batch poll error: {e}")
+            return {**status_data, "error": str(e)}
+
+    def _download_gemini_batch_results(self, pass_key: str) -> Dict[str, Any]:
+        """Download Gemini Batch API results and build ledger file."""
+        pass_info = PASS_MODELS[pass_key]
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        result_file = status_data.get("result_file")
+        batch_id = status_data.get("batch_id")
+
+        client = self._get_gemini_batch_client()
+
+        # Get result file if not cached
+        if not result_file and batch_id:
+            try:
+                batch_job = client.batches.get(name=batch_id)
+                if batch_job.dest and hasattr(batch_job.dest, 'file_name') and batch_job.dest.file_name:
+                    result_file = batch_job.dest.file_name
+            except Exception as e:
+                return {"error": f"Could not get result file: {e}"}
+
+        if not result_file:
+            return {"error": f"No result file for {pass_key}"}
+
+        # Download results
+        self.log("info", f"Downloading {pass_key} Gemini batch results: {result_file}")
+        try:
+            file_content = client.files.download(file=result_file)
+            content = file_content.decode('utf-8') if isinstance(file_content, bytes) else str(file_content)
+        except Exception as e:
+            # REST API fallback
+            self.log("warning", f"SDK download failed ({e}), trying REST fallback...")
+            from app.config import settings
+            file_id = result_file.replace("files/", "")
+            url = f"https://generativelanguage.googleapis.com/{self.GEMINI_API_VERSION}/files/{file_id}:download?alt=media"
+            resp = requests.get(url, headers={"x-goog-api-key": settings.gemini_api_key})
+            if resp.status_code == 200:
+                content = resp.text
+            else:
+                return {"error": f"Download failed: {resp.status_code}"}
+
+        # Save raw results
+        results_path = qa_dir / f"{pass_key}_gemini_results.jsonl"
+        results_path.write_text(content, encoding="utf-8")
+
+        # Parse into ledger format
+        ledger = []
+        errors_list = []
+        for line in content.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+                qid = raw.get("key", "")
+
+                # Extract response text from Gemini batch format
+                response_text = ""
+                response = raw.get("response", {})
+                if isinstance(response, dict):
+                    candidates = response.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            response_text = parts[0].get("text", "")
+
+                result_data = self._parse_qa_response(response_text, qid)
+                ledger.append({
+                    "qid": qid,
+                    "pass": pass_key,
+                    "model": pass_info["model_id"],
+                    "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
+                    "errors": result_data.get("errors", []),
+                })
+            except json.JSONDecodeError:
+                errors_list.append(f"Unparseable line: {line[:100]}")
+
+        # Save ledger
+        ledger_dir = self._get_ledger_dir()
+        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+        with open(ledger_path, "w", encoding="utf-8") as f:
+            json.dump(ledger, f, indent=2, ensure_ascii=False)
+
+        approved = sum(1 for e in ledger if not e.get("has_error") and not e.get("errors"))
+        rejected = len(ledger) - approved
+
+        # Update status
+        with open(status_path, "w") as f:
+            json.dump({
+                "status": "completed",
+                "batch_id": status_data.get("batch_id"),
+                "total": len(ledger),
+                "processed": len(ledger),
+                "approved": approved,
+                "rejected": rejected,
+                "api": "gemini",
+            }, f)
+
+        self.log("success", f"{pass_key} Gemini results: {approved} approved, {rejected} rejected out of {len(ledger)}")
+        return {
+            "status": "completed",
+            "pass": pass_key,
+            "total": len(ledger),
             "approved": approved,
             "rejected": rejected,
         }
+
+    # ─── Real-time pass methods (Gemini pass1 + fallback) ────────────────
 
     def _run_openai_pass(self, requests_list: List[Dict], system_prompt: str,
                          model: str, pass_key: str) -> List[Dict]:
@@ -685,8 +1732,15 @@ Return ONLY valid JSON. No markdown. No explanation."""
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
         ledger = []
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
 
         for i, req in enumerate(requests_list):
+            # Check stop flag before each question
+            if self._is_stopped():
+                self.log("warning", f"{pass_key}: Stop requested — halting after {len(ledger)} questions")
+                break
+
             qid = req.get("qid", "?")
             text_content, image_attachments = self._build_user_content(req)
 
@@ -696,15 +1750,25 @@ Return ONLY valid JSON. No markdown. No explanation."""
                 user_parts.append(img)
 
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
+                # GPT-5-mini defaults reasoning ON (medium) — thinking tokens consume
+                # from max_completion_tokens budget. Use "low" effort for structured QA
+                # (checklist-based, not open-ended) + 8192 tokens to accommodate reasoning.
+                # GPT-5.1 defaults reasoning OFF — 8192 is safe headroom.
+                create_kwargs = {
+                    "model": model,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_parts},
                     ],
-                    response_format=OPENAI_QA_RESPONSE_SCHEMA,
-                    max_completion_tokens=16000,
-                )
+                    "response_format": OPENAI_QA_RESPONSE_SCHEMA,
+                    "max_completion_tokens": 8192,
+                }
+                # Set reasoning effort: low for gpt-5-mini (checklist QA, not open-ended)
+                # reasoning_effort is a top-level param in chat.completions.create
+                if "mini" in model:
+                    create_kwargs["reasoning_effort"] = "low"
+
+                response = client.chat.completions.create(**create_kwargs)
                 choice = response.choices[0]
 
                 # Truncation detection: if finish_reason is "length", output was cut off
@@ -715,17 +1779,16 @@ Return ONLY valid JSON. No markdown. No explanation."""
                         "has_error": True,
                         "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "Output truncated (finish_reason=length)"}],
                     })
-                    continue
-
-                result_text = choice.message.content
-                result_data = self._parse_qa_response(result_text, qid)
-                ledger.append({
-                    "qid": qid,
-                    "pass": pass_key,
-                    "model": model,
-                    "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
-                    "errors": result_data.get("errors", []),
-                })
+                else:
+                    result_text = choice.message.content
+                    result_data = self._parse_qa_response(result_text, qid)
+                    ledger.append({
+                        "qid": qid,
+                        "pass": pass_key,
+                        "model": model,
+                        "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
+                        "errors": result_data.get("errors", []),
+                    })
             except Exception as e:
                 self.log("warning", f"{pass_key} error on {qid}: {e}")
                 ledger.append({
@@ -734,8 +1797,12 @@ Return ONLY valid JSON. No markdown. No explanation."""
                     "errors": [{"type": "API_ERROR", "field": "metadata", "detail": str(e)}],
                 })
 
-            if (i + 1) % 5 == 0 or i == len(requests_list) - 1:
-                self.log("info", f"{pass_key}: {i + 1}/{len(requests_list)} processed")
+            # Incremental progress update
+            approved = sum(1 for e in ledger if not e.get("has_error") and not e.get("errors"))
+            rejected = len(ledger) - approved
+            if (i + 1) % 3 == 0 or i == len(requests_list) - 1:
+                self._save_pass_status(status_path, "running", len(requests_list), len(ledger), approved, rejected)
+                self.log("info", f"{pass_key}: {len(ledger)}/{len(requests_list)} processed ({approved} approved, {rejected} rejected)")
 
         return ledger
 
@@ -770,8 +1837,15 @@ Return ONLY valid JSON. No markdown. No explanation."""
 
         client = genai.Client(api_key=settings.gemini_api_key)
         ledger = []
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
 
         for i, req in enumerate(requests_list):
+            # Check stop flag before each question
+            if self._is_stopped():
+                self.log("warning", f"{pass_key}: Stop requested — halting after {len(ledger)} questions")
+                break
+
             qid = req.get("qid", "?")
             text_content, image_attachments = self._build_user_content(req)
 
@@ -786,6 +1860,9 @@ Return ONLY valid JSON. No markdown. No explanation."""
                     parts.append(types.Part.from_bytes(data=raw_bytes, mime_type=mime_type))
 
             try:
+                # Gemini 3 Flash defaults thinking ON at HIGH — thinking tokens consume
+                # from max_output_tokens. Use LOW thinking for structured QA checklist
+                # + 8192 tokens to accommodate thinking + output.
                 response = client.models.generate_content(
                     model=model,
                     contents=types.Content(role="user", parts=parts),
@@ -794,7 +1871,8 @@ Return ONLY valid JSON. No markdown. No explanation."""
                         response_mime_type="application/json",
                         response_json_schema=gemini_qa_schema,
                         temperature=0,
-                        max_output_tokens=2048,
+                        max_output_tokens=8192,
+                        thinking_config=types.ThinkingConfig(thinking_level="LOW"),
                     ),
                 )
 
@@ -808,33 +1886,37 @@ Return ONLY valid JSON. No markdown. No explanation."""
                             "has_error": True,
                             "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "Output truncated (MAX_TOKENS)"}],
                         })
-                        continue
-                    if fr and fr.name == "SAFETY":
+                    elif fr and fr.name == "SAFETY":
                         self.log("warning", f"{pass_key} safety-blocked for {qid}")
                         ledger.append({
                             "qid": qid, "pass": pass_key, "model": model,
                             "has_error": True,
                             "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "Blocked by safety filter"}],
                         })
-                        continue
-
-                # Use parsed result if available, else fallback to text
-                if hasattr(response, 'parsed') and response.parsed is not None:
-                    result = response.parsed
-                    has_err = result.get("has_error", False) if isinstance(result, dict) else getattr(result, "has_error", False)
-                    errs = result.get("errors", []) if isinstance(result, dict) else [e.model_dump() if hasattr(e, 'model_dump') else e for e in getattr(result, "errors", [])]
-                    ledger.append({
-                        "qid": qid, "pass": pass_key, "model": model,
-                        "has_error": has_err,
-                        "errors": errs,
-                    })
+                    else:
+                        # Use parsed result if available, else fallback to text
+                        if hasattr(response, 'parsed') and response.parsed is not None:
+                            result = response.parsed
+                            has_err = result.get("has_error", False) if isinstance(result, dict) else getattr(result, "has_error", False)
+                            errs = result.get("errors", []) if isinstance(result, dict) else [e.model_dump() if hasattr(e, 'model_dump') else e for e in getattr(result, "errors", [])]
+                            ledger.append({
+                                "qid": qid, "pass": pass_key, "model": model,
+                                "has_error": has_err,
+                                "errors": errs,
+                            })
+                        else:
+                            result_text = response.text
+                            result_data = self._parse_qa_response(result_text, qid)
+                            ledger.append({
+                                "qid": qid, "pass": pass_key, "model": model,
+                                "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
+                                "errors": result_data.get("errors", []),
+                            })
                 else:
-                    result_text = response.text
-                    result_data = self._parse_qa_response(result_text, qid)
                     ledger.append({
                         "qid": qid, "pass": pass_key, "model": model,
-                        "has_error": result_data.get("has_error", len(result_data.get("errors", [])) > 0),
-                        "errors": result_data.get("errors", []),
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "No candidates in response"}],
                     })
             except Exception as e:
                 self.log("warning", f"{pass_key} error on {qid}: {e}")
@@ -844,8 +1926,12 @@ Return ONLY valid JSON. No markdown. No explanation."""
                     "errors": [{"type": "API_ERROR", "field": "metadata", "detail": str(e)}],
                 })
 
-            if (i + 1) % 5 == 0 or i == len(requests_list) - 1:
-                self.log("info", f"{pass_key}: {i + 1}/{len(requests_list)} processed")
+            # Incremental progress update
+            approved = sum(1 for e in ledger if not e.get("has_error") and not e.get("errors"))
+            rejected = len(ledger) - approved
+            if (i + 1) % 3 == 0 or i == len(requests_list) - 1:
+                self._save_pass_status(status_path, "running", len(requests_list), len(ledger), approved, rejected)
+                self.log("info", f"{pass_key}: {len(ledger)}/{len(requests_list)} processed ({approved} approved, {rejected} rejected)")
 
         return ledger
 
@@ -874,19 +1960,27 @@ Return ONLY valid JSON. No markdown. No explanation."""
             return {"has_error": False, "errors": [], "raw": text[:200]}
 
     def poll_passes(self) -> Dict[str, Any]:
-        """Poll status of all QA passes with detailed stats."""
+        """Poll status of all QA passes with detailed stats including live progress.
+
+        For OpenAI passes (pass2/pass3): polls Batch API status.
+        For Gemini pass1: reads local status file (real-time progress).
+        """
         statuses = {}
         ledger_dir = self._get_ledger_dir()
+        qa_dir = self._get_qa_dir()
 
         for pass_key, pass_info in PASS_MODELS.items():
             ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+            status_path = qa_dir / f"{pass_key}_status.json"
+
             pass_status = {
                 "model": pass_info["name"],
-                "status": "completed" if ledger_path.exists() else "not_started",
-                "results": 0, "approved": 0, "rejected": 0,
-                "batch_id": None, "error_breakdown": None,
+                "status": "not_started",
+                "total": 0, "results": 0, "approved": 0, "rejected": 0,
+                "error_breakdown": None,
             }
 
+            # If ledger exists, this pass is done — read from ledger
             if ledger_path.exists():
                 try:
                     with open(ledger_path, "r") as f:
@@ -896,31 +1990,80 @@ Return ONLY valid JSON. No markdown. No explanation."""
                         approved = sum(1 for e in data if not e.get("has_error") and not e.get("errors"))
                         pass_status["approved"] = approved
                         pass_status["rejected"] = len(data) - approved
+                        pass_status["total"] = len(data)
                         error_counts = {}
                         for entry in data:
                             for err in entry.get("errors", []):
                                 etype = err.get("type", "unknown") if isinstance(err, dict) else str(err)
                                 error_counts[etype] = error_counts.get(etype, 0) + 1
                         pass_status["error_breakdown"] = error_counts
+                        pass_status["status"] = "completed"
                 except Exception:
                     pass
+                statuses[pass_key] = pass_status
+                continue
 
-            qa_dir = self._get_qa_dir()
-            batch_status_path = qa_dir / f"{pass_key}_status.json"
-            if batch_status_path.exists():
+            # Poll batch status for passes with batch_id (OpenAI or Gemini)
+            if status_path.exists():
                 try:
-                    with open(batch_status_path, "r") as f:
-                        bs = json.load(f)
-                    pass_status["batch_id"] = bs.get("batch_id")
-                    if pass_status["status"] == "not_started" and bs.get("status") == "submitted":
-                        pass_status["status"] = "running"
+                    with open(status_path, "r") as f:
+                        sd = json.load(f)
+
+                    if sd.get("batch_id") and sd.get("status") not in ("completed", "stopped", "failed"):
+                        # Live poll from Batch API
+                        api_type = sd.get("api", pass_info["api"])
+                        if api_type == "gemini":
+                            batch_result = self._poll_gemini_batch(pass_key)
+                        else:
+                            batch_result = self._poll_openai_batch(pass_key)
+
+                        pass_status["status"] = batch_result.get("status", "unknown")
+                        pass_status["total"] = batch_result.get("total", 0)
+                        pass_status["results"] = batch_result.get("processed", 0)
+                        pass_status["approved"] = batch_result.get("approved", 0)
+                        pass_status["rejected"] = batch_result.get("rejected", 0)
+                        if batch_result.get("batch_id"):
+                            pass_status["batch_id"] = batch_result["batch_id"]
+
+                        # Auto-download if batch is complete
+                        if pass_status["status"] == "batch_complete":
+                            try:
+                                if api_type == "gemini":
+                                    dl_result = self._download_gemini_batch_results(pass_key)
+                                else:
+                                    dl_result = self._download_openai_batch_results(pass_key)
+                                pass_status["status"] = "completed"
+                                pass_status["approved"] = dl_result.get("approved", 0)
+                                pass_status["rejected"] = dl_result.get("rejected", 0)
+                                pass_status["results"] = dl_result.get("total", 0)
+                                pass_status["total"] = dl_result.get("total", 0)
+                            except Exception as e:
+                                self.log("warning", f"Auto-download failed for {pass_key}: {e}")
+                                pass_status["status"] = "batch_complete"
+                    else:
+                        # Completed/failed/stopped — use cached status
+                        pass_status["status"] = sd.get("status", "not_started")
+                        pass_status["total"] = sd.get("total", 0)
+                        pass_status["results"] = sd.get("processed", 0)
+                        pass_status["approved"] = sd.get("approved", 0)
+                        pass_status["rejected"] = sd.get("rejected", 0)
                 except Exception:
                     pass
 
             statuses[pass_key] = pass_status
 
-        all_complete = all(s["status"] == "completed" for s in statuses.values())
-        return {"passes": statuses, "all_complete": all_complete, "can_vote": all_complete}
+        all_done = all(s["status"] in ("completed", "stopped") for s in statuses.values())
+        any_started = any(s["status"] != "not_started" for s in statuses.values())
+        any_running = any(s["status"] in ("running", "batch_submitted", "in_progress", "validating", "finalizing") for s in statuses.values())
+        # batch_complete means results ready but not yet downloaded into ledger
+        any_batch_ready = any(s["status"] == "batch_complete" for s in statuses.values())
+        return {
+            "passes": statuses,
+            "all_complete": all_done and any_started,
+            "can_vote": all_done and any_started,
+            "any_running": any_running,
+            "any_batch_ready": any_batch_ready,
+        }
 
     def merge_votes(self) -> Dict[str, Any]:
         """Merge votes from all 3 passes.

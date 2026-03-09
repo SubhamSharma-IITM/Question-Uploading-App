@@ -636,7 +636,13 @@ async function downloadResults() {
             } else if (d.status === 'stub') {
                 appendLog('warning', d.message);
             } else {
-                appendLog('success', `Merged: ${d.tags_merged} tags + ${d.latex_merged} LaTeX + ${d.mathml_converted} MathML`);
+                const quarantined = (d.quarantined || 0);
+                appendLog('success', `Merged: ${d.tags_merged} tags + ${d.latex_merged} LaTeX + ${d.mathml_converted} MathML` +
+                    (quarantined > 0 ? ` | ${quarantined} quarantined` : ''));
+                // Update sidebar quarantine count
+                if (quarantined > 0) {
+                    updateSidebarQuarantineCount(quarantined);
+                }
                 document.getElementById('advance-btn').disabled = false;
                 markStepComplete(5);
                 btn.textContent = 'Downloaded \u2713';
@@ -652,6 +658,7 @@ async function downloadResults() {
                     <div class="stat-box"><div class="stat-value">${d.tags_merged || 0}</div><div class="stat-label">Tags Merged</div></div>
                     <div class="stat-box"><div class="stat-value">${d.latex_merged || 0}</div><div class="stat-label">LaTeX Merged</div></div>
                     <div class="stat-box"><div class="stat-value">${d.mathml_converted || 0}</div><div class="stat-label">MathML</div></div>
+                    <div class="stat-box" style="color: ${(d.quarantined || 0) > 0 ? 'var(--error)' : 'var(--success)'}"><div class="stat-value">${d.quarantined || 0}</div><div class="stat-label">Quarantined</div></div>
                 </div>
                 ${d.message ? '<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">' + escapeHtml(d.message) + '</div>' : ''}
             `;

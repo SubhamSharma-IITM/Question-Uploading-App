@@ -231,6 +231,9 @@ def _clean_mathpix_artifacts(text: str) -> str:
     # Fix broken LaTeX: stray backslashes before common words
     cleaned = re.sub(r"\\(and|or|the|in|of|is|for|at|to|with)\b", r"\1", cleaned)
 
+    # Fix LaTeX ampersand artifact: \& -> &
+    cleaned = cleaned.replace("\\&", "&amp;")
+
     # Fix: \text {} -> \text{}
     cleaned = re.sub(r"\\(text|mathrm|mathbf)\s+\{", r"\\\1{", cleaned)
 
@@ -255,6 +258,70 @@ def _normalize_whitespace(text: str) -> str:
     cleaned = "\n".join(lines)
 
     return cleaned.strip()
+
+
+# ── Solution answer format conversion: (1)→(A), (2)→(B), etc. ──────────────
+_NUM_TO_LETTER = {"1": "A", "2": "B", "3": "C", "4": "D"}
+
+def _convert_solution_answer_format(text: str) -> str:
+    """Convert numbered answer references to lettered format in solution text.
+
+    Converts patterns like:
+        Answer : (1)  ->  Answer : (A)
+        Ans:(2)       ->  Ans:(B)
+        Answer: (3)   ->  Answer: (C)
+        option (1)    ->  option (A)
+
+    DOES NOT touch:
+        - Statement/assertion content like "statements (1) and (2) are correct"
+        - Row identifiers inside LaTeX tabular environments
+        - Numbered references in running prose like "from (1), we get"
+    """
+    if not text:
+        return text
+
+    result = text
+
+    # Pattern 1: "Answer" / "Ans" followed by optional punctuation then (N)
+    # e.g. "Answer : (1)", "Ans:(3)", "Answer is (2)", "Ans. (4)"
+    def _replace_answer_ref(m):
+        prefix = m.group(1)  # "Answer", "Ans", etc.
+        mid = m.group(2)     # separators like " : ", ":", " is ", ". "
+        num = m.group(3)     # "1", "2", "3", "4"
+        letter = _NUM_TO_LETTER.get(num, num)
+        return f"{prefix}{mid}({letter})"
+
+    result = re.sub(
+        r'((?:Answer|Ans))((?:\s*[.:]\s*|\.\s*|\s+is\s+))\(\s*([1-4])\s*\)',
+        _replace_answer_ref, result, flags=re.IGNORECASE
+    )
+
+    # Pattern 2: "option (N)" / "Option (N)" -- standalone option references
+    def _replace_option_ref(m):
+        prefix = m.group(1)
+        num = m.group(2)
+        letter = _NUM_TO_LETTER.get(num, num)
+        return f"{prefix}({letter})"
+
+    result = re.sub(
+        r'((?:option|Option|OPTION)\s*)\(\s*([1-4])\s*\)',
+        _replace_option_ref, result
+    )
+
+    # Pattern 3: "Correct option is (N)" / "correct answer: (N)"
+    def _replace_correct_option(m):
+        prefix = m.group(1)
+        mid = m.group(2)
+        num = m.group(3)
+        letter = _NUM_TO_LETTER.get(num, num)
+        return f"{prefix}{mid}({letter})"
+
+    result = re.sub(
+        r'((?:correct|right)\s+(?:option|answer|choice))((?:\s+is\s+|\s*:\s*))\(\s*([1-4])\s*\)',
+        _replace_correct_option, result, flags=re.IGNORECASE
+    )
+
+    return result
 
 
 # ── Main cleaning function ──────────────────────────────────────────────────
@@ -290,6 +357,10 @@ def _clean_text(text: str, is_solution: bool = False) -> str:
 
     # Step 3: Clean MathPIX artifacts
     cleaned = _clean_mathpix_artifacts(cleaned)
+
+    # Step 3.5: Convert solution answer format (1)->(A) etc.
+    if is_solution:
+        cleaned = _convert_solution_answer_format(cleaned)
 
     # Step 4: Normalize whitespace (before br injection)
     cleaned = _normalize_whitespace(cleaned)

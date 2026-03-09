@@ -38,6 +38,19 @@ async function advanceStage(sessionId) {
     }
 }
 
+// ── Sidebar helpers ──
+
+/**
+ * Update the sidebar quarantine count by adding delta to current value.
+ */
+function updateSidebarQuarantineCount(delta) {
+    const el = document.getElementById('sidebar-quarantine-count');
+    if (el) {
+        const current = parseInt(el.textContent) || 0;
+        el.textContent = current + delta;
+    }
+}
+
 // ── Keyboard shortcuts ──
 document.addEventListener('keydown', (e) => {
     // Ctrl+L — focus log pane

@@ -40,9 +40,17 @@ class Settings(BaseSettings):
     # ── Reference database (for duplicate check) ──
     db_path: str = r"D:\ACADZA_WORK\acadza-pdf-generator\data\allque030326.json"
 
+    # ── Global FAISS index cache (shared across sessions) ──
+    # Pre-built index avoids re-embedding 160K questions (~$5 API cost).
+    # Set to a directory containing faiss.index + metadata.json.
+    db_index_dir: str = str(Path(__file__).parent.parent / "data" / "db_index_cache")
+
     # ── Tagging modules ──
     concept_tree_path: str = r"D:\ACADZA_WORK\PCM_Batches\acadza_concept_tree.json"
     tagging_modules_dir: str = r"D:\ACADZA_WORK\PCM_Batches"
+
+    # ── GitHub ──
+    github_token: str = ""
 
     # ── Concurrency ──
     max_concurrent_tasks: int = 3

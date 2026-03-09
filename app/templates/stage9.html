@@ -11,7 +11,7 @@
     {% endif %}
 </div>
 <p class="stage-description">
-    3-model independent QA voting (Gemini Flash + GPT-5-mini + Gemini Pro).
+    3-model independent QA voting (Gemini Flash + GPT-5-mini + GPT-5.1).
     Questions pass/fail based on consensus across 14 error types.
     taggedBy=AITAI/NITAI requires QA; AIT/NIT can skip.
 </p>
@@ -78,37 +78,35 @@
                             <div class="qa-pass-row">
                                 <span class="qa-pass-indicator" id="pass1-indicator"></span>
                                 <span>Pass 1: Gemini Flash</span>
+                                <span class="qa-pass-progress" id="pass1-progress"></span>
                                 <button class="btn btn-sm" onclick="submitPass('pass1')" id="pass1-btn" disabled>Submit</button>
                             </div>
                             <div class="qa-pass-row">
                                 <span class="qa-pass-indicator" id="pass2-indicator"></span>
                                 <span>Pass 2: GPT-5-mini</span>
+                                <span class="qa-pass-progress" id="pass2-progress"></span>
                                 <button class="btn btn-sm" onclick="submitPass('pass2')" id="pass2-btn" disabled>Submit</button>
                             </div>
                             <div class="qa-pass-row">
                                 <span class="qa-pass-indicator" id="pass3-indicator"></span>
-                                <span>Pass 3: Gemini Pro</span>
+                                <span>Pass 3: GPT-5.1</span>
+                                <span class="qa-pass-progress" id="pass3-progress"></span>
                                 <button class="btn btn-sm" onclick="submitPass('pass3')" id="pass3-btn" disabled>Submit</button>
                             </div>
                         </div>
+                        <div style="margin-top: 8px; display: flex; gap: 8px;">
+                            <button class="btn btn-sm btn-primary" onclick="submitAll()" id="submit-all-btn" disabled>Submit All Passes</button>
+                            <button class="btn btn-sm btn-danger" onclick="stopAll()" id="stop-btn" style="display: none;">Stop All</button>
+                        </div>
                     </div>
 
-                    <!-- Step 3: Poll -->
+                    <!-- Step 3: Vote Merge -->
                     <div class="qa-step">
                         <div class="qa-step-label">
                             <span class="qa-step-num">3</span>
-                            <strong>Poll Status</strong>
-                        </div>
-                        <button class="btn btn-sm" onclick="pollPasses()" id="poll-btn" disabled style="margin-top: 6px;">Poll All Passes</button>
-                    </div>
-
-                    <!-- Step 4: Vote Merge -->
-                    <div class="qa-step">
-                        <div class="qa-step-label">
-                            <span class="qa-step-num">4</span>
                             <strong>Merge Votes</strong>
                         </div>
-                        <span style="font-size: 11px; color: var(--text-muted);">3/3 clean=upload, 2/3=review, 1/3=manual, 0/3=fix</span>
+                        <span style="font-size: 11px; color: var(--text-muted);">3/3 clean=upload, 2/3=review, 1/3 or 0/3=quarantine</span>
                         <button class="btn btn-sm" onclick="mergeVotes()" id="vote-btn" disabled style="margin-top: 6px;">Merge Votes</button>
                     </div>
                 </div>
@@ -127,6 +125,10 @@
             <div class="card-header"><h2>QA Results</h2></div>
             <div class="card-body">
                 <div id="results-content"></div>
+                <div id="csv-buttons" style="margin-top: 10px; display: none;">
+                    <a class="btn btn-sm" id="csv-3of3-link" style="margin-right: 6px;">Download 3/3 CSV</a>
+                    <a class="btn btn-sm" id="csv-2of3-link">Download 2/3 CSV</a>
+                </div>
             </div>
         </div>
 
@@ -138,7 +140,6 @@
             </div>
             <div class="card-body">
                 <div id="status-content"></div>
-                <!-- Per-pass detailed stats (shown when passes complete) -->
                 <div id="pass-details" style="margin-top: 12px;"></div>
             </div>
         </div>
@@ -198,8 +199,13 @@
 }
 .qa-pass-indicator.running { background: var(--warning); animation: pulse-glow 1.5s infinite; }
 .qa-pass-indicator.complete { background: var(--success); }
+.qa-pass-indicator.stopped { background: #f59e0b; }
 .qa-pass-indicator.failed { background: var(--error); }
 .qa-pass-row span:nth-child(2) { flex: 1; }
+.qa-pass-progress {
+    font-size: 11px; color: var(--text-muted); font-family: monospace;
+    min-width: 90px; text-align: right;
+}
 @keyframes pulse-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .vote-grid {
@@ -217,7 +223,6 @@
 .vote-manual { border-color: #e08700; background: rgba(224,135,0,0.05); }
 .vote-fix { border-color: var(--error); background: rgba(218,54,51,0.05); }
 
-/* Per-pass detail cards */
 .pass-detail-card {
     border: 1px solid var(--border); border-radius: 6px;
     margin-bottom: 10px; overflow: hidden;
@@ -246,6 +251,11 @@
 .et-bar-fill.clean { background: var(--success); }
 .et-bar-fill.error { background: var(--error); }
 .error-type-bar .et-count { min-width: 30px; text-align: right; font-size: 11px; font-weight: 600; }
+
+.btn-danger {
+    background: var(--error); color: white; border-color: var(--error);
+}
+.btn-danger:hover { opacity: 0.9; }
 </style>
 
 <script>
@@ -255,6 +265,35 @@ const ERROR_TYPES = [
     "MISSING_SOLUTION", "TRUNCATED_SOLUTION", "SOLUTION_MISMATCH",
     "WRONG_SUBJECT", "WRONG_QUESTION_TYPE", "BROKEN_LATEX", "BROKEN_HTML"
 ];
+
+let _pollInterval = null;
+let _qaRunning = false;
+
+function setQARunning(running) {
+    _qaRunning = running;
+    window._activeProcess = running;
+    window._activeStopUrl = running ? '/api/sessions/{{ session.id }}/stage9/stop' : '';
+    document.getElementById('stop-btn').style.display = running ? 'inline-block' : 'none';
+    document.getElementById('submit-all-btn').disabled = running;
+    // Freeze inputs during processing
+    const inputs = ['qa-extra-context', 'strict-mode', 'check-latex'];
+    inputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = running;
+    });
+}
+
+function startAutoPoll() {
+    if (_pollInterval) return;
+    _pollInterval = setInterval(() => pollPasses(true), 4000);
+}
+
+function stopAutoPoll() {
+    if (_pollInterval) {
+        clearInterval(_pollInterval);
+        _pollInterval = null;
+    }
+}
 
 async function scanQA() {
     const btn = document.getElementById('scan-btn');
@@ -276,46 +315,30 @@ async function scanQA() {
                 return;
             }
 
-            // Tagged-by breakdown
             let tagHtml = '';
             if (d.tagged_by) {
-                tagHtml = '<div style="margin-top: 8px; font-size: 12px;">';
-                tagHtml += 'Tagged by: ';
+                tagHtml = '<div style="margin-top: 8px; font-size: 12px;">Tagged by: ';
                 tagHtml += Object.entries(d.tagged_by).map(([t, c]) => '<strong>' + t + '</strong>: ' + c).join(' | ');
                 tagHtml += '</div>';
             }
 
-            // Credential status
             let credHtml = '';
             if (d.credentials) {
                 const cred = d.credentials;
-                credHtml = '<div style="margin-top: 8px; font-size: 11px;">';
-                credHtml += 'API Keys: OpenAI ' + (cred.openai ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
+                credHtml = '<div style="margin-top: 8px; font-size: 11px;">API Keys: ';
+                credHtml += 'OpenAI ' + (cred.openai ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
                 credHtml += ' | Gemini ' + (cred.gemini ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
                 credHtml += '</div>';
             }
 
             document.getElementById('scan-result').innerHTML = `
                 <div class="stat-grid">
-                    <div class="stat-box">
-                        <div class="stat-value">${d.total_questions}</div>
-                        <div class="stat-label">Total Questions</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">${d.needs_qa}</div>
-                        <div class="stat-label">Need QA</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">${d.skip_qa}</div>
-                        <div class="stat-label">Skip QA</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">${d.error_types_checked || 14}</div>
-                        <div class="stat-label">Error Types</div>
-                    </div>
+                    <div class="stat-box"><div class="stat-value">${d.total_questions}</div><div class="stat-label">Total Questions</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.needs_qa}</div><div class="stat-label">Need QA</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.skip_qa}</div><div class="stat-label">Skip QA</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.error_types_checked || 14}</div><div class="stat-label">Error Types</div></div>
                 </div>
-                ${tagHtml}
-                ${credHtml}
+                ${tagHtml}${credHtml}
             `;
 
             if (d.qa_needed) {
@@ -324,10 +347,7 @@ async function scanQA() {
                 appendLog('info', 'No questions need QA — all tagged as AIT/NIT (faculty path)');
             }
 
-            // Show pipeline
             document.getElementById('pipeline-card').style.display = 'block';
-
-            // Show error types reference
             showErrorTypes();
 
             if (d.can_skip) {
@@ -359,7 +379,6 @@ async function buildQA() {
     appendLog('info', 'Building QA batch files for 3 models...');
 
     try {
-        // Collect extra context and options from the form
         const extraContext = encodeURIComponent(document.getElementById('qa-extra-context').value || '');
         const strictMode = document.getElementById('strict-mode').checked;
         const checkLatex = document.getElementById('check-latex').checked;
@@ -370,10 +389,14 @@ async function buildQA() {
 
             if (d.error) {
                 appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Build Batches';
+                return;
             } else if (!d.qa_needed) {
                 appendLog('info', d.message || 'QA not needed — you can mark pipeline complete');
-                // Enable complete button directly since QA is not required
                 document.getElementById('complete-btn').disabled = false;
+                btn.textContent = 'Built (no QA needed)';
+                return;
             } else {
                 const card = document.getElementById('results-card');
                 card.style.display = 'block';
@@ -391,7 +414,7 @@ async function buildQA() {
                 document.getElementById('pass1-btn').disabled = false;
                 document.getElementById('pass2-btn').disabled = false;
                 document.getElementById('pass3-btn').disabled = false;
-                document.getElementById('poll-btn').disabled = false;
+                document.getElementById('submit-all-btn').disabled = false;
                 btn.textContent = 'Built \u2713';
                 document.getElementById('skip-btn').disabled = true;
                 return;
@@ -408,9 +431,11 @@ async function submitPass(passKey) {
     const btn = document.getElementById(passKey + '-btn');
     const indicator = document.getElementById(passKey + '-indicator');
     btn.disabled = true;
-    btn.textContent = 'Submitting...';
+    btn.textContent = 'Running...';
     indicator.className = 'qa-pass-indicator running';
-    appendLog('info', `Submitting ${passKey}...`);
+    appendLog('info', `Submitting ${passKey} (background)...`);
+
+    setQARunning(true);
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + passKey);
@@ -419,29 +444,70 @@ async function submitPass(passKey) {
             if (d.error) {
                 appendLog('error', `${passKey}: ${d.error}`);
                 indicator.className = 'qa-pass-indicator failed';
-            } else if (d.status === 'stub') {
-                appendLog('warning', `${passKey}: ${d.message}`);
-                indicator.className = 'qa-pass-indicator';
+                btn.disabled = false;
+                btn.textContent = 'Submit';
+                checkIfAllDone();
+            } else if (d.status === 'already_completed' || d.status === 'already_running') {
+                appendLog('info', `${passKey}: ${d.message || d.status}`);
+                if (d.status === 'already_completed') {
+                    indicator.className = 'qa-pass-indicator complete';
+                    btn.textContent = 'Done \u2713';
+                }
             } else {
-                appendLog('success', `${passKey} submitted: ${d.requests} requests`);
-                indicator.className = 'qa-pass-indicator running';
-                btn.textContent = 'Submitted \u2713';
-                return;
+                appendLog('info', `${passKey}: Started in background`);
+                startAutoPoll();
             }
         }
     } catch (e) {
         appendLog('error', `${passKey} error: ${e.message}`);
         indicator.className = 'qa-pass-indicator failed';
+        btn.disabled = false;
+        btn.textContent = 'Submit';
+        checkIfAllDone();
     }
-    btn.disabled = false;
-    btn.textContent = 'Submit';
 }
 
-async function pollPasses() {
-    const btn = document.getElementById('poll-btn');
-    btn.disabled = true;
-    btn.textContent = 'Polling...';
-    appendLog('info', 'Polling all QA passes...');
+async function submitAll() {
+    appendLog('info', 'Submitting all 3 passes concurrently...');
+    setQARunning(true);
+
+    // Disable all individual submit buttons
+    ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
+        document.getElementById(id).disabled = true;
+        document.getElementById(id).textContent = 'Running...';
+    });
+    ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {
+        document.getElementById(id).className = 'qa-pass-indicator running';
+    });
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit-all');
+        if (r.success) {
+            appendLog('info', 'All passes launched — auto-polling for progress...');
+            startAutoPoll();
+        }
+    } catch (e) {
+        appendLog('error', 'Submit all error: ' + e.message);
+        setQARunning(false);
+    }
+}
+
+async function stopAll() {
+    if (!confirm('Stop all running QA passes?\n\nPartial results will be saved.')) return;
+
+    appendLog('warning', 'Requesting stop for all passes...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/stop');
+        if (r.success) {
+            appendLog('info', r.data.message);
+        }
+    } catch (e) {
+        appendLog('error', 'Stop error: ' + e.message);
+    }
+}
+
+async function pollPasses(silent) {
+    if (!silent) appendLog('info', 'Polling all QA passes...');
 
     try {
         const r = await apiGet('/api/sessions/{{ session.id }}/stage9/poll');
@@ -451,54 +517,82 @@ async function pollPasses() {
             card.style.display = 'block';
 
             // Summary table
-            let html = '<table class="data-table"><thead><tr><th>Pass</th><th>Model</th><th>Status</th><th>Results</th><th>Approved</th><th>Rejected</th></tr></thead><tbody>';
+            let html = '<table class="data-table"><thead><tr><th>Pass</th><th>Model</th><th>Status</th><th>Progress</th><th>Approved</th><th>Rejected</th></tr></thead><tbody>';
 
             for (const [pk, info] of Object.entries(d.passes || {})) {
-                const statusClass = info.status === 'completed' ? 'style="color: var(--success)"' :
-                    info.status === 'running' ? 'style="color: var(--warning)"' : '';
-                const approved = info.approved || 0;
-                const rejected = info.rejected || 0;
+                const statusColor = info.status === 'completed' ? 'var(--success)' :
+                    info.status === 'running' ? 'var(--warning)' :
+                    info.status === 'stopped' ? '#f59e0b' : 'var(--text-muted)';
+                const progressText = info.total > 0 ? `${info.results}/${info.total}` : '—';
                 html += `<tr>
                     <td>${pk}</td>
                     <td>${escapeHtml(info.model)}</td>
-                    <td ${statusClass}>${info.status}</td>
-                    <td>${info.results || 0}</td>
-                    <td style="color: var(--success); font-weight: 600;">${approved}</td>
-                    <td style="color: var(--error); font-weight: 600;">${rejected}</td>
+                    <td style="color: ${statusColor}; font-weight: 600;">${info.status}</td>
+                    <td>${progressText}</td>
+                    <td style="color: var(--success); font-weight: 600;">${info.approved || 0}</td>
+                    <td style="color: var(--error); font-weight: 600;">${info.rejected || 0}</td>
                 </tr>`;
 
-                // Update indicators
+                // Update indicators + progress text
                 const indicator = document.getElementById(pk + '-indicator');
                 if (indicator) {
                     indicator.className = 'qa-pass-indicator ' +
                         (info.status === 'completed' ? 'complete' :
-                         info.status === 'running' ? 'running' : '');
+                         info.status === 'running' ? 'running' :
+                         info.status === 'stopped' ? 'stopped' : '');
+                }
+
+                const progressEl = document.getElementById(pk + '-progress');
+                if (progressEl && info.total > 0) {
+                    progressEl.textContent = `${info.results}/${info.total}`;
+                }
+
+                // Update submit button text
+                const btn = document.getElementById(pk + '-btn');
+                if (btn) {
+                    if (info.status === 'completed') {
+                        btn.textContent = 'Done \u2713';
+                        btn.disabled = true;
+                    } else if (info.status === 'stopped') {
+                        btn.textContent = 'Stopped';
+                        btn.disabled = true;
+                    } else if (info.status === 'running') {
+                        btn.textContent = 'Running...';
+                        btn.disabled = true;
+                    }
                 }
             }
             html += '</tbody></table>';
             document.getElementById('status-content').innerHTML = html;
 
-            // Detailed per-pass breakdown (if any pass completed)
+            // Detailed per-pass breakdown
             let detailsHtml = '';
             for (const [pk, info] of Object.entries(d.passes || {})) {
-                if (info.status === 'completed' && info.error_breakdown) {
+                if ((info.status === 'completed' || info.status === 'stopped') && info.error_breakdown) {
                     detailsHtml += buildPassDetailCard(pk, info);
                 }
             }
             document.getElementById('pass-details').innerHTML = detailsHtml;
 
-            appendLog('info', 'Pass statuses updated');
+            // Check if done
+            if (!d.any_running) {
+                stopAutoPoll();
+                setQARunning(false);
+            }
 
             if (d.can_vote) {
                 document.getElementById('vote-btn').disabled = false;
-                appendLog('success', 'All passes complete — ready to merge votes');
+                if (!silent) appendLog('success', 'All passes complete — ready to merge votes');
             }
         }
     } catch (e) {
-        appendLog('error', 'Poll error: ' + e.message);
+        if (!silent) appendLog('error', 'Poll error: ' + e.message);
     }
-    btn.disabled = false;
-    btn.textContent = 'Poll All Passes';
+}
+
+function checkIfAllDone() {
+    // Quick check if we should stop the running state
+    pollPasses(true);
 }
 
 function buildPassDetailCard(passKey, info) {
@@ -518,7 +612,6 @@ function buildPassDetailCard(passKey, info) {
         </div>
         <div class="pass-detail-body">`;
 
-    // Error type breakdown bars
     if (info.error_breakdown) {
         const maxCount = Math.max(...Object.values(info.error_breakdown), 1);
         html += '<div style="font-size: 12px; font-weight: 600; margin-bottom: 6px;">Error Type Breakdown:</div>';
@@ -527,9 +620,7 @@ function buildPassDetailCard(passKey, info) {
             const pct = (count / maxCount) * 100;
             html += `<div class="error-type-bar">
                 <span class="et-label">${et}</span>
-                <div class="et-bar-bg">
-                    <div class="et-bar-fill error" style="width: ${pct}%;"></div>
-                </div>
+                <div class="et-bar-bg"><div class="et-bar-fill error" style="width: ${pct}%;"></div></div>
                 <span class="et-count">${count}</span>
             </div>`;
         }
@@ -543,7 +634,7 @@ async function mergeVotes() {
     const btn = document.getElementById('vote-btn');
     btn.disabled = true;
     btn.textContent = 'Merging...';
-    appendLog('info', 'Merging votes from all 3 passes...');
+    appendLog('info', 'Merging votes from all passes...');
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage9/vote');
@@ -552,49 +643,60 @@ async function mergeVotes() {
 
             if (d.error) {
                 appendLog('error', d.error);
-            } else if (d.status === 'stub') {
-                appendLog('warning', d.message);
-                const card = document.getElementById('results-card');
-                card.style.display = 'block';
-                document.getElementById('results-content').innerHTML =
-                    '<div class="alert alert-warning">' + escapeHtml(d.message) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Merge Votes';
             } else {
                 const res = d.results || {};
                 const card = document.getElementById('results-card');
                 card.style.display = 'block';
                 document.getElementById('results-content').innerHTML = `
-                    <div style="font-size: 13px; margin-bottom: 8px;">${d.votes_merged} questions voted</div>
+                    <div style="font-size: 13px; margin-bottom: 8px;">${d.votes_merged} questions voted across ${d.passes_used} passes</div>
                     <div class="vote-grid">
                         <div class="vote-box vote-clean">
-                            <div class="vote-value">${res.error_1_clean || 0}</div>
+                            <div class="vote-value">${res.approved_3of3 || 0}</div>
                             <div class="vote-label">error=1 (Clean)</div>
                         </div>
                         <div class="vote-box vote-review">
-                            <div class="vote-value">${res.error_2_review || 0}</div>
+                            <div class="vote-value">${res.review_2of3 || 0}</div>
                             <div class="vote-label">error=2 (Review)</div>
                         </div>
                         <div class="vote-box vote-manual">
-                            <div class="vote-value">${res.error_3_manual || 0}</div>
-                            <div class="vote-label">error=3 (Manual)</div>
+                            <div class="vote-value">${res.rejected_1of3 || 0}</div>
+                            <div class="vote-label">error=3 (Quarantine)</div>
                         </div>
                         <div class="vote-box vote-fix">
-                            <div class="vote-value">${res.error_4_fix || 0}</div>
-                            <div class="vote-label">error=4 (Fix)</div>
+                            <div class="vote-value">${res.rejected_0of3 || 0}</div>
+                            <div class="vote-label">error=4 (Quarantine)</div>
                         </div>
                     </div>
                 `;
-                appendLog('success', `Votes merged: ${res.error_1_clean || 0} clean, ${res.error_2_review || 0} review, ${res.error_3_manual || 0} manual, ${res.error_4_fix || 0} fix`);
+
+                // Show CSV download links
+                const csvBtns = document.getElementById('csv-buttons');
+                csvBtns.style.display = 'block';
+                document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
+                document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
+
+                const quarantinedCount = (res.rejected_1of3 || 0) + (res.rejected_0of3 || 0);
+                appendLog('success', `Votes merged: ${res.approved_3of3 || 0} clean, ${res.review_2of3 || 0} review, ${quarantinedCount} quarantined`);
+                // Update sidebar quarantine count
+                if (quarantinedCount > 0) {
+                    updateSidebarQuarantineCount(quarantinedCount);
+                }
                 document.getElementById('complete-btn').disabled = false;
+                btn.textContent = 'Merged \u2713';
             }
         }
     } catch (e) {
         appendLog('error', 'Vote merge error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Merge Votes';
     }
-    btn.disabled = false;
-    btn.textContent = 'Merge Votes';
 }
 
 async function skipQA() {
+    if (!confirm('Skip quality verification?\n\nQuestions will follow the faculty review path (AIT/NIT).')) return;
+
     const skipBtn = document.getElementById('skip-btn');
     skipBtn.disabled = true;
     appendLog('info', 'Skipping quality verification...');
@@ -627,7 +729,6 @@ async function completeQA() {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage9/complete');
         if (r.success) {
             appendLog('success', 'Pipeline complete! Redirecting to summary...');
-            // Redirect to the completed page (Step 10) which shows full stats
             window.location.href = '/session/{{ session.id }}';
         }
     } catch (e) {
@@ -648,23 +749,48 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('skip-btn').disabled = true;
         document.getElementById('complete-btn').disabled = true;
         document.getElementById('complete-btn').textContent = 'Completed \u2713';
+        document.getElementById('submit-all-btn').disabled = true;
+        // Freeze inputs
+        ['qa-extra-context', 'strict-mode', 'check-latex'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
         if (d.skipped) {
             const card = document.getElementById('results-card');
             card.style.display = 'block';
             document.getElementById('results-content').innerHTML =
                 '<div class="alert alert-info">Quality verification was skipped (AIT/NIT path).</div>';
-        } else if (d.votes_merged) {
+        } else if (d.votes_merged || d.total) {
             const card = document.getElementById('results-card');
             card.style.display = 'block';
             document.getElementById('results-content').innerHTML = `
                 <div class="vote-grid">
                     <div class="vote-box vote-clean"><div class="vote-value">${d.error_1 || 0}</div><div class="vote-label">Clean</div></div>
                     <div class="vote-box vote-review"><div class="vote-value">${d.error_2 || 0}</div><div class="vote-label">Review</div></div>
-                    <div class="vote-box vote-manual"><div class="vote-value">${d.error_3 || 0}</div><div class="vote-label">Manual</div></div>
-                    <div class="vote-box vote-fix"><div class="vote-value">${d.error_4 || 0}</div><div class="vote-label">Fix</div></div>
+                    <div class="vote-box vote-manual"><div class="vote-value">${d.error_3 || 0}</div><div class="vote-label">Quarantine</div></div>
+                    <div class="vote-box vote-fix"><div class="vote-value">${d.error_4 || 0}</div><div class="vote-label">Quarantine</div></div>
                 </div>
             `;
+            // Show CSV links
+            const csvBtns = document.getElementById('csv-buttons');
+            csvBtns.style.display = 'block';
+            document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
+            document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
         }
+        // Disable all pass buttons
+        ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
+            document.getElementById(id).disabled = true;
+            document.getElementById(id).textContent = 'Done \u2713';
+        });
+        ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {
+            document.getElementById(id).className = 'qa-pass-indicator complete';
+        });
+    } else {
+        // Check if any passes are currently running (page reload mid-process)
+        pollPasses(true).then(() => {
+            // If any pass is running, start auto-poll
+            // The poll response will set the UI state
+        });
     }
 });
 </script>

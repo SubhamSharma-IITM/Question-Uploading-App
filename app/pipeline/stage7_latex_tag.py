@@ -13,6 +13,8 @@ CHANGES: Adapted for session-based pipeline, OpenAI batch API, actual latex2math
 
 import json
 import re
+import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +25,407 @@ try:
     HAS_LATEX2MATHML = True
 except ImportError:
     HAS_LATEX2MATHML = False
+
+log = logging.getLogger(__name__)
+
+# ============== FAISS Tagging Constants (forked from production) ==============
+TOP_K = 28
+SIMILARITY_CUTOFF = 0.50
+MAX_CHUNKS_PER_CHAPTER = 5
+MAX_TOTAL_CHUNKS = 51
+EMBEDDING_MODEL = "text-embedding-3-small"
+MAX_EMBEDDING_CHARS = 8000
+
+SUBJECT_FAISS_MAP = {
+    "Physics": "physics",
+    "Chemistry": "chemistry",
+    "Mathematics": "math",
+    "Biology": "biology",
+    "Botany": "biology",
+    "Zoology": "biology",
+}
+
+# Production tagger prompt (forked from Gemini_Bulk_Batch_Processor.py)
+TAGGER_INSTRUCTIONS = """You are an expert JEE/NEET exam content tagger. Your task is to identify the most relevant concept tags for questions.
+
+CRITICAL INSTRUCTION:
+- You MUST return ONLY the chunk IDs provided in the reference list
+- Do NOT invent, modify, or paraphrase any chunk information
+- Simply select 1-3 chunk IDs that best match the question's concepts
+
+TASK:
+1. Read the question and solution carefully
+2. Identify the main concepts being tested
+3. Select 1-3 chunk IDs from the AVAILABLE CHUNKS that best match
+4. Return ONLY the chunk IDs - the system will look up the full details
+
+RULES:
+- Return EXACTLY 1-3 chunk IDs (no more, no less)
+- Use ONLY IDs from the provided list (e.g., "PHY_0001", "CHE_0234")
+- If no chunks match, return an empty array
+- Never mix chunks from different subjects for the same question
+- Focus on concepts DIRECTLY tested in the question
+
+OUTPUT FORMAT (JSON only):
+{
+  "selected_chunk_ids": ["PHY_0001", "PHY_0023"]
+}
+
+- Return ONLY the JSON object
+- No explanation, no commentary
+- Just the chunk IDs array
+"""
+
+TAGGING_OUTPUT_SPEC = """OUTPUT (STRICT JSON):
+{
+  "selected_chunk_ids": ["<ID1>", "<ID2>"]
+}
+
+Maximum 3 IDs. Use exact IDs from the list. No other keys or text."""
+
+
+
+# Production LaTeX prompt (forked from Gemini_Bulk_Batch_Processor.py)
+LATEX_SYSTEM_INSTRUCTION = (
+    "You are a LaTeX delimiter gatekeeper. "
+    "You ONLY ensure mathematical content has proper \\( ... \\) delimiters. "
+    "You NEVER change content, meaning, spelling, or HTML structure. "
+    "Output valid JSON only."
+)
+
+LATEX_GUARD_SPEC = r"""You are a STRICT LaTeX delimiter gatekeeper.
+
+YOUR ONLY TASK: Ensure mathematical expressions have proper \( ... \) delimiters.
+You are NOT a math solver, editor, or proofreader. You ONLY fix LaTeX delimiters.
+
+CRITICAL RULES - READ CAREFULLY:
+
+1. COPY EVERYTHING VERBATIM
+   - Copy ALL text exactly as-is, character by character
+   - Do NOT change spelling, punctuation, or wording
+   - Do NOT "fix" perceived errors in the content
+   - Do NOT add explanations or clarifications
+   - If text says "H2O", keep it as "H2O" (don't change to H2O unless already formatted)
+
+2. ONLY ADD \( ... \) DELIMITERS WHERE NEEDED
+   You should ONLY wrap mathematical content that is MISSING delimiters:
+
+   WRAP these (if not already wrapped):
+   - Standalone math symbols: alpha, beta, theta, pi
+   - Subscripts/superscripts: H2O -> \(H_2O\), x^2 -> \(x^2\)
+   - Fractions written mathematically: 1/2 in math context
+   - Equations: E=mc^2 -> \(E=mc^2\)
+
+   DO NOT WRAP these:
+   - Regular text and words
+   - HTML tags and attributes
+   - Already-delimited content: \(existing\)
+   - Chemical formulas in plain text context
+
+3. PRESERVE HTML EXACTLY
+   - Keep ALL HTML tags: <p>, <br/>, <strong>, <img>, etc.
+   - Keep ALL attributes: src="...", alt="...", style="..."
+   - Do NOT escape &, <, > (they're already HTML-encoded)
+   - Do NOT add or remove any HTML tags
+
+4. FIX ONLY BROKEN DELIMITERS
+   - Unpaired \( without \) -> add the missing \)
+   - Unpaired \) without \( -> add the missing \(
+   - $...$ -> convert to \(...\)
+   - $$...$$ -> convert to \(...\) (inline only)
+
+SYMBOLS THAT MUST BE LATEX-WRAPPED IF LONE IN TEXT:
+- subscripts / superscripts ( V_B , g sin^-1 )
+- fractions ( 1/2 when mathematical )
+- Greek or special letters ( theta, DeltaQ, pi )
+- trig / math functions ( sin, cos, tan, log, ln, lim, cot, etc. )
+- integrals, summations, products
+- degree sign 30 degrees -> \(30^\circ\)
+- units with powers  m*s^-2 -> \(m \cdot s^{-2}\)
+"""
+
+LATEX_OUTPUT_SPEC = r"""INPUT/OUTPUT FORMAT:
+
+INPUT (exactly this structure):
+{
+  "question": "<HTML string with question content>",
+  "solution": "<HTML string with solution content>"
+}
+
+OUTPUT (exactly this structure):
+{
+  "question": "<HTML string - same content, with LaTeX properly delimited>",
+  "solution": "<HTML string - same content, with LaTeX properly delimited>"
+}
+
+STRICT OUTPUT REQUIREMENTS:
+- Return ONLY the JSON object, nothing else
+- Same keys in same order: "question", "solution"
+- No markdown code blocks
+- No explanation text before or after
+- No trailing commas
+- Preserve ALL original content - only add/fix \( \) delimiters
+"""
+
+
+# ============== LaTeX Table-to-HTML Converter ==============
+
+def latex_table_to_html(latex: str) -> str:
+    """Convert a LaTeX \\begin{tabular}...\\end{tabular} block to an HTML <table>.
+
+    Handles:
+      - Column specs like {|l|l|l|}, {||l|l||l|l|}, {|l|l||c|l|}
+      - \\hline -> bordered rows
+      - & -> cell separator
+      - \\\\ -> row separator
+      - Nested \\begin{tabular}...\\end{tabular} inside cells (flattened to text)
+      - $(...) inline math left as-is
+    """
+    # Step 1: Iteratively flatten innermost nested tabular blocks FIRST.
+    text = latex.strip()
+    changed = True
+    while changed:
+        changed = False
+        pattern = re.compile(
+            r'\\begin\{tabular\}\{[^}]*\}((?:(?!\\begin\{tabular\}).)*?)\\end\{tabular\}',
+            re.DOTALL
+        )
+        matches = list(pattern.finditer(text))
+        if not matches:
+            break
+        if len(matches) == 1:
+            break
+        for m in reversed(matches):
+            inner = m.group(1).strip()
+            inner = re.sub(r'\s*\\\\\s*', ' ', inner)
+            inner = inner.replace('\\hline', '').strip()
+            text = text[:m.start()] + inner + text[m.end():]
+        changed = True
+
+    # Step 2: Extract the single remaining outermost tabular
+    outer = re.match(
+        r'\\begin\{tabular\}\{([^}]*)\}(.*?)\\end\{tabular\}',
+        text.strip(), re.DOTALL
+    )
+    if not outer:
+        return f"<!-- ERROR: could not parse tabular -->\n<pre>{latex}</pre>"
+
+    col_spec = outer.group(1)
+    body = outer.group(2).strip()
+
+    # Step 3: Determine border from col_spec
+    has_border = '|' in col_spec
+
+    # Step 4: Split into rows by \\
+    raw_rows = re.split(r'\\\\', body)
+
+    rows_html = []
+    for raw_row in raw_rows:
+        raw_row = raw_row.strip()
+        if not raw_row:
+            continue
+        row_text = raw_row.replace('\\hline', '').strip()
+        if not row_text:
+            continue
+        cells = [c.strip() for c in row_text.split('&')]
+        cells_html = ''.join(f'<td>{c}</td>' for c in cells)
+        rows_html.append(f'  <tr>{cells_html}</tr>')
+
+    border_attr = ' border="1" cellpadding="4" cellspacing="0"' if has_border else ''
+    table_html = f'<table{border_attr}>\n' + '\n'.join(rows_html) + '\n</table>'
+    return table_html
+
+
+def _convert_tabular_blocks(html: str) -> tuple:
+    """Find and convert all \\begin{tabular}...\\end{tabular} blocks in HTML to HTML tables.
+
+    Runs iteratively to handle nested tabulars (inner ones get flattened first
+    by latex_table_to_html, then outer wrapper gets converted on next pass).
+
+    Returns:
+        (converted_html, count_converted)
+    """
+    if not html:
+        return html, 0
+
+    total_count = 0
+    max_iterations = 10  # safety limit
+
+    for _ in range(max_iterations):
+        pattern = re.compile(
+            r'\\begin\{tabular\}.*?\\end\{tabular\}',
+            re.DOTALL
+        )
+        matches = list(pattern.finditer(html))
+        if not matches:
+            break
+
+        converted_this_pass = 0
+        for m in reversed(matches):
+            table_html = latex_table_to_html(m.group(0))
+            if '<!-- ERROR' not in table_html:
+                html = html[:m.start()] + table_html + html[m.end():]
+                converted_this_pass += 1
+
+        if converted_this_pass == 0:
+            break
+        total_count += converted_this_pass
+
+    return html, total_count
+
+
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def _strip_tags(s: str) -> str:
+    """Strip HTML tags from a string."""
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", HTML_TAG_RE.sub(" ", s)).strip()
+
+
+def _one_line_html(s: str) -> str:
+    """Collapse HTML to single line for JSON embedding."""
+    if not s:
+        return "<p></p>"
+    s = s.replace("\r", "").replace("\n", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s.startswith("<p") and not s.startswith("<h"):
+        s = f"<p>{s}</p>"
+    return s
+
+
+# ============== ChunkCache (forked from production) ==============
+
+class ChunkCache:
+    """Cache for concept chunks with unique IDs. Eliminates hallucination."""
+
+    def __init__(self, subject: str, chunk_data: List[Dict]):
+        self.subject = subject
+        self.id_to_chunk: Dict[str, Dict] = {}
+        self.chunk_to_id: Dict[str, str] = {}
+        self.display_lines: Dict[str, str] = {}
+
+        for idx, chunk in enumerate(chunk_data):
+            subj_code = self._get_subject_code(chunk.get("subject", ""))
+            chunk_id = f"{subj_code}_{idx:04d}"
+            self.id_to_chunk[chunk_id] = chunk
+
+            subj = chunk.get("subject", "")
+            chap = chunk.get("chapter", "")
+            concept = chunk.get("concept", "")
+            subc = chunk.get("subconcept", "")
+            display = f"{subj} > {chap} > {concept} > {subc}"
+            self.display_lines[chunk_id] = display
+            self.chunk_to_id[display] = chunk_id
+
+    def _get_subject_code(self, subject: str) -> str:
+        s = subject.lower()
+        if "physics" in s: return "PHY"
+        elif "chemistry" in s: return "CHE"
+        elif "math" in s: return "MAT"
+        elif "botany" in s: return "BOT"
+        elif "zoology" in s: return "ZOO"
+        elif "biology" in s: return "BIO"
+        return "UNK"
+
+    def format_chunks_for_prompt(self, chunk_ids: List[str]) -> str:
+        lines = []
+        for idx, cid in enumerate(chunk_ids, 1):
+            display = self.display_lines.get(cid, "UNKNOWN")
+            lines.append(f"{idx}. [{cid}] {display}")
+        return "\n".join(lines)
+
+    def resolve_tags_from_ids(self, chunk_ids: List[str]) -> List[Dict]:
+        tags = []
+        for cid in chunk_ids:
+            chunk = self.id_to_chunk.get(cid)
+            if chunk:
+                tags.append({
+                    "subConcept": chunk.get("subconcept", ""),
+                    "concept": chunk.get("concept", ""),
+                    "chapter": chunk.get("chapter", ""),
+                    "subject": chunk.get("subject", ""),
+                    "_chunk_id": cid,
+                })
+        return tags
+
+
+# ============== FAISS Loading + Retrieval ==============
+
+_faiss_cache: Dict[str, Tuple] = {}
+_chunk_caches: Dict[str, ChunkCache] = {}
+
+
+def _load_faiss_for_subject(subject: str):
+    """Load FAISS index + ChunkCache for a subject. Cached across calls."""
+    if subject in _faiss_cache:
+        return _faiss_cache[subject], _chunk_caches[subject]
+
+    import faiss
+    import numpy as np
+
+    from app.config import settings
+    base_dir = Path(settings.tagging_modules_dir)
+
+    s = SUBJECT_FAISS_MAP.get(subject, subject.lower())
+    module_dir = base_dir / f"{s}_tagging_module"
+    index_path = module_dir / f"{s}_faiss_index.idx"
+    chunks_path = module_dir / f"{s}_chunk_data.json"
+
+    if not index_path.exists():
+        raise FileNotFoundError(f"FAISS index not found: {index_path}")
+
+    log.info(f"Loading FAISS index for {subject} from {module_dir}...")
+    index = faiss.read_index(str(index_path))
+
+    with open(chunks_path, "r", encoding="utf-8") as f:
+        chunk_data = json.load(f)
+
+    cache = ChunkCache(s, chunk_data)
+    _faiss_cache[subject] = (index, chunk_data)
+    _chunk_caches[subject] = cache
+
+    log.info(f"Loaded {len(chunk_data)} chunks, index vectors: {index.ntotal}")
+    return (index, chunk_data), cache
+
+
+def _get_embeddings(texts: List[str], openai_client) -> List:
+    """Get embeddings for texts using OpenAI text-embedding-3-small."""
+    import numpy as np
+    truncated = [t[:MAX_EMBEDDING_CHARS] if len(t) > MAX_EMBEDDING_CHARS else (t if t.strip() else "empty")
+                 for t in texts]
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=truncated)
+    return [np.array(item.embedding, dtype="float32") for item in response.data]
+
+
+def _retrieve_chunk_ids(query_vector, index, chunk_data, cache) -> List[str]:
+    """Retrieve relevant chunk IDs via FAISS similarity search."""
+    import numpy as np
+    scores, indices = index.search(np.array([query_vector]), 100)
+
+    filtered = []
+    for idx, score in zip(indices[0], scores[0]):
+        if idx < len(chunk_data) and score >= SIMILARITY_CUTOFF:
+            chunk = chunk_data[idx]
+            display = f"{chunk.get('subject','')} > {chunk.get('chapter','')} > {chunk.get('concept','')} > {chunk.get('subconcept','')}"
+            chunk_id = cache.chunk_to_id.get(display)
+            if chunk_id:
+                filtered.append((chunk_id, chunk, score))
+
+    if not filtered:
+        return []
+
+    chapter_chunks = defaultdict(list)
+    for cid, chunk, score in filtered:
+        key = f"{chunk.get('subject')}::{chunk.get('chapter')}"
+        chapter_chunks[key].append(cid)
+
+    selected = []
+    for key, cids in chapter_chunks.items():
+        selected.extend(cids[:MAX_CHUNKS_PER_CHAPTER])
+        if len(selected) >= MAX_TOTAL_CHUNKS:
+            return selected[:MAX_TOTAL_CHUNKS]
+    return selected
 
 
 class LatexTagStage(BasePipelineStage):
@@ -77,7 +480,7 @@ class LatexTagStage(BasePipelineStage):
         return all_entries
 
     def _count_latex_blocks(self, html: str) -> int:
-        """Count LaTeX blocks ($...$, $$...$$, \\(...\\), \\[...\\]) in HTML."""
+        """Count LaTeX blocks ($...$, $$...$$, \\(...\\), \\[...\\], \\begin{tabular}) in HTML."""
         if not html:
             return 0
         patterns = [
@@ -85,6 +488,7 @@ class LatexTagStage(BasePipelineStage):
             r'\$[^$]+\$',
             r'\\\([^)]+\\\)',
             r'\\\[[^\]]+\\\]',
+            r'\\begin\{tabular\}',
         ]
         count = 0
         for pat in patterns:
@@ -132,7 +536,8 @@ class LatexTagStage(BasePipelineStage):
                             '<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"', 1
                         )
                     if _is_display:
-                        # Display math: add display="block" + wrap in mstyle displaystyle
+                        # Display math: replace any existing display attr with display="block"
+                        mathml = re.sub(r'display="[^"]*"', '', mathml, count=1)
                         mathml = mathml.replace(
                             '<math', '<math display="block"', 1
                         )
@@ -314,6 +719,16 @@ class LatexTagStage(BasePipelineStage):
                     html = qdata.get(field, "")
                     if not html:
                         continue
+
+                    # Step A: Convert LaTeX tabular blocks to HTML tables FIRST
+                    # (these can't go through latex2mathml)
+                    html, tables_converted = _convert_tabular_blocks(html)
+                    if tables_converted > 0:
+                        qdata[field] = html
+                        file_modified = True
+                        entry_success += tables_converted
+
+                    # Step B: Convert remaining LaTeX to MathML
                     latex_count = self._count_latex_blocks(html)
                     if latex_count > 0:
                         converted, s, f_cnt = self._convert_latex_to_mathml(html)
@@ -403,31 +818,128 @@ class LatexTagStage(BasePipelineStage):
         with open(tagging_path, "w", encoding="utf-8") as tag_f, \
              open(latex_path, "w", encoding="utf-8") as latex_f:
 
+            # Pre-load FAISS indexes and OpenAI client for embedding retrieval
+            subjects_in_batch = set()
+            tagging_entries = []
+
             for entry in entries:
                 qid = entry.get("qid", "unknown")
                 subject = entry.get("subject", "Unknown")
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
                 question_text = qdata.get("question", "")
+                solution_text = qdata.get("solution", "")
+                answer = entry.get("answer", entry.get(qtype, {}).get("answer", ""))
 
-                # Tagging request — questions with chapter == "TBD"
                 if entry.get("chapter") == "TBD":
+                    tagging_entries.append({
+                        "qid": qid, "subject": subject,
+                        "question": question_text, "solution": solution_text,
+                        "answer": answer,
+                    })
+                    subjects_in_batch.add(subject)
+
+            # Load FAISS indexes for all subjects needed
+            faiss_loaded = {}
+            for subj in subjects_in_batch:
+                try:
+                    (index, chunk_data), cache = _load_faiss_for_subject(subj)
+                    faiss_loaded[subj] = (index, chunk_data, cache)
+                    self.log("info", f"FAISS loaded for {subj}: {len(chunk_data)} chunks")
+                except FileNotFoundError as e:
+                    self.log("warning", f"FAISS not available for {subj}: {e}")
+
+            # Get embeddings in batches for FAISS retrieval
+            if tagging_entries and faiss_loaded:
+                from app.config import settings
+                from openai import OpenAI
+                embed_client = OpenAI(api_key=settings.openai_api_key)
+
+                # Build query texts for embedding
+                query_texts = []
+                for te in tagging_entries:
+                    q_plain = _strip_tags(te["question"])[:1500]
+                    s_plain = _strip_tags(te["solution"])[:1500]
+                    query_texts.append(f"{q_plain}\n{s_plain}")
+
+                self.log("info", f"Computing embeddings for {len(query_texts)} questions...")
+                # Batch embeddings (OpenAI supports up to 2048 per call)
+                all_embeddings = []
+                batch_size = 100
+                for i in range(0, len(query_texts), batch_size):
+                    batch_texts = query_texts[i:i+batch_size]
+                    batch_embeddings = _get_embeddings(batch_texts, embed_client)
+                    all_embeddings.extend(batch_embeddings)
+                self.log("info", f"Embeddings computed: {len(all_embeddings)}")
+
+                # Build tagging requests with FAISS chunks
+                chunk_id_map = {}  # qid -> list of chunk_ids (for resolution later)
+                for idx, te in enumerate(tagging_entries):
+                    subj = te["subject"]
+                    if subj not in faiss_loaded:
+                        # Fallback: no FAISS for this subject, skip tagging
+                        self.log("warning", f"Skipping tag for {te['qid']} — no FAISS for {subj}")
+                        continue
+
+                    index, chunk_data, cache = faiss_loaded[subj]
+                    chunk_ids = _retrieve_chunk_ids(all_embeddings[idx], index, chunk_data, cache)
+                    chunk_id_map[te["qid"]] = chunk_ids
+
+                    if chunk_ids:
+                        chunks_block = f"\n\nAVAILABLE CHUNKS (select by ID only):\n{cache.format_chunks_for_prompt(chunk_ids)}"
+                    else:
+                        chunks_block = "\n\nAVAILABLE CHUNKS: NONE\nNo chunks available. Return empty array."
+
+                    user_content = (
+                        f"{TAGGER_INSTRUCTIONS}\n\n{TAGGING_OUTPUT_SPEC}\n\n"
+                        f"ANSWER: {te['answer']}\n"
+                        f"{chunks_block}\n\n"
+                        f"QUESTION:\n{_strip_tags(te['question'])[:1500]}\n\n"
+                        f"SOLUTION:\n{_strip_tags(te['solution'])[:1500]}\n\n"
+                        "Return ONLY the JSON object with 'selected_chunk_ids'."
+                    )
+
+                    # gpt-5-mini is a reasoning model: temperature must be 1 (default),
+                    # use reasoning_effort="low" for deterministic structured output
                     tag_request = {
-                        "custom_id": f"tag-{qid}",
+                        "custom_id": f"tag-{te['qid']}",
                         "method": "POST",
                         "url": "/v1/chat/completions",
                         "body": {
                             "model": "gpt-5-mini",
                             "messages": [
-                                {"role": "system", "content": f"Tag this {subject} question with chapter, concept, subConcept from the Acadza concept tree."},
-                                {"role": "user", "content": question_text[:2000]},
+                                {"role": "system", "content": "You are an expert JEE/NEET exam content tagger. Return ONLY valid JSON with selected_chunk_ids."},
+                                {"role": "user", "content": user_content},
                             ],
                             "max_completion_tokens": 500,
+                            "reasoning_effort": "low",
                             "response_format": {"type": "json_object"},
                         },
                     }
                     tag_f.write(json.dumps(tag_request) + "\n")
                     tagging_lines += 1
+
+                # Save chunk_id_map for resolution during download
+                chunk_map_path = batch_dir / "chunk_id_map.json"
+                # Save full cache data for chunk ID resolution
+                cache_data = {}
+                for subj, (_, _, cache) in faiss_loaded.items():
+                    for cid, chunk in cache.id_to_chunk.items():
+                        cache_data[cid] = chunk
+                with open(chunk_map_path, "w", encoding="utf-8") as f:
+                    json.dump({"question_chunks": chunk_id_map, "chunk_lookup": cache_data},
+                              f, ensure_ascii=False)
+                self.log("info", f"Saved chunk ID map: {len(chunk_id_map)} questions, {len(cache_data)} chunks")
+
+            elif tagging_entries and not faiss_loaded:
+                self.log("error", "No FAISS indexes available — tagging cannot proceed")
+
+            # LaTeX conversion loop — separate from tagging
+            for entry in entries:
+                qid = entry.get("qid", "unknown")
+                qtype = entry.get("questionType", "")
+                qdata = entry.get(qtype, {})
+                question_text = qdata.get("question", "")
 
                 # LaTeX conversion — ONLY for QIDs that failed local MathML conversion
                 # If no failed_qids file exists, fall back to checking for LaTeX blocks
@@ -438,12 +950,21 @@ class LatexTagStage(BasePipelineStage):
                     needs_latex = self._count_latex_blocks(question_text) > 0
 
                 if needs_latex:
-                    # Send both question AND solution for LaTeX conversion
+                    # Send question + solution as structured JSON (production format)
                     solution_text = qdata.get("solution", "")
-                    combined = question_text
-                    if solution_text and self._count_latex_blocks(solution_text) > 0:
-                        combined = f"QUESTION:\n{question_text}\n\nSOLUTION:\n{solution_text}"
+                    input_json = json.dumps({
+                        "question": _one_line_html(question_text),
+                        "solution": _one_line_html(solution_text),
+                    }, ensure_ascii=False)
 
+                    user_content = (
+                        f"{LATEX_GUARD_SPEC}\n\n"
+                        f"{LATEX_OUTPUT_SPEC}\n\n"
+                        f"INPUT JSON:\n{input_json}\n\n"
+                        "Process the above input. Return ONLY the JSON output with properly delimited LaTeX."
+                    )
+
+                    # gpt-5-mini: temperature must be 1, use reasoning_effort for control
                     latex_request = {
                         "custom_id": f"latex-{qid}",
                         "method": "POST",
@@ -451,10 +972,12 @@ class LatexTagStage(BasePipelineStage):
                         "body": {
                             "model": "gpt-5-mini",
                             "messages": [
-                                {"role": "system", "content": "Convert all LaTeX in the HTML to MathML. If input has QUESTION: and SOLUTION: sections, return both in the same format. Return the full HTML with MathML replacing LaTeX."},
-                                {"role": "user", "content": combined[:6000]},
+                                {"role": "system", "content": LATEX_SYSTEM_INSTRUCTION},
+                                {"role": "user", "content": user_content},
                             ],
-                            "max_completion_tokens": 4000,
+                            "max_completion_tokens": 6000,
+                            "reasoning_effort": "low",
+                            "response_format": {"type": "json_object"},
                         },
                     }
                     latex_f.write(json.dumps(latex_request) + "\n")
@@ -704,6 +1227,18 @@ class LatexTagStage(BasePipelineStage):
                         if not isinstance(data, list):
                             continue
 
+                        # Load chunk lookup for tag resolution (if tagging)
+                        chunk_lookup = {}
+                        if batch_type == "tagging":
+                            chunk_map_path = self._get_batch_dir() / "chunk_id_map.json"
+                            if chunk_map_path.exists():
+                                try:
+                                    with open(chunk_map_path, "r", encoding="utf-8") as cl:
+                                        cm = json.load(cl)
+                                    chunk_lookup = cm.get("chunk_lookup", {})
+                                except Exception:
+                                    pass
+
                         modified = False
                         for entry in data:
                             qid = entry.get("qid", "")
@@ -715,16 +1250,35 @@ class LatexTagStage(BasePipelineStage):
                             if batch_type == "tagging":
                                 try:
                                     tag_data = json.loads(content_text)
-                                    if tag_data.get("chapter"):
+                                    # New format: resolve chunk IDs to tags
+                                    selected_ids = tag_data.get("selected_chunk_ids", [])
+                                    if selected_ids and chunk_lookup:
+                                        # Use first chunk ID for primary tag
+                                        first_chunk = chunk_lookup.get(selected_ids[0], {})
+                                        if first_chunk:
+                                            entry["chapter"] = first_chunk.get("chapter", "TBD")
+                                            entry["concept"] = first_chunk.get("concept", "TBD")
+                                            entry["subConcept"] = first_chunk.get("subconcept", "TBD")
+                                            # Update subject from chunk (Biology -> Botany/Zoology)
+                                            chunk_subject = first_chunk.get("subject", "")
+                                            if chunk_subject:
+                                                entry["subject"] = chunk_subject
+                                            tags_merged += 1
+                                            modified = True
+                                        else:
+                                            empty_tag_qids.append(qid)
+                                    elif tag_data.get("chapter"):
+                                        # Fallback: old format with direct chapter/concept/subConcept
                                         entry["chapter"] = tag_data["chapter"]
-                                    if tag_data.get("concept"):
-                                        entry["concept"] = tag_data["concept"]
-                                    if tag_data.get("subConcept"):
-                                        entry["subConcept"] = tag_data["subConcept"]
-                                    tags_merged += 1
-                                    modified = True
-                                    # Track empty tags — model returned JSON but no valid chapter
-                                    if not tag_data.get("chapter") or tag_data["chapter"] == "TBD":
+                                        if tag_data.get("concept"):
+                                            entry["concept"] = tag_data["concept"]
+                                        if tag_data.get("subConcept"):
+                                            entry["subConcept"] = tag_data["subConcept"]
+                                        tags_merged += 1
+                                        modified = True
+                                        if tag_data["chapter"] == "TBD":
+                                            empty_tag_qids.append(qid)
+                                    else:
                                         empty_tag_qids.append(qid)
                                 except json.JSONDecodeError:
                                     errors.append(f"Invalid JSON for tag-{qid}")
@@ -733,15 +1287,23 @@ class LatexTagStage(BasePipelineStage):
                                 qtype = entry.get("questionType", "")
                                 qdata = entry.get(qtype, {})
                                 if content_text and len(content_text) > 10:
-                                    # Split QUESTION/SOLUTION if present
-                                    q_part = content_text
+                                    # New format: JSON with question/solution keys
+                                    q_part = ""
                                     s_part = ""
-                                    if "QUESTION:" in content_text and "SOLUTION:" in content_text:
-                                        parts = content_text.split("SOLUTION:", 1)
-                                        q_part = parts[0].replace("QUESTION:", "", 1).strip()
-                                        s_part = parts[1].strip()
+                                    try:
+                                        latex_json = json.loads(content_text)
+                                        q_part = latex_json.get("question", "")
+                                        s_part = latex_json.get("solution", "")
+                                    except json.JSONDecodeError:
+                                        # Fallback: old QUESTION:/SOLUTION: split format
+                                        q_part = content_text
+                                        if "QUESTION:" in content_text and "SOLUTION:" in content_text:
+                                            parts = content_text.split("SOLUTION:", 1)
+                                            q_part = parts[0].replace("QUESTION:", "", 1).strip()
+                                            s_part = parts[1].strip()
 
-                                    qdata["question"] = q_part
+                                    if q_part:
+                                        qdata["question"] = q_part
                                     latex_merged += 1
                                     modified = True
 

@@ -57,7 +57,7 @@
                     </label>
                     <div id="pyq-settings" style="display: none; margin-top: 10px;">
                         <div class="form-inline">
-                            <div class="form-group" style="max-width: 140px;">
+                            <div class="form-group" style="max-width: 180px;">
                                 <label>Previous Exam</label>
                                 <select id="prev-exam" class="form-select">
                                     <option value="">Select exam...</option>
@@ -67,15 +67,8 @@
                                     <option value="MHCET">MH CET</option>
                                 </select>
                             </div>
-                            <div class="form-group" style="max-width: 100px;">
-                                <label>Year From</label>
-                                <input type="number" id="pyq-year-from" value="2020" min="2000" max="2026" class="form-input">
-                            </div>
-                            <div class="form-group" style="max-width: 100px;">
-                                <label>Year To</label>
-                                <input type="number" id="pyq-year-to" value="2025" min="2000" max="2026" class="form-input">
-                            </div>
                         </div>
+                        <small class="text-muted">Year is extracted per-question by the LLM in Stage 2.</small>
                     </div>
                 </div>
             </div>
@@ -177,13 +170,7 @@ async function loadSessionConfig() {
                 if (cfg.prev_exam) {
                     document.getElementById('prev-exam').value = cfg.prev_exam;
                 }
-                if (cfg.pyq_year_from) {
-                    document.getElementById('pyq-year-from').value = cfg.pyq_year_from;
-                }
-                if (cfg.pyq_year_to) {
-                    document.getElementById('pyq-year-to').value = cfg.pyq_year_to;
-                }
-                appendLog('info', 'Loaded PYQ config: ' + cfg.prev_exam + ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')');
+                appendLog('info', 'Loaded PYQ config: ' + cfg.prev_exam + (cfg.pyq_year_from ? ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')' : ''));
             }
         }
     } catch (e) {
@@ -211,10 +198,7 @@ async function convertMetadata() {
     if (isPYQ) {
         url += '&is_pyq=true';
         url += '&prev_exam=' + encodeURIComponent(document.getElementById('prev-exam').value);
-        url += '&pyq_year_from=' + document.getElementById('pyq-year-from').value;
-        url += '&pyq_year_to=' + document.getElementById('pyq-year-to').value;
-        appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value +
-            ' (' + document.getElementById('pyq-year-from').value + '-' + document.getElementById('pyq-year-to').value + ')');
+        appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value);
     }
 
     try {
@@ -224,6 +208,10 @@ async function convertMetadata() {
             document.getElementById('advance-btn').disabled = false;
             appendLog('success', 'Metadata V2: ' + r.data.total + ' entries, ' + r.data.triplets + ' triplets' +
                 (r.data.non_triplets_quarantined ? ', ' + r.data.non_triplets_quarantined + ' quarantined' : ''));
+            // Update sidebar quarantine count
+            if (r.data.non_triplets_quarantined > 0) {
+                updateSidebarQuarantineCount(r.data.non_triplets_quarantined);
+            }
             btn.textContent = 'Converted \u2713';
             metadataGenerated = true;
             lastConvertSettings = captureSettings();
@@ -364,8 +352,6 @@ function captureSettings() {
         taggedBy: document.getElementById('tagged-by').value,
         isPYQ: document.getElementById('is-pyq').checked,
         prevExam: document.getElementById('prev-exam').value,
-        yearFrom: document.getElementById('pyq-year-from').value,
-        yearTo: document.getElementById('pyq-year-to').value,
     });
 }
 
@@ -383,7 +369,7 @@ function onSettingsChange() {
 
 // Attach change listeners to all settings inputs
 document.addEventListener('DOMContentLoaded', () => {
-    ['source-name', 'test-code', 'tagged-by', 'is-pyq', 'prev-exam', 'pyq-year-from', 'pyq-year-to'].forEach(id => {
+    ['source-name', 'test-code', 'tagged-by', 'is-pyq', 'prev-exam'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
             el.addEventListener('change', onSettingsChange);

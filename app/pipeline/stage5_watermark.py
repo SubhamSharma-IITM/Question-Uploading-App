@@ -306,6 +306,84 @@ def file_to_base64(img_path: str) -> Optional[str]:
         return None
 
 
+# ── SMILES → SVG rendering ────────────────────────────────────────────────
+
+import re as _re
+
+_SMILES_TAG_RE = _re.compile(r'<smiles>(.*?)</smiles>', _re.IGNORECASE | _re.DOTALL)
+_BR_TAG_RE = _re.compile(r'<br\s*/?>')
+
+def _check_rdkit_available() -> bool:
+    try:
+        from rdkit import Chem
+        return True
+    except ImportError:
+        return False
+
+HAS_RDKIT = _check_rdkit_available()
+
+
+def smiles_to_svg(smiles_str: str, width: int = 300, height: int = 250) -> Optional[str]:
+    """Render a SMILES string to SVG XML using RDKit.
+
+    Returns SVG string or None on failure.
+    """
+    if not HAS_RDKIT:
+        return None
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+
+        cleaned = smiles_str.strip()
+        cleaned = _BR_TAG_RE.sub('', cleaned)
+        if not cleaned:
+            return None
+
+        mol = Chem.MolFromSmiles(cleaned)
+        if not mol:
+            return None
+        AllChem.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText()
+    except Exception:
+        return None
+
+
+def smiles_to_svg_data_uri(smiles_str: str) -> str:
+    """Render SMILES to base64 SVG data URI. Returns empty string on failure."""
+    svg = smiles_to_svg(smiles_str)
+    if not svg:
+        return ""
+    b64 = base64.b64encode(svg.encode()).decode("ascii")
+    return f"data:image/svg+xml;base64,{b64}"
+
+
+def replace_smiles_in_html(html: str) -> Tuple[str, int, int]:
+    """Replace all <smiles>...</smiles> tags in HTML with rendered SVG <img> tags.
+
+    Returns (updated_html, success_count, fail_count).
+    """
+    success = 0
+    fail = 0
+
+    def _replacer(match):
+        nonlocal success, fail
+        raw_smiles = match.group(1)
+        svg_uri = smiles_to_svg_data_uri(raw_smiles)
+        if svg_uri:
+            success += 1
+            return f'<img src="{svg_uri}" alt="SMILES: {raw_smiles.strip()}" style="vertical-align: middle; max-height: 200px;" />'
+        else:
+            fail += 1
+            return match.group(0)  # Keep original on failure
+
+    result = _SMILES_TAG_RE.sub(_replacer, html)
+    return result, success, fail
+
+
 class WatermarkStage(BasePipelineStage):
 
     @property
@@ -495,4 +573,177 @@ class WatermarkStage(BasePipelineStage):
             "total": len(all_images),
             "processed": processed,
             "failed": failed,
+        }
+
+    # ── SMILES detection + rendering ──────────────────────────────────────
+
+    def _get_metadata_files(self) -> List[Path]:
+        """Get all metadata_v2 JSON files in the session.
+
+        Same lookup as Stage 6: checks metadata_v2/ first, then metadata_v2_output/.
+        Handles both flat files and subdirectory layouts.
+        """
+        for dir_name in ("metadata_v2", "metadata_v2_output"):
+            meta_dir = self.session_dir / dir_name
+            if meta_dir.exists():
+                break
+        else:
+            return []
+
+        files = []
+        for f in sorted(meta_dir.glob("*_metadata_v2.json")):
+            if "backup" not in f.name:
+                files.append(f)
+        for sub_dir in sorted(meta_dir.iterdir()):
+            if not sub_dir.is_dir():
+                continue
+            for f in sorted(sub_dir.glob("*_metadata_v2.json")):
+                if "backup" not in f.name:
+                    files.append(f)
+        return files
+
+    def scan_smiles(self) -> Dict[str, Any]:
+        """Scan session metadata for <smiles> tags.
+
+        Returns count of entries and fields containing SMILES, plus rdkit availability.
+        """
+        meta_files = self._get_metadata_files()
+        if not meta_files:
+            return {
+                "has_smiles": False,
+                "rdkit_available": HAS_RDKIT,
+                "total_entries": 0,
+                "entries_with_smiles": 0,
+                "total_smiles_tags": 0,
+                "message": "No metadata files found",
+            }
+
+        entries_with_smiles = 0
+        total_smiles = 0
+        total_entries = 0
+        sample_qids = []
+
+        QUESTION_TYPES = ["scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"]
+
+        for mf in meta_files:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            questions = data if isinstance(data, list) else data.get("questions", [])
+            for q in questions:
+                total_entries += 1
+                qid = q.get("qid", "?")
+                found_smiles = False
+
+                for qt in QUESTION_TYPES:
+                    obj = q.get(qt)
+                    if not obj or not isinstance(obj, dict):
+                        continue
+                    for field_key in ["question", "ques", "solution", "sol"]:
+                        val = str(obj.get(field_key, "") or "")
+                        tags = _SMILES_TAG_RE.findall(val)
+                        if tags:
+                            total_smiles += len(tags)
+                            found_smiles = True
+
+                if found_smiles:
+                    entries_with_smiles += 1
+                    if len(sample_qids) < 5:
+                        sample_qids.append(qid)
+
+        has = entries_with_smiles > 0
+        self.log("info",
+                 f"SMILES scan: {entries_with_smiles} entries with {total_smiles} tags"
+                 if has else "SMILES scan: no <smiles> tags found")
+
+        return {
+            "has_smiles": has,
+            "rdkit_available": HAS_RDKIT,
+            "total_entries": total_entries,
+            "entries_with_smiles": entries_with_smiles,
+            "total_smiles_tags": total_smiles,
+            "sample_qids": sample_qids,
+            "message": (
+                f"Found {total_smiles} SMILES tags in {entries_with_smiles} entries"
+                if has else "No SMILES tags detected — step inactive"
+            ),
+        }
+
+    def render_smiles(self) -> Dict[str, Any]:
+        """Replace all <smiles> tags in session metadata with rendered SVG <img> tags.
+
+        Modifies metadata_v2 files in-place. Only runs if RDKit is available and
+        SMILES tags are detected.
+        """
+        if not HAS_RDKIT:
+            return {"error": "RDKit not installed — pip install rdkit", "processed": 0}
+
+        meta_files = self._get_metadata_files()
+        if not meta_files:
+            return {"error": "No metadata files found", "processed": 0}
+
+        QUESTION_TYPES = ["scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"]
+        total_success = 0
+        total_fail = 0
+        entries_modified = 0
+        files_modified = 0
+
+        for mf in meta_files:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            questions = data if isinstance(data, list) else data.get("questions", [])
+            file_modified = False
+
+            for q in questions:
+                entry_modified = False
+
+                for qt in QUESTION_TYPES:
+                    obj = q.get(qt)
+                    if not obj or not isinstance(obj, dict):
+                        continue
+                    for field_key in ["question", "ques", "solution", "sol"]:
+                        val = obj.get(field_key)
+                        if not val or not isinstance(val, str):
+                            continue
+                        if "<smiles>" not in val.lower():
+                            continue
+
+                        new_val, sc, fc = replace_smiles_in_html(val)
+                        if sc > 0:
+                            obj[field_key] = new_val
+                            total_success += sc
+                            total_fail += fc
+                            entry_modified = True
+
+                if entry_modified:
+                    entries_modified += 1
+                    file_modified = True
+
+            if file_modified:
+                files_modified += 1
+                with open(mf, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+        self.log("success" if total_success > 0 else "info",
+                 f"SMILES rendering: {total_success} rendered, {total_fail} failed, "
+                 f"{entries_modified} entries in {files_modified} files")
+
+        self.save_checkpoint("smiles_rendered", {
+            "success": total_success,
+            "fail": total_fail,
+            "entries_modified": entries_modified,
+        })
+
+        return {
+            "total_success": total_success,
+            "total_fail": total_fail,
+            "entries_modified": entries_modified,
+            "files_modified": files_modified,
         }

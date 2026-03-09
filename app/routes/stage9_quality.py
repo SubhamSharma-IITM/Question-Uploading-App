@@ -1,10 +1,15 @@
-"""Stage 9: Quality Verifier — routes for QA batch build, submit, poll, vote merge."""
+"""Stage 9: Quality Verifier — routes for QA batch build, submit, poll, vote merge.
+
+Submit runs as a background asyncio task so the HTTP response returns immediately.
+The user polls for progress and can stop processing via the /stop endpoint.
+"""
 
 import asyncio
 import io
 import json
 import zipfile
 from pathlib import Path
+from typing import Dict
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -14,6 +19,11 @@ from app.db import get_session, update_session
 from app.models import APIResponse, ErrorDetail
 
 router = APIRouter()
+
+# Track running background tasks per session+pass_key
+_running_tasks: Dict[str, asyncio.Task] = {}
+# Track stage instances for stop support
+_running_stages: Dict[str, object] = {}
 
 
 def _get_session_or_404(session_id: str):
@@ -71,7 +81,11 @@ async def build_qa_batch(
 
 @router.post("/submit")
 async def submit_qa_pass(session_id: str, pass_key: str = "pass1"):
-    """Submit a specific QA pass batch to its model API."""
+    """Submit a specific QA pass to Batch API (all passes).
+
+    All 3 passes now use Batch API (OpenAI or Gemini). Returns immediately
+    with batch_id. Use /poll to track progress.
+    """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
@@ -80,13 +94,104 @@ async def submit_qa_pass(session_id: str, pass_key: str = "pass1"):
 
     from app.pipeline.stage9_quality import QualityVerifierStage
     stage = QualityVerifierStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.submit_pass, pass_key=pass_key)
-    return APIResponse(data=result)
+
+    try:
+        result = await asyncio.to_thread(stage.submit_pass, pass_key=pass_key)
+        return APIResponse(data=result)
+    except Exception as e:
+        return APIResponse(data={"error": str(e), "pass": pass_key})
+
+
+@router.post("/submit-all")
+async def submit_all_passes(session_id: str):
+    """Submit all 3 passes to Batch API (OpenAI + Gemini).
+
+    All passes return immediately with batch_id. Use /poll to track progress.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+    from app.pipeline.stage9_quality import QualityVerifierStage, PASS_MODELS
+
+    started = []
+    for pass_key in PASS_MODELS:
+        stage = QualityVerifierStage(session_id, session_dir)
+        try:
+            result = await asyncio.to_thread(stage.submit_pass, pass_key=pass_key)
+            started.append({"pass": pass_key, **result})
+        except Exception as e:
+            started.append({"pass": pass_key, "status": "error", "error": str(e)})
+
+    return APIResponse(data={"passes": started, "message": "All passes submitted to Batch API. Poll for progress."})
+
+
+@router.post("/stop")
+async def stop_qa(session_id: str, pass_key: str = ""):
+    """Stop one or all running QA passes for this session."""
+    from app.pipeline.stage9_quality import QualityVerifierStage, PASS_MODELS
+    stopped = []
+
+    keys_to_stop = [f"{session_id}:{pass_key}"] if pass_key else [
+        f"{session_id}:{pk}" for pk in PASS_MODELS
+    ]
+
+    for tk in keys_to_stop:
+        stage = _running_stages.get(tk)
+        if stage and isinstance(stage, QualityVerifierStage):
+            stage.request_stop()
+            stopped.append(tk.split(":")[1])
+
+    if stopped:
+        return APIResponse(data={"status": "stopping", "passes": stopped,
+                                 "message": f"Stop requested for: {', '.join(stopped)}"})
+    return APIResponse(data={"status": "not_running",
+                             "message": "No active passes to stop"})
 
 
 @router.get("/poll")
 async def poll_qa_passes(session_id: str):
-    """Poll status of all QA passes."""
+    """Poll status of all QA passes with live progress."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage9_quality import QualityVerifierStage, PASS_MODELS
+    stage = QualityVerifierStage(session_id, session_dir)
+    result = stage.poll_passes()
+
+    # Also check if background tasks are still alive (override status if needed)
+    for pass_key in PASS_MODELS:
+        task_key = f"{session_id}:{pass_key}"
+        task = _running_tasks.get(task_key)
+        if task and not task.done():
+            if result["passes"].get(pass_key, {}).get("status") != "running":
+                result["passes"][pass_key]["status"] = "running"
+
+    # Recalculate flags after potential overrides
+    any_running = any(s["status"] == "running" for s in result["passes"].values())
+    all_done = all(s["status"] in ("completed", "stopped") for s in result["passes"].values())
+    any_started = any(s["status"] != "not_started" for s in result["passes"].values())
+    result["any_running"] = any_running
+    result["all_complete"] = all_done and any_started
+    result["can_vote"] = all_done and any_started
+
+    return APIResponse(data=result)
+
+
+@router.post("/download-batch")
+async def download_batch_results(session_id: str, pass_key: str = ""):
+    """Download completed OpenAI batch results and build ledger files.
+
+    If pass_key is specified, downloads that pass only. Otherwise downloads all
+    OpenAI passes that have completed batches.
+
+    Note: poll_passes() auto-downloads when batch_complete, so this endpoint
+    is mainly for manual retry if auto-download failed.
+    """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
@@ -95,7 +200,7 @@ async def poll_qa_passes(session_id: str):
 
     from app.pipeline.stage9_quality import QualityVerifierStage
     stage = QualityVerifierStage(session_id, session_dir)
-    result = stage.poll_passes()
+    result = await asyncio.to_thread(stage.download_pass_results, pass_key=pass_key)
     return APIResponse(data=result)
 
 

@@ -43,6 +43,22 @@
             </div>
         </div>
 
+        <!-- SMILES Chemistry Rendering -->
+        <div class="card" id="smiles-card" style="display: none;">
+            <div class="card-header">
+                <h2>SMILES Chemistry Formulas</h2>
+                <button class="btn btn-sm btn-primary" onclick="renderSmiles()" id="smiles-render-btn" disabled>
+                    Render SMILES
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="smiles-status" style="font-size: 13px; color: var(--text-secondary);">
+                    Checking for SMILES tags...
+                </div>
+                <div id="smiles-result" style="display: none; margin-top: 8px;"></div>
+            </div>
+        </div>
+
         <!-- Image Preview Grid -->
         <div class="card" id="preview-card" style="display: none;">
             <div class="card-header">
@@ -226,6 +242,72 @@ async function skipWatermark() {
     skipBtn.disabled = false;
 }
 
+// ── SMILES detection + rendering ──
+
+async function scanSmiles() {
+    const card = document.getElementById('smiles-card');
+    const status = document.getElementById('smiles-status');
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/smiles/scan');
+        if (r.success) {
+            const d = r.data;
+            card.style.display = 'block';
+            if (d.has_smiles) {
+                status.innerHTML = `<strong>${d.total_smiles_tags}</strong> SMILES formulas found in <strong>${d.entries_with_smiles}</strong> entries.` +
+                    (d.rdkit_available
+                        ? ' Click "Render SMILES" to convert to SVG images.'
+                        : ' <span style="color:var(--danger)">RDKit not installed — cannot render.</span>');
+                if (d.rdkit_available) {
+                    document.getElementById('smiles-render-btn').disabled = false;
+                }
+                appendLog('info', `SMILES: ${d.total_smiles_tags} formulas in ${d.entries_with_smiles} entries`);
+            } else {
+                status.textContent = 'No SMILES formulas detected — step inactive.';
+                appendLog('info', 'SMILES: none detected');
+            }
+        }
+    } catch (e) {
+        card.style.display = 'block';
+        status.textContent = 'Error scanning for SMILES: ' + e.message;
+    }
+}
+
+async function renderSmiles() {
+    const btn = document.getElementById('smiles-render-btn');
+    btn.disabled = true;
+    btn.textContent = 'Rendering...';
+    appendLog('info', 'Rendering SMILES formulas to SVG...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/smiles/render');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', 'SMILES error: ' + d.error);
+                btn.disabled = false;
+                btn.textContent = 'Render SMILES';
+                return;
+            }
+            const result = document.getElementById('smiles-result');
+            result.style.display = 'block';
+            result.innerHTML = `<div class="stat-grid">
+                <div class="stat-box"><div class="stat-value">${d.total_success}</div><div class="stat-label">Rendered</div></div>
+                <div class="stat-box"><div class="stat-value">${d.total_fail}</div><div class="stat-label">Failed</div></div>
+                <div class="stat-box"><div class="stat-value">${d.entries_modified}</div><div class="stat-label">Entries Modified</div></div>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-top:8px;">
+                SVG images saved as base64 in metadata. They will be uploaded to CDN in Stage 6.
+            </p>`;
+            btn.textContent = 'Rendered \u2713';
+            appendLog('success', `SMILES: ${d.total_success} rendered, ${d.total_fail} failed, ${d.entries_modified} entries`);
+        }
+    } catch (e) {
+        appendLog('error', 'SMILES render error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Render SMILES';
+    }
+}
+
 function showResults(data) {
     const card = document.getElementById('results-card');
     card.style.display = 'block';
@@ -241,6 +323,9 @@ function showResults(data) {
 
 // Restore state from checkpoint when revisiting
 document.addEventListener('DOMContentLoaded', () => {
+    // Always scan for SMILES on page load
+    scanSmiles();
+
     const cp = _checkpoints.find(c => c.stage === 'stage5_watermark');
     if (cp && cp.status === 'completed') {
         const d = cp.data || {};
@@ -257,6 +342,14 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('apply-btn').textContent = 'Applied \u2713';
             showResults(d);
         }
+    }
+
+    // Restore SMILES rendered state
+    const smilesCP = _checkpoints.find(c => c.stage === 'stage5_watermark' && c.data && c.data.smiles_rendered);
+    if (smilesCP) {
+        const btn = document.getElementById('smiles-render-btn');
+        btn.disabled = true;
+        btn.textContent = 'Rendered \u2713';
     }
 });
 </script>
