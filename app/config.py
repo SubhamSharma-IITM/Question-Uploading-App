@@ -37,17 +37,18 @@ class Settings(BaseSettings):
     aws_s3_bucket: str = ""
     aws_s3_region: str = "ap-south-1"
 
-    # ── Reference database (for duplicate check) ──
-    db_path: str = r"D:\ACADZA_WORK\acadza-pdf-generator\data\allque030326.json"
+    # ── Reference database (for duplicate check + Stage 10 absorption) ──
+    # Bundled in repo: data/allque030326.json (tracked via Git LFS)
+    db_path: str = str(Path(__file__).parent.parent / "data" / "allque030326.json")
 
     # ── Global FAISS index cache (shared across sessions) ──
-    # Pre-built index avoids re-embedding 160K questions (~$5 API cost).
-    # Set to a directory containing faiss.index + metadata.json.
+    # Bundled in repo: data/db_index_cache/ (faiss.index tracked via Git LFS)
     db_index_dir: str = str(Path(__file__).parent.parent / "data" / "db_index_cache")
 
-    # ── Tagging modules ──
-    concept_tree_path: str = r"D:\ACADZA_WORK\PCM_Batches\acadza_concept_tree.json"
-    tagging_modules_dir: str = r"D:\ACADZA_WORK\PCM_Batches"
+    # ── Tagging modules (Stage 7) ──
+    # Bundled in repo: data/tagging_modules/{subject}_tagging_module/
+    concept_tree_path: str = str(Path(__file__).parent.parent / "data" / "acadza_concept_tree.json")
+    tagging_modules_dir: str = str(Path(__file__).parent.parent / "data" / "tagging_modules")
 
     # ── GitHub ──
     github_token: str = ""

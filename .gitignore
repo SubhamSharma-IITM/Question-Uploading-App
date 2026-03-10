@@ -1,5 +1,12 @@
-# Data directory (runtime, sessions, DB)
-data/
+# Data directory — ignore runtime/session data but keep bundled assets
+# Must use this pattern: un-ignore data/ dir, then ignore specific subdirs
+data/*
+!data/allque030326.json
+!data/acadza_concept_tree.json
+!data/tagging_modules/
+!data/db_index_cache/
+data/sessions/
+data/ocr_cache/
 
 # Environment files
 .env
