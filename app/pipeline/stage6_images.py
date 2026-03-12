@@ -29,6 +29,12 @@ except ImportError:
     HAS_PIL = False
 
 try:
+    import cairosvg as _cairosvg
+    HAS_CAIROSVG = True
+except ImportError:
+    HAS_CAIROSVG = False
+
+try:
     import requests as http_requests
     HAS_REQUESTS = True
 except ImportError:
@@ -74,16 +80,31 @@ def compute_display_dimensions(width_px: int, height_px: int) -> Tuple[int, int]
     return dw, dh
 
 
+def _guess_mime(path: str) -> str:
+    """Guess MIME type from file extension."""
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(ext, "application/octet-stream")
+
+
 def upload_single_image(local_path: str, timeout: int = 60) -> Tuple[bool, Optional[str], Optional[str]]:
     """Upload one image to Acadza CDN.  Returns (success, cdn_url, error)."""
     if not os.path.exists(local_path):
         return False, None, f"File not found: {local_path}"
 
     basename = os.path.basename(local_path)
+    mime = _guess_mime(local_path)
     with open(local_path, "rb") as f:
         resp = http_requests.post(
             IMAGE_UPLOAD_API,
-            files={"image": (basename, f)},
+            files={"image": (basename, f, mime)},
             timeout=timeout,
         )
     resp.raise_for_status()
@@ -160,6 +181,30 @@ def _save_base64_to_file(b64_data: str, filepath: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _svg_to_png(svg_path: str) -> Optional[str]:
+    """Convert an SVG file to PNG.  Returns PNG path on success, None on failure.
+
+    Uses cairosvg for high-quality rasterisation.  The output PNG is written
+    next to the original SVG with a .png extension.
+    """
+    if not HAS_CAIROSVG:
+        return None
+    png_path = os.path.splitext(svg_path)[0] + ".png"
+    try:
+        _cairosvg.svg2png(url=svg_path, write_to=png_path)
+        if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
+            return png_path
+        return None
+    except Exception:
+        # Silently fail — caller will keep the base64 SVG as fallback
+        if os.path.exists(png_path):
+            try:
+                os.remove(png_path)
+            except OSError:
+                pass
+        return None
 
 
 def _extract_img_srcs_from_question(q: dict) -> List[str]:
@@ -685,9 +730,11 @@ class ImageCDNStage(BasePipelineStage):
             b64_temp_dir = self.session_dir / "images_b64_temp"
             b64_temp_dir.mkdir(parents=True, exist_ok=True)
 
-            # Filter: skip already-cached base64 images
+            # Filter: skip already-cached base64 images (uploaded or kept as base64)
             b64_to_upload = {uri: info for uri, info in base64_images.items()
-                             if uri not in cdn_cache or "cdn_url" not in cdn_cache[uri]}
+                             if uri not in cdn_cache or (
+                                 "cdn_url" not in cdn_cache[uri]
+                                 and not cdn_cache[uri].get("kept_base64"))}
 
             if b64_to_upload:
                 self.log("info", f"Uploading {len(b64_to_upload)} base64 images (SMILES/SVG)...")
@@ -701,13 +748,37 @@ class ImageCDNStage(BasePipelineStage):
                     failed_items.append((uri[:60] + "...", "Failed to decode base64"))
                     continue
 
-                # For SVG files, use fixed dimensions (300x250 matches RDKit output)
+                # For SVG files: convert to PNG before uploading.
+                # CDN serves all files as application/octet-stream which breaks
+                # SVG rendering in <img> tags.  PNGs render fine regardless.
                 if info["ext"] == "svg":
-                    dw, dh = 300, 250
-                    w, h = 300, 250
+                    png_path = _svg_to_png(str(temp_path))
+                    if png_path:
+                        # PNG conversion succeeded — upload PNG instead
+                        upload_path = png_path
+                        upload_filename = os.path.basename(png_path)
+                        try:
+                            with PILImage.open(png_path) as img_obj:
+                                w, h = img_obj.size
+                            dw, dh = compute_display_dimensions(w, h)
+                        except Exception:
+                            dw, dh = MAX_DISPLAY_WIDTH, 169
+                            w, h = dw, dh
+                        self.log("info", f"  SVG->PNG: {info['filename']} -> {upload_filename}")
+                    else:
+                        # PNG conversion failed — keep base64 SVG inline (don't upload)
+                        cdn_cache[uri] = {
+                            "kept_base64": True,
+                            "source": "base64_smiles",
+                            "reason": "svg_to_png_failed",
+                        }
+                        self.log("warning", f"  SVG->PNG failed for {info['filename']}, keeping base64 inline")
+                        continue
                 else:
+                    upload_path = str(temp_path)
+                    upload_filename = info["filename"]
                     try:
-                        with PILImage.open(str(temp_path)) as img_obj:
+                        with PILImage.open(upload_path) as img_obj:
                             w, h = img_obj.size
                         dw, dh = compute_display_dimensions(w, h)
                     except Exception:
@@ -715,7 +786,7 @@ class ImageCDNStage(BasePipelineStage):
                         w, h = dw, dh
 
                 # Upload
-                success, url, err = upload_with_retry(str(temp_path))
+                success, url, err = upload_with_retry(upload_path)
                 if success:
                     cdn_cache[uri] = {
                         "cdn_url": url,
@@ -728,9 +799,18 @@ class ImageCDNStage(BasePipelineStage):
                     b64_uploaded += 1
                     uploaded += 1
                 else:
-                    b64_failed += 1
-                    failed += 1
-                    failed_items.append((info["filename"], err))
+                    if info["ext"] == "svg":
+                        # Upload failed for converted PNG — keep base64 SVG inline
+                        cdn_cache[uri] = {
+                            "kept_base64": True,
+                            "source": "base64_smiles",
+                            "reason": "cdn_upload_failed",
+                        }
+                        self.log("warning", f"  CDN upload failed for {upload_filename}, keeping base64 SVG inline")
+                    else:
+                        b64_failed += 1
+                        failed += 1
+                        failed_items.append((info["filename"], err))
 
                 time.sleep(UPLOAD_DELAY_S)
 
@@ -775,6 +855,55 @@ class ImageCDNStage(BasePipelineStage):
             total_replacements += file_reps
 
         self.log("info", f"Replaced {total_replacements} refs in {files_modified} files")
+
+        # Phase 4b: Detect leftover <smiles> tags — these are unrendered chemical
+        # structures that survived Stage 5 (either skipped or partially failed).
+        # Quarantine these questions so broken <smiles> tags don't reach downstream.
+        import re as _re_mod
+        _leftover_smiles_re = _re_mod.compile(r'<smiles>', _re_mod.IGNORECASE)
+        smiles_quarantined = 0
+
+        for json_path_str in sorted(file_img_refs.keys()):
+            json_path = Path(json_path_str)
+            with open(json_path, "r", encoding="utf-8") as f:
+                questions = json.load(f)
+
+            qids_to_remove = set()
+            for q in questions:
+                qid = q.get("qid", "?")
+                has_leftover = False
+                for container_key in ("scq", "mcq", "integerQuestion", "subjective",
+                                      "passageQuestion", "matchQuestion"):
+                    container = q.get(container_key)
+                    if not isinstance(container, dict):
+                        continue
+                    for field in ("question", "ques", "solution", "sol", "passage"):
+                        text = container.get(field, "")
+                        if text and _leftover_smiles_re.search(text):
+                            has_leftover = True
+                            break
+                    if has_leftover:
+                        break
+
+                if has_leftover:
+                    from app.db import quarantine_question
+                    quarantine_question(
+                        self.session_id, qid,
+                        stage="stage6_images",
+                        reason="unrendered_smiles",
+                        data={"message": "Leftover <smiles> tags found — SMILES not rendered to image"},
+                    )
+                    qids_to_remove.add(qid)
+                    smiles_quarantined += 1
+                    self.log("warning", f"Quarantined {qid}: leftover <smiles> tags in content")
+
+            if qids_to_remove:
+                questions[:] = [q for q in questions if q.get("qid") not in qids_to_remove]
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(questions, f, indent=2, ensure_ascii=False)
+
+        if smiles_quarantined:
+            self.log("warning", f"Quarantined {smiles_quarantined} questions with unrendered <smiles> tags")
 
         # Build sample entries for UI
         sample_entries = []

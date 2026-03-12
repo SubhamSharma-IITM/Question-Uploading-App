@@ -111,11 +111,27 @@ def _collect_images_with_placeholders(html_text: str, prefix: str) -> tuple:
     return new_html, attachments
 
 # Models used in each pass
+# Pass 1 "api" is resolved at runtime: Vertex AI when credentials exist, else AI Studio.
+# This avoids the AI Studio free-tier 429 problem entirely — Vertex AI has proper paid quota.
 PASS_MODELS = {
     "pass1": {"name": "Gemini Flash", "model_id": "gemini-3-flash-preview", "api": "gemini"},
     "pass2": {"name": "GPT-5-mini", "model_id": "gpt-5-mini", "api": "openai"},
     "pass3": {"name": "GPT-5.1", "model_id": "gpt-5.1", "api": "openai"},
 }
+
+
+def _resolve_gemini_api() -> str:
+    """Decide whether to use Vertex AI or AI Studio for Gemini batches.
+
+    Priority: Vertex AI (paid quota, no 429) > AI Studio (free tier, hits 429).
+    Returns 'vertex' or 'gemini'.
+    """
+    import os
+    from app.config import settings
+    creds = settings.vertex_ai_credentials
+    if creds and os.path.exists(creds) and settings.vertex_ai_project:
+        return "vertex"
+    return "gemini"
 
 QUESTION_EDIT_URL = {
     "scq": "https://www.acadza.com/question/edit-question/single-question/",
@@ -310,6 +326,14 @@ FLAG THESE:
   - Attached image is completely blank (solid color, no content) → {field:"question", type:"broken_image"}
   - Attached image is visibly cut off or incomplete → {field:"question", type:"partial_image"}
 
+SMILES / CHEMICAL STRUCTURE ERRORS:
+  - If text still contains raw `<smiles>...</smiles>` tags (not rendered to image),
+    flag: {field:"question", type:"broken_chemical_structure",
+    detail:"Unrendered <smiles> tag — chemical structure not converted to image"}
+  - If a chemical structure image appears blank, distorted, or shows an error
+    placeholder → {field:"question", type:"broken_chemical_structure",
+    detail:"Chemical structure image is blank/corrupted"}
+
 DO NOT FLAG:
   - Questions that are purely text/math with no figure references — no image needed.
   - Valid image placeholders with corresponding valid attached images — this is NORMAL.
@@ -378,6 +402,32 @@ Do NOT flag:
   - Short but complete solutions ("Direct application of Pythagorean theorem: 3^2+4^2=5^2, answer=5")
   - Solutions that are terse but logically complete
   - Solutions for assertion-reason questions that simply state which option is correct with brief reasoning
+
+================================================================================
+SECTION 6B: CLEANER ARTIFACTS (flag: cleaner_artifact)
+================================================================================
+
+Flag when OCR/extraction artifacts survive the cleaning pipeline. These are
+formatting residues that should have been stripped before reaching QA.
+
+QUESTION FIELD — flag if the question text starts with or contains:
+  - Question number prefixes: "Q. 1", "Q1 ", "Ques. 3)", "Question 4:"
+  - Bare number-dot prefixes: "93. " at the very start (number + dot + space)
+  - Parenthesized question numbers: "(1) " at start when NOT an options list
+  - Section headers: \\section*{Q. N}, \\section*{Chemistry Section 1}, etc.
+  - Coaching institute boilerplate: "Sri Chaitanya IIT Academy"
+
+SOLUTION FIELD — flag if the solution text starts with or contains:
+  - Solution prefixes: "Sol 1.", "Sol 2. Answer: C", "Soln. 3"
+  - Answer leak lines: "Answer: C" or "Correct Answer: D" as a standalone line
+  - Question prefixes in solutions: "Q. 1" at start of solution text
+  - Section headers: \\section*{Sol 4. Answer: B}, \\section*{SOLUTION Ans: C}
+  - "SOLUTION Ans: C" text not inside a section header
+
+Do NOT flag:
+  - Bold text like **CONCEPT HINT** (these are intentionally preserved)
+  - Numbers that are part of the actual content (stoichiometric "2H₂O", "100 K")
+  - Option labels "(A)", "(B)", "(1)", "(2)" that are part of an options list
 
 ================================================================================
 SECTION 7: ANSWER VALIDATION
@@ -463,9 +513,11 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 | question | latex_not_converted    | Raw LaTeX remains outside <math> tags                |
 | question | latex_artifacts        | Orphaned LaTeX fragments producing no math output    |
 | question | incomplete_question    | Text truncated mid-sentence or contains other Qs     |
+| question | cleaner_artifact       | OCR prefix/header artifacts surviving cleanup         |
 | question | missing_image          | Text references figure but no image present          |
 | question | broken_image           | Attached image is blank or corrupted                 |
 | question | partial_image          | Attached image is cut off or incomplete              |
+| question | broken_chemical_structure | Unrendered SMILES tag or corrupted structure image |
 | question | wrong_question_type    | Type invalid for exam (JEE Mains: no mcq)           |
 | question | content_mismatch       | Content differs from source MMD ground truth         |
 | solution | missing_solution       | Solution field empty/null/whitespace-only            |
@@ -474,6 +526,7 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 | solution | mathml_parsing_error   | Same as question — unclosed tags in solution         |
 | solution | latex_not_converted    | Raw LaTeX syntax in solution                         |
 | solution | latex_artifacts        | Orphaned LaTeX fragments in solution                 |
+| solution | cleaner_artifact       | Sol/Answer prefixes or section headers in solution   |
 | answer   | missing_answer         | Answer field empty/null/blank                        |
 | answer   | wrong_answer           | Answer contradicts solution's conclusion or MMD      |
 | answer   | invalid_option         | Answer format wrong for questionType                 |
@@ -1047,12 +1100,39 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 self.log("error", f"{pass_key} OpenAI batch submission failed: {e}")
                 return {"error": f"Batch submission failed: {e}"}
         elif pass_info["api"] == "gemini":
-            try:
-                result = self._submit_gemini_batch(pass_key)
-                return result
-            except Exception as e:
-                self.log("error", f"{pass_key} Gemini batch submission failed: {e}")
-                return {"error": f"Batch submission failed: {e}"}
+            # Resolve whether to use Vertex AI (primary) or AI Studio (fallback)
+            resolved_api = _resolve_gemini_api()
+
+            if resolved_api == "vertex":
+                # Vertex AI: primary path — paid quota, no 429 problem
+                self.log("info", f"{pass_key} using Vertex AI (credentials found, paid quota)")
+                try:
+                    result = self._submit_vertex_batch(pass_key)
+                    return result
+                except Exception as e:
+                    error_str = str(e)
+                    self.log("error", f"{pass_key} Vertex AI batch failed: {error_str}")
+                    # Fallback to AI Studio if Vertex AI fails
+                    self.log("warning", f"{pass_key} falling back to AI Studio...")
+                    try:
+                        result = self._submit_gemini_batch(pass_key)
+                        return result
+                    except Exception as e2:
+                        self.log("error", f"{pass_key} AI Studio fallback also failed: {e2}")
+                        return {"error": f"Both Vertex AI and AI Studio failed: Vertex={error_str}, Studio={e2}"}
+            else:
+                # AI Studio: used when no Vertex AI credentials configured
+                self.log("info", f"{pass_key} using AI Studio (no Vertex AI credentials)")
+                try:
+                    result = self._submit_gemini_batch(pass_key)
+                    return result
+                except Exception as e:
+                    error_str = str(e)
+                    self.log("error", f"{pass_key} AI Studio batch failed: {error_str}")
+                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+                        self.log("warning", f"{pass_key} AI Studio hit quota limit. "
+                                 "Configure VERTEX_AI_CREDENTIALS in .env to avoid this.")
+                    return {"error": f"Batch submission failed: {e}"}
 
     def download_pass_results(self, pass_key: str = "") -> Dict[str, Any]:
         """Download batch results for completed passes (OpenAI or Gemini).
@@ -1084,7 +1164,10 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
             try:
                 # Dispatch to correct downloader based on API type
-                if status_data.get("api") == "gemini":
+                api_type = status_data.get("api", "openai")
+                if api_type == "vertex":
+                    result = self._download_vertex_batch_results(pk)
+                elif api_type == "gemini":
                     result = self._download_gemini_batch_results(pk)
                 else:
                     result = self._download_openai_batch_results(pk)
@@ -1275,7 +1358,10 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 result["status"] = "batch_complete"
 
             if batch.status == "failed":
-                result["error"] = str(batch.errors) if batch.errors else "Batch failed"
+                error_detail = str(batch.errors) if batch.errors else "Batch failed (no error details)"
+                result["error"] = error_detail
+                self.log("error", f"{pass_key} OPENAI BATCH FAILED: {error_detail}")
+                self.log("warning", f"{pass_key} failed — {failed_count} questions will be treated as abstentions in QA voting")
 
             # Update status file
             with open(status_path, "w") as f:
@@ -1555,6 +1641,378 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             "total": len(requests_list),
         }
 
+    # ── Vertex AI Batch (primary when credentials exist, AI Studio fallback) ──
+
+    def _get_vertex_client(self):
+        """Get a google.genai Client configured for Vertex AI."""
+        import os
+        from app.config import settings
+        from google import genai
+        from google.genai import types
+
+        creds_path = settings.vertex_ai_credentials
+        if not creds_path or not os.path.exists(creds_path):
+            raise RuntimeError(
+                f"Vertex AI credentials not found at '{creds_path}'. "
+                "Set VERTEX_AI_CREDENTIALS in .env to the service account JSON path."
+            )
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+
+        return genai.Client(
+            vertexai=True,
+            project=settings.vertex_ai_project,
+            location=settings.vertex_ai_location,
+            http_options=types.HttpOptions(api_version="v1beta1"),
+        )
+
+    def _build_vertex_batch_jsonl(self, requests_list: List[Dict], system_prompt: str,
+                                   model: str, pass_key: str) -> Tuple[Path, Dict[str, str]]:
+        """Build Vertex AI Batch JSONL — no 'key' field, track QIDs by line number.
+
+        Returns (jsonl_path, qid_line_map) where qid_line_map = {line_idx: qid}.
+        """
+        qa_dir = self._get_qa_dir()
+        batch_path = qa_dir / f"{pass_key}_vertex_batch.jsonl"
+
+        qid_line_map = {}
+        count = 0
+        with open(batch_path, "w", encoding="utf-8") as f:
+            for req in requests_list:
+                qid = req.get("qid", "?")
+                text_content, image_attachments = self._build_user_content(req)
+
+                user_parts = [{"text": text_content}]
+                for img in image_attachments:
+                    data_uri = img.get("image_url", {}).get("url", "")
+                    if data_uri.startswith("data:"):
+                        header, b64_data = data_uri.split(",", 1)
+                        mime_type = header.split(":")[1].split(";")[0]
+                        user_parts.append({
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": b64_data,
+                            }
+                        })
+
+                # Vertex AI format: NO 'key' field
+                line = {
+                    "request": {
+                        "system_instruction": {"parts": [{"text": system_prompt}]},
+                        "contents": [{"role": "user", "parts": user_parts}],
+                        "generation_config": {
+                            "temperature": 0,
+                            "responseMimeType": "application/json",
+                            "maxOutputTokens": 8192,
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        }
+                    }
+                }
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+                qid_line_map[str(count)] = qid
+                count += 1
+
+        self.log("info", f"Built Vertex AI batch JSONL for {pass_key}: {count} requests")
+        return batch_path, qid_line_map
+
+    def _submit_vertex_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Submit a batch via Vertex AI (GCS-based, separate quota from AI Studio)."""
+        pass_info = PASS_MODELS[pass_key]
+        model = pass_info["model_id"]
+        from app.config import settings
+
+        qa_dir = self._get_qa_dir()
+        internal_batch_path = qa_dir / f"{pass_key}_batch.jsonl"
+        if not internal_batch_path.exists():
+            return {"error": f"Batch file not found for {pass_key}"}
+
+        # Load internal batch
+        requests_list = []
+        with open(internal_batch_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        requests_list.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+        if not requests_list:
+            return {"error": f"No requests in {pass_key} batch file"}
+
+        system_prompt = self._build_qa_system_prompt()
+
+        # Build Vertex-format JSONL + QID mapping
+        self.log("info", f"Building Vertex AI batch for {pass_key} ({len(requests_list)} questions)...")
+        batch_jsonl_path, qid_line_map = self._build_vertex_batch_jsonl(
+            requests_list, system_prompt, model, pass_key
+        )
+
+        # Save QID line mapping for result download
+        mapping_path = qa_dir / f"{pass_key}_vertex_qid_map.json"
+        with open(mapping_path, "w") as f:
+            json.dump(qid_line_map, f)
+
+        # Upload JSONL to GCS
+        from google.cloud import storage as gcs_storage
+        gcs_client = gcs_storage.Client()
+        bucket = gcs_client.bucket(settings.vertex_ai_bucket)
+        gcs_input_path = f"qa_sessions/{self.session_id[:8]}/{pass_key}_input.jsonl"
+        gcs_output_path = f"qa_sessions/{self.session_id[:8]}/{pass_key}_output/"
+
+        blob = bucket.blob(gcs_input_path)
+        blob.upload_from_filename(str(batch_jsonl_path), timeout=600)
+        self.log("info", f"Uploaded to GCS: gs://{settings.vertex_ai_bucket}/{gcs_input_path}")
+
+        # Submit batch via Vertex AI
+        client = self._get_vertex_client()
+        batch_job = client.batches.create(
+            model=f"models/{model}",
+            src=f"gs://{settings.vertex_ai_bucket}/{gcs_input_path}",
+            config={"dest": f"gs://{settings.vertex_ai_bucket}/{gcs_output_path}"},
+        )
+        self.log("success", f"{pass_key} Vertex AI batch submitted: {batch_job.name}")
+
+        # Save status
+        status_path = qa_dir / f"{pass_key}_status.json"
+        with open(status_path, "w") as f:
+            json.dump({
+                "status": "batch_submitted",
+                "batch_id": batch_job.name,
+                "total": len(requests_list),
+                "processed": 0,
+                "approved": 0,
+                "rejected": 0,
+                "api": "vertex",
+                "gcs_output": f"gs://{settings.vertex_ai_bucket}/{gcs_output_path}",
+            }, f)
+
+        return {
+            "status": "batch_submitted",
+            "pass": pass_key,
+            "batch_id": batch_job.name,
+            "total": len(requests_list),
+            "api": "vertex",
+        }
+
+    def _poll_vertex_batch(self, pass_key: str) -> Dict[str, Any]:
+        """Poll Vertex AI batch status."""
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        if not status_path.exists():
+            return {"status": "not_started"}
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        batch_id = status_data.get("batch_id")
+        if not batch_id or status_data.get("api") != "vertex":
+            return status_data
+
+        if status_data.get("status") in ("completed", "stopped", "failed"):
+            return status_data
+
+        try:
+            client = self._get_vertex_client()
+            batch_job = client.batches.get(name=batch_id)
+            state = batch_job.state.name if hasattr(batch_job.state, 'name') else str(batch_job.state)
+
+            VERTEX_STATE_MAP = {
+                "JOB_STATE_PENDING": "batch_submitted",
+                "JOB_STATE_RUNNING": "running",
+                "JOB_STATE_SUCCEEDED": "batch_complete",
+                "JOB_STATE_FAILED": "failed",
+                "JOB_STATE_CANCELLED": "stopped",
+            }
+            mapped_status = VERTEX_STATE_MAP.get(state, state.lower())
+
+            result = {
+                "status": mapped_status,
+                "batch_id": batch_id,
+                "total": status_data.get("total", 0),
+                "processed": 0,
+                "approved": status_data.get("approved", 0),
+                "rejected": status_data.get("rejected", 0),
+                "api": "vertex",
+                "gcs_output": status_data.get("gcs_output", ""),
+            }
+
+            if batch_job.completion_stats:
+                s = batch_job.completion_stats
+                success = getattr(s, 'successful_count', 0) or 0
+                fail = getattr(s, 'failed_count', 0) or 0
+                result["processed"] = success + fail
+                result["completed"] = success
+                result["failed"] = fail
+
+            if state == "JOB_STATE_SUCCEEDED":
+                result["status"] = "batch_complete"
+            elif state == "JOB_STATE_FAILED":
+                result["status"] = "failed"
+                error_detail = "Vertex AI batch job failed"
+                if hasattr(batch_job, 'error') and batch_job.error:
+                    error_detail = f"Vertex AI failed: {getattr(batch_job.error, 'message', str(batch_job.error))}"
+                result["error"] = error_detail
+                self.log("error", f"{pass_key} VERTEX AI BATCH FAILED: {error_detail}")
+
+            with open(status_path, "w") as f:
+                json.dump(result, f)
+
+            return result
+        except Exception as e:
+            self.log("error", f"{pass_key} Vertex AI batch poll error: {e}")
+            return {**status_data, "error": str(e)}
+
+    def _download_vertex_batch_results(self, pass_key: str) -> Dict[str, Any]:
+        """Download Vertex AI batch results from GCS, build ledger file."""
+        pass_info = PASS_MODELS[pass_key]
+        qa_dir = self._get_qa_dir()
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        with open(status_path, "r") as f:
+            status_data = json.load(f)
+
+        gcs_output = status_data.get("gcs_output", "")
+        if not gcs_output:
+            return {"error": f"No GCS output path for {pass_key}"}
+
+        # Load QID line mapping
+        mapping_path = qa_dir / f"{pass_key}_vertex_qid_map.json"
+        if not mapping_path.exists():
+            return {"error": f"QID line mapping not found for {pass_key}"}
+        with open(mapping_path, "r") as f:
+            qid_line_map = json.load(f)
+
+        # Download results from GCS
+        from app.config import settings
+        from google.cloud import storage as gcs_storage
+        gcs_client = gcs_storage.Client()
+        bucket = gcs_client.bucket(settings.vertex_ai_bucket)
+
+        # Parse GCS path
+        prefix = gcs_output.replace(f"gs://{settings.vertex_ai_bucket}/", "")
+        blobs = list(bucket.list_blobs(prefix=prefix))
+
+        all_lines = []
+        for blob in sorted(blobs, key=lambda b: b.name):
+            if blob.name.endswith(".jsonl"):
+                content = blob.download_as_text()
+                for line in content.strip().split("\n"):
+                    if line.strip():
+                        all_lines.append(line.strip())
+
+        self.log("info", f"Downloaded {len(all_lines)} results from Vertex AI for {pass_key}")
+
+        # Parse results and build ledger
+        ledger = []
+        approved = 0
+        rejected = 0
+        errors_list = []
+
+        for line_idx, raw_line in enumerate(all_lines):
+            qid = qid_line_map.get(str(line_idx), f"unknown_{line_idx}")
+            try:
+                data = json.loads(raw_line)
+                # Vertex AI output format: {"response": {"candidates": [{"content": {"parts": [{"text": "..."}]}}]}}
+                response = data.get("response", {})
+                candidates = response.get("candidates", [])
+                if not candidates:
+                    ledger.append({
+                        "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "No candidates in Vertex AI response"}],
+                    })
+                    errors_list.append(f"{qid}: No candidates")
+                    continue
+
+                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                if not text:
+                    ledger.append({
+                        "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                        "has_error": True,
+                        "errors": [{"type": "API_ERROR", "field": "metadata", "detail": "Empty response text"}],
+                    })
+                    continue
+
+                # Parse JSON response from model
+                parsed = json.loads(text)
+                has_error = parsed.get("has_error", False)
+                model_errors = parsed.get("errors", [])
+
+                ledger.append({
+                    "qid": qid,
+                    "pass": pass_key,
+                    "model": pass_info["model_id"],
+                    "has_error": has_error,
+                    "errors": model_errors if has_error else [],
+                })
+
+                if has_error:
+                    rejected += 1
+                else:
+                    approved += 1
+
+            except Exception as e:
+                ledger.append({
+                    "qid": qid, "pass": pass_key, "model": pass_info["model_id"],
+                    "has_error": True,
+                    "errors": [{"type": "API_ERROR", "field": "metadata", "detail": str(e)}],
+                })
+                errors_list.append(f"{qid}: {e}")
+
+        # Save ledger
+        ledger_dir = self._get_ledger_dir()
+        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+        with open(ledger_path, "w", encoding="utf-8") as f:
+            json.dump(ledger, f, indent=2, ensure_ascii=False)
+
+        self.log("success", f"{pass_key} Vertex AI results: {approved} approved, {rejected} rejected, {len(errors_list)} errors")
+
+        # ── GCS cleanup: delete input + output files to avoid storage cost ──
+        self._cleanup_gcs_files(pass_key, gcs_output, bucket)
+
+        # Update status
+        status_data["status"] = "completed"
+        status_data["approved"] = approved
+        status_data["rejected"] = rejected
+        with open(status_path, "w") as f:
+            json.dump(status_data, f)
+
+        return {
+            "status": "completed",
+            "pass": pass_key,
+            "approved": approved,
+            "rejected": rejected,
+            "errors": len(errors_list),
+            "ledger": str(ledger_path),
+        }
+
+    def _cleanup_gcs_files(self, pass_key: str, gcs_output: str, bucket) -> None:
+        """Delete input JSONL + output folder from GCS after results are downloaded.
+
+        Called after successful download to avoid accumulating stale files and storage cost.
+        GCS charges $0.02/GB/month — small but adds up over many sessions.
+        """
+        from app.config import settings
+        cleaned = 0
+        try:
+            # Delete input JSONL
+            input_path = f"qa_sessions/{self.session_id[:8]}/{pass_key}_input.jsonl"
+            input_blob = bucket.blob(input_path)
+            if input_blob.exists():
+                input_blob.delete()
+                cleaned += 1
+
+            # Delete all output blobs (Vertex AI writes multiple files to output folder)
+            output_prefix = gcs_output.replace(f"gs://{settings.vertex_ai_bucket}/", "")
+            for blob in bucket.list_blobs(prefix=output_prefix):
+                blob.delete()
+                cleaned += 1
+
+            self.log("info", f"{pass_key} GCS cleanup: deleted {cleaned} files from gs://{settings.vertex_ai_bucket}/")
+        except Exception as e:
+            # Non-fatal: files will just stay until manually cleaned or bucket lifecycle policy kicks in
+            self.log("warning", f"{pass_key} GCS cleanup failed (non-fatal): {e}")
+
     def _poll_gemini_batch(self, pass_key: str) -> Dict[str, Any]:
         """Poll Gemini Batch API status for a QA pass."""
         qa_dir = self._get_qa_dir()
@@ -1579,8 +2037,18 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             batch_job = client.batches.get(name=batch_id)
             state = batch_job.state.name if hasattr(batch_job.state, 'name') else str(batch_job.state)
 
+            # Map Gemini job states to our internal status names
+            GEMINI_STATE_MAP = {
+                "JOB_STATE_PENDING": "batch_submitted",
+                "JOB_STATE_RUNNING": "running",
+                "JOB_STATE_SUCCEEDED": "batch_complete",
+                "JOB_STATE_FAILED": "failed",
+                "JOB_STATE_CANCELLED": "stopped",
+            }
+            mapped_status = GEMINI_STATE_MAP.get(state, state.lower())
+
             result = {
-                "status": state.lower(),
+                "status": mapped_status,
                 "batch_id": batch_id,
                 "total": status_data.get("total", 0),
                 "processed": 0,
@@ -1605,15 +2073,35 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
             elif state == "JOB_STATE_FAILED":
                 result["status"] = "failed"
-                result["error"] = "Gemini batch job failed"
+                # Extract detailed error info from batch job
+                error_detail = "Gemini batch job failed"
+                if hasattr(batch_job, 'error') and batch_job.error:
+                    err_obj = batch_job.error
+                    code = getattr(err_obj, 'code', '')
+                    msg = getattr(err_obj, 'message', '')
+                    error_detail = f"Gemini batch failed: code={code}, message={msg}"
+                elif hasattr(batch_job, 'metadata') and batch_job.metadata:
+                    error_detail = f"Gemini batch failed: {batch_job.metadata}"
+                result["error"] = error_detail
+                # Log prominently — 429/quota failures were going silently
+                self.log("error", f"{pass_key} BATCH FAILED: {error_detail}")
+                self.log("warning", f"{pass_key} failed questions will be treated as abstentions in QA voting (not penalized)")
+                if "429" in str(error_detail) or "RESOURCE_EXHAUSTED" in str(error_detail):
+                    self.log("warning", f"{pass_key} failed due to quota exhaustion (429). "
+                             "Consider using Vertex AI batch as fallback (separate quota pool)")
 
             with open(status_path, "w") as f:
                 json.dump(result, f)
 
             return result
         except Exception as e:
-            self.log("error", f"{pass_key} Gemini batch poll error: {e}")
-            return {**status_data, "error": str(e)}
+            error_str = str(e)
+            self.log("error", f"{pass_key} Gemini batch poll error: {error_str}")
+            # Detect quota errors specifically
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                self.log("warning", f"{pass_key} hit quota limit (429 RESOURCE_EXHAUSTED). "
+                         "Vertex AI batch API has separate quota — consider as fallback.")
+            return {**status_data, "error": error_str}
 
     def _download_gemini_batch_results(self, pass_key: str) -> Dict[str, Any]:
         """Download Gemini Batch API results and build ledger file."""
@@ -1959,6 +2447,96 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     pass
             return {"has_error": False, "errors": [], "raw": text[:200]}
 
+    def cancel_batches(self, pass_key: str = "") -> Dict[str, Any]:
+        """Cancel active batch jobs for one or all passes."""
+        from app.config import settings
+        qa_dir = self._get_qa_dir()
+        cancelled = []
+        errors = []
+
+        passes_to_cancel = [pass_key] if pass_key else list(PASS_MODELS.keys())
+
+        for pk in passes_to_cancel:
+            status_path = qa_dir / f"{pk}_status.json"
+            if not status_path.exists():
+                continue
+
+            try:
+                with open(status_path, "r") as f:
+                    sd = json.load(f)
+            except Exception:
+                continue
+
+            batch_id = sd.get("batch_id")
+            if not batch_id:
+                continue
+
+            # Skip already-terminal states
+            if sd.get("status") in ("completed", "stopped", "failed"):
+                continue
+
+            api_type = sd.get("api", PASS_MODELS.get(pk, {}).get("api", ""))
+
+            try:
+                if api_type == "openai" and settings.openai_api_key:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=settings.openai_api_key)
+                    client.batches.cancel(batch_id)
+                    cancelled.append(pk)
+                    self.log("info", f"Cancelled OpenAI batch for {pk}: {batch_id}")
+                elif api_type == "gemini" and settings.gemini_api_key:
+                    client = self._get_gemini_batch_client()
+                    try:
+                        client.batches.delete(name=batch_id)
+                    except Exception:
+                        # Some Gemini SDK versions use cancel instead of delete
+                        try:
+                            client.batches.cancel(name=batch_id)
+                        except Exception:
+                            pass
+                    cancelled.append(pk)
+                    self.log("info", f"Cancelled Gemini batch for {pk}: {batch_id}")
+                elif api_type == "vertex":
+                    vertex_client = self._get_vertex_client()
+                    if vertex_client:
+                        try:
+                            vertex_client.batches.delete(name=batch_id)
+                        except Exception:
+                            try:
+                                vertex_client.batches.cancel(name=batch_id)
+                            except Exception:
+                                pass
+                        cancelled.append(pk)
+                        self.log("info", f"Cancelled Vertex AI batch for {pk}: {batch_id}")
+                        # Cleanup GCS files on cancel
+                        gcs_output = sd.get("gcs_output", "")
+                        if gcs_output:
+                            try:
+                                from google.cloud import storage as gcs_storage
+                                gcs_client = gcs_storage.Client()
+                                bucket = gcs_client.bucket(settings.vertex_ai_bucket)
+                                self._cleanup_gcs_files(pk, gcs_output, bucket)
+                            except Exception as ce:
+                                self.log("warning", f"{pk} GCS cleanup on cancel failed: {ce}")
+            except Exception as e:
+                err_str = str(e)
+                if "Cannot cancel" in err_str or "already" in err_str.lower():
+                    self.log("info", f"{pk} batch already finished")
+                else:
+                    errors.append(f"{pk}: {err_str}")
+                    self.log("error", f"Failed to cancel {pk} batch: {e}")
+
+            # Update status file to stopped
+            sd["status"] = "stopped"
+            with open(status_path, "w") as f:
+                json.dump(sd, f)
+
+        return {
+            "status": "cancelled" if cancelled else "stop_requested",
+            "cancelled": cancelled,
+            "errors": errors,
+        }
+
     def poll_passes(self) -> Dict[str, Any]:
         """Poll status of all QA passes with detailed stats including live progress.
 
@@ -2012,7 +2590,9 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     if sd.get("batch_id") and sd.get("status") not in ("completed", "stopped", "failed"):
                         # Live poll from Batch API
                         api_type = sd.get("api", pass_info["api"])
-                        if api_type == "gemini":
+                        if api_type == "vertex":
+                            batch_result = self._poll_vertex_batch(pass_key)
+                        elif api_type == "gemini":
                             batch_result = self._poll_gemini_batch(pass_key)
                         else:
                             batch_result = self._poll_openai_batch(pass_key)
@@ -2028,7 +2608,9 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                         # Auto-download if batch is complete
                         if pass_status["status"] == "batch_complete":
                             try:
-                                if api_type == "gemini":
+                                if api_type == "vertex":
+                                    dl_result = self._download_vertex_batch_results(pass_key)
+                                elif api_type == "gemini":
                                     dl_result = self._download_gemini_batch_results(pass_key)
                                 else:
                                     dl_result = self._download_openai_batch_results(pass_key)
@@ -2224,6 +2806,11 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         csv_2of3_path = self._generate_review_csv(category_qids[2], per_qid, entry_index, "2of3_review")
         self.log("info", f"2/3 approved: {len(category_qids[2])} questions -> {csv_2of3_path.name}")
 
+        # ── Generate comprehensive ALL questions CSV with error type splits ──
+        all_qids = list(per_qid.keys())
+        csv_all_path = self._generate_comprehensive_csv(all_qids, per_qid, qid_levels, entry_index, "qa_all_questions")
+        self.log("info", f"All questions CSV: {len(all_qids)} questions -> {csv_all_path.name}")
+
         # ── Generate separate 2/3 metadata file with ledger reasons ──
         review_meta_path = self._generate_review_metadata(category_qids[2], per_qid, entry_index)
         self.log("info", f"2/3 review metadata saved: {review_meta_path.name}")
@@ -2416,13 +3003,120 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
         return review_path
 
+    def _generate_comprehensive_csv(self, qids: List[str], per_qid: Dict,
+                                     qid_levels: Dict, entry_index: Dict,
+                                     filename: str) -> Path:
+        """Generate comprehensive CSV for ALL questions — every QID with full error detail."""
+        csv_dir = self._get_csv_dir()
+        csv_path = csv_dir / f"{filename}.csv"
+
+        fieldnames = [
+            "QID", "Subject", "Question Type", "Chapter", "Concept", "SubConcept",
+            "Error Level", "Final Verdict",
+            "Pass1 Model", "Pass1 Verdict", "Pass1 Error Types", "Pass1 Error Details",
+            "Pass2 Model", "Pass2 Verdict", "Pass2 Error Types", "Pass2 Error Details",
+            "Pass3 Model", "Pass3 Verdict", "Pass3 Error Types", "Pass3 Error Details",
+            "Total Errors", "Unique Error Types", "View Link", "Edit Link",
+        ]
+
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for qid in sorted(qids):
+                entry = entry_index.get(qid, {})
+                qtype = (entry.get("questionType") or "").lower()
+                qtype_key = qtype
+                if qtype_key == "integerquestion":
+                    qtype_key = "integer"
+
+                pass_results = per_qid.get(qid, {})
+                base_url = QUESTION_EDIT_URL.get(qtype_key, "")
+                error_level = qid_levels.get(qid, 0)
+
+                # Determine final verdict
+                if error_level == 1:
+                    final = "APPROVED (3/3)"
+                elif error_level == 2:
+                    final = "REVIEW (2/3)"
+                elif error_level == 3:
+                    final = "REJECTED (1/3)"
+                elif error_level == 4:
+                    final = "REJECTED (0/3)"
+                else:
+                    final = "UNKNOWN"
+
+                # Per-pass details
+                all_error_types = set()
+                total_errors = 0
+                pass_data = {}
+                for pk in ["pass1", "pass2", "pass3"]:
+                    pr = pass_results.get(pk, {})
+                    if not pr:
+                        pass_data[pk] = ("N/A", "N/A", "", "")
+                        continue
+                    model = pr.get("model", "")
+                    verdict = "APPROVED" if pr.get("clean") else "REJECTED"
+                    errors = pr.get("errors", [])
+                    error_types = []
+                    error_details = []
+                    for e in errors:
+                        if isinstance(e, dict):
+                            etype = e.get("type", "unknown")
+                            error_types.append(etype)
+                            all_error_types.add(etype)
+                            detail = e.get("detail", "")
+                            field = e.get("field", "")
+                            error_details.append(f"[{field}/{etype}] {detail}" if field else f"[{etype}] {detail}")
+                        else:
+                            error_types.append(str(e))
+                            all_error_types.add(str(e))
+                            error_details.append(str(e))
+                    total_errors += len(errors)
+                    pass_data[pk] = (model, verdict, ", ".join(error_types), " | ".join(error_details))
+
+                row = {
+                    "QID": qid,
+                    "Subject": entry.get("subject", ""),
+                    "Question Type": entry.get("questionType", ""),
+                    "Chapter": entry.get("chapter", ""),
+                    "Concept": entry.get("concept", ""),
+                    "SubConcept": entry.get("subConcept", ""),
+                    "Error Level": error_level,
+                    "Final Verdict": final,
+                    "Pass1 Model": pass_data["pass1"][0],
+                    "Pass1 Verdict": pass_data["pass1"][1],
+                    "Pass1 Error Types": pass_data["pass1"][2],
+                    "Pass1 Error Details": pass_data["pass1"][3],
+                    "Pass2 Model": pass_data["pass2"][0],
+                    "Pass2 Verdict": pass_data["pass2"][1],
+                    "Pass2 Error Types": pass_data["pass2"][2],
+                    "Pass2 Error Details": pass_data["pass2"][3],
+                    "Pass3 Model": pass_data["pass3"][0],
+                    "Pass3 Verdict": pass_data["pass3"][1],
+                    "Pass3 Error Types": pass_data["pass3"][2],
+                    "Pass3 Error Details": pass_data["pass3"][3],
+                    "Total Errors": total_errors,
+                    "Unique Error Types": ", ".join(sorted(all_error_types)),
+                    "View Link": f"{QUESTION_VIEW_URL}{qid}",
+                    "Edit Link": f"{base_url}{qid}" if base_url else "N/A",
+                }
+                writer.writerow(row)
+
+        return csv_path
+
     def export_csv(self, category: str = "3of3") -> str:
-        """Return CSV content for a given category."""
+        """Return CSV content for a given category.
+
+        Categories: '3of3', '2of3', 'all' (comprehensive with error splits).
+        """
         csv_dir = self._get_csv_dir()
         if category == "3of3":
             path = csv_dir / "3of3_approved.csv"
         elif category == "2of3":
             path = csv_dir / "2of3_review.csv"
+        elif category == "all":
+            path = csv_dir / "qa_all_questions.csv"
         else:
             return ""
         if path.exists():

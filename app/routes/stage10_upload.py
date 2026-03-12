@@ -116,6 +116,37 @@ async def absorb_to_local_db(session_id: str):
     return APIResponse(data=result)
 
 
+@router.get("/download-stats")
+async def download_pipeline_stats(session_id: str):
+    """Download comprehensive pipeline stats CSV with per-stage metrics,
+    model-wise accuracy, image counts, error type splits, and final accuracy.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage10_upload import UploadStage
+    stage = UploadStage(session_id, session_dir)
+    csv_content = await asyncio.to_thread(stage.generate_pipeline_stats_csv)
+
+    if not csv_content:
+        return JSONResponse(
+            status_code=404,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(code="NOT_FOUND", message="Could not generate pipeline stats"),
+            ).model_dump(),
+        )
+
+    return StreamingResponse(
+        io.StringIO(csv_content),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=pipeline_stats_{session_id[:8]}.csv"},
+    )
+
+
 @router.get("/download-csv")
 async def download_csv(session_id: str, error_level: int = 0):
     """Download the combined upload log CSV, optionally filtered by error level.

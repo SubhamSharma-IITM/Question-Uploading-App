@@ -112,6 +112,17 @@
 </div>
 {% endblock %}
 
+{% block head %}
+<!-- MathJax for MathML rendering in duplicate previews -->
+<script>
+window.MathJax = {
+    startup: { typeset: false },
+    options: { enableMenu: false }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/mml-chtml.js" async></script>
+{% endblock %}
+
 {% block scripts %}
 <style>
 .tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 12px; }
@@ -130,8 +141,26 @@
 }
 .dup-pair .dup-body { display: none; margin-top: 6px; color: var(--text-muted); }
 .dup-pair.expanded .dup-body { display: block; }
+.dup-pair.locked { border-color: var(--error); background: rgba(218,54,51,0.04); }
 .dup-sim { font-weight: 600; color: var(--warning); }
 .dup-checkbox { margin-right: 8px; }
+.dup-checkbox:disabled { cursor: not-allowed; opacity: 0.7; }
+.db-qid-badge {
+    display: inline-block; font-size: 10px; font-weight: 600; font-family: monospace;
+    padding: 1px 6px; border-radius: 3px; margin-left: 6px;
+    background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-secondary);
+}
+.flag-badge {
+    display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 3px; margin-left: 3px; color: white;
+}
+.flag-badge.pyq { background: #7c3aed; }
+.flag-badge.board { background: #2563eb; }
+.flag-badge.ncert { background: #059669; }
+.flag-badge.solved { background: #d97706; }
+.math-preview { line-height: 1.6; overflow-x: auto; max-height: 300px; overflow-y: auto; }
+.math-preview h3, .math-preview h2, .math-preview h1 { display: inline; font-size: inherit; font-weight: inherit; margin: 0; }
+.math-preview img { max-width: 100%; height: auto; }
 </style>
 
 <script>
@@ -291,24 +320,70 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         const textB = showFull ? (dup.full_text_b || dup.text_b || dup.db_text || '') : (dup.text_b || dup.db_text || '');
         // For self-check, quarantine qid_b (the duplicate); for cross-check, quarantine session_qid
         const quarantineQid = dup.qid_b || dup.session_qid || idB;
-        html += `<div class="dup-pair" onclick="this.classList.toggle('expanded')">
+
+        // Check if DB match has protected flags (must quarantine)
+        const flags = dup.db_flags || {};
+        const isLocked = flags.has_protected_flag || false;
+        const lockTitle = isLocked
+            ? 'This question matches a protected DB entry (' +
+              [flags.isPrevious && 'PYQ', flags.isBoard && 'Board', flags.isNCERT && 'NCERT', flags.isSolvedExample && 'Solved Example']
+              .filter(Boolean).join(', ') + ') — must be quarantined'
+            : '';
+
+        // Build flag badges for cross-check matches
+        let flagBadges = '';
+        if (dup.db_qid) {
+            flagBadges += `<a href="https://www.acadza.com/question/view-question/${dup.db_qid}" target="_blank" class="db-qid-badge" style="text-decoration:none; color:var(--primary);" onclick="event.stopPropagation();">${escapeHtml(dup.db_qid)}</a>`;
+            if (flags.isPrevious) flagBadges += '<span class="flag-badge pyq">PYQ</span>';
+            if (flags.isBoard) flagBadges += '<span class="flag-badge board">Board</span>';
+            if (flags.isNCERT) flagBadges += '<span class="flag-badge ncert">NCERT</span>';
+            if (flags.isSolvedExample) flagBadges += '<span class="flag-badge solved">Solved Ex</span>';
+        }
+
+        // Get full HTML content for rich preview (MathML renders properly)
+        const sessHtml = dup.session_html || '';
+        const dbHtml = (flags.question_html) || '';
+        // Lock reason label (visible, not just tooltip)
+        let lockLabel = '';
+        if (isLocked) {
+            const reasons = [flags.isPrevious && 'PYQ', flags.isBoard && 'Board',
+                flags.isNCERT && 'NCERT', flags.isSolvedExample && 'Solved Example'].filter(Boolean);
+            lockLabel = `<span style="color:var(--error); font-size:11px; font-weight:600; margin-left:6px;">⊘ Cannot unselect: ${reasons.join(', ')}</span>`;
+        }
+
+        html += `<div class="dup-pair${isLocked ? ' locked' : ''}" onclick="this.classList.toggle('expanded')">
             <div class="dup-header">
                 <span>
-                    <input type="checkbox" class="dup-checkbox" checked data-qid="${escapeHtml(quarantineQid)}" data-qid-a="${escapeHtml(idA)}" data-qid-b="${escapeHtml(idB)}" onclick="event.stopPropagation(); updateQuarantineCount();">
-                    <strong>${escapeHtml(idA)}</strong> = <strong>${escapeHtml(idB)}</strong>
+                    <input type="checkbox" class="dup-checkbox" checked
+                        ${isLocked ? 'disabled' : ''}
+                        data-qid="${escapeHtml(quarantineQid)}" data-qid-a="${escapeHtml(idA)}" data-qid-b="${escapeHtml(idB)}"
+                        onclick="event.stopPropagation(); updateQuarantineCount();"
+                        ${lockTitle ? 'title="' + escapeHtml(lockTitle) + '"' : ''}>
+                    <strong>${escapeHtml(idA)}</strong> ↔ <strong style="font-family:monospace; color:var(--primary);">${escapeHtml(idB)}</strong>
                     <span style="color: var(--text-muted);">(${dup.subject || '?'})</span>
+                    ${flagBadges}${lockLabel}
                 </span>
                 <span class="dup-sim">${(dup.similarity * 100).toFixed(1)}%</span>
             </div>
             <div class="dup-body">
-                <div><strong>A:</strong> ${escapeHtml(textA)}</div>
-                <div style="margin-top: 4px;"><strong>B:</strong> ${escapeHtml(textB)}</div>
+                <div style="padding: 8px; background: var(--bg-primary); border-radius: 4px; margin-bottom: 6px; border-left: 3px solid var(--primary);">
+                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">Session: ${escapeHtml(idA)}</div>
+                    <div style="font-size: 13px;" class="math-preview">${sessHtml || escapeHtml(textA)}</div>
+                </div>
+                <div style="padding: 8px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--warning, #e6a817);">
+                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">DB Match: <code style="background:#333; padding:1px 5px; border-radius:3px; color:var(--primary); font-size:12px;">${escapeHtml(idB)}</code></div>
+                    <div style="font-size: 13px;" class="math-preview">${dbHtml || escapeHtml(textB)}</div>
+                </div>
             </div>
         </div>`;
     }
 
     document.getElementById(containerId).innerHTML = html;
-    // Update quarantine count after rendering (checkboxes are checked by default)
+    // Re-render MathML via MathJax after innerHTML injection
+    if (window.MathJax && MathJax.typeset) {
+        setTimeout(() => MathJax.typeset(), 100);
+    }
+    // Update quarantine count after rendering (checkboxes are checked by default, including locked ones)
     updateQuarantineCount();
 }
 
@@ -472,6 +547,7 @@ async function runAll() {
 }
 
 function updateQuarantineCount() {
+    // Count both checked checkboxes and locked (disabled+checked) ones
     const count = document.querySelectorAll('.dup-checkbox:checked').length;
     document.getElementById('quarantine-btn').textContent = `Quarantine Selected (${count})`;
 }

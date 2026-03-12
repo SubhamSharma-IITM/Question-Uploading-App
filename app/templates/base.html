@@ -111,11 +111,21 @@
         document.addEventListener('DOMContentLoaded', () => {
             initLogs('{{ session.id }}');
 
-            // Re-enable advance button if current stage checkpoint is "completed"
+            // Re-enable advance button if current stage checkpoint is "completed" or "background"
             const cp = _checkpoints.find(c => c.stage === _viewStage);
-            if (cp && cp.status === 'completed') {
+            if (cp && (cp.status === 'completed' || cp.status === 'background')) {
                 const advBtn = document.getElementById('advance-btn');
                 if (advBtn) advBtn.disabled = false;
+            }
+
+            // Fetch live quarantine count from DB to keep sidebar accurate
+            const qEl = document.getElementById('sidebar-quarantine-count');
+            if (qEl) {
+                apiGet('/api/sessions/{{ session.id }}/quarantine-count').then(r => {
+                    if (r.success && r.data && typeof r.data.count === 'number') {
+                        qEl.textContent = r.data.count;
+                    }
+                }).catch(() => {});
             }
         });
     </script>

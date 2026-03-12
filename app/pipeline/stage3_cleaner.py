@@ -81,6 +81,10 @@ def _strip_question_number(text: str) -> str:
     """Strip leading question numbers like '61. Find' or '1 Find'.
 
     Forked from production PCMB_AdvancedCleanerV2.py:strip_question_number()
+
+    SAFETY: All patterns require a digit to be present (preventing bare-letter
+    matches like "Quantum") and use bounded digit counts where possible to
+    avoid eating stoichiometric numbers (e.g., "2H₂O").
     """
     if not text:
         return text
@@ -88,16 +92,46 @@ def _strip_question_number(text: str) -> str:
     text = text.strip()
 
     # Special case: number inside math block at start (OCR captured Q# inside $)
+    # Require 2+ digits — single digit like "$2 \times" is legitimate math content.
     if text.startswith('$'):
-        text = re.sub(r'^\$\d+\s*(?=\\[a-zA-Z])', '$', text)
-        text = re.sub(r'^\$\d+\s+(?=[a-zA-Z(])', '$', text)
+        text = re.sub(r'^\$\d{2,}\s*(?=\\[a-zA-Z])', '$', text)
+        text = re.sub(r'^\$\d{2,}\s+(?=[a-zA-Z(])', '$', text)
         return text
 
     # Pattern 1: digit(s) + dot + optional space (e.g., "61. Find")
-    text = re.sub(r'^\d+\.\s*', '', text)
+    # The dot makes this unambiguous — "2." is clearly a number prefix, not content.
+    # Also handle full-width dot ．(U+FF0E) from OCR.
+    text = re.sub(r'^\d+[.\uff0e]\s*', '', text)
 
-    # Pattern 2: digit(s) + space/newline + any non-space char (e.g., "1 Find")
-    text = re.sub(r'^\d+[\s\n]+(?=\S)', '', text)
+    # Pattern 2: digit(s) + space + letter (e.g., "1 Find", "61 What")
+    # Only strip if followed by a LETTER (not a digit/symbol) to avoid eating
+    # stoichiometric numbers like "2 H₂O" or "4 atoms" when number < 4.
+    # Require 2+ digits OR single digit followed by at least 2 spaces for safety.
+    text = re.sub(r'^\d{2,}[\s\n]+(?=[A-Za-z])', '', text)
+
+    # Pattern 3: (N) numbered questions — only 1-2 digit numbers (e.g., "(1) Find", "(23) What")
+    # Don't match 3+ digits like "(102) ions" which is likely content.
+    # SKIP if text contains (2) later — that signals a numbered options list, not a Q number.
+    if not re.search(r'\(2\)', text[3:]):
+        text = re.sub(r'^\(\d{1,2}\)\s*', '', text)
+
+    # Pattern 4: Q/Ques/Question prefixes — MUST have a digit after to avoid matching
+    # words like "Quantum", "Quickly", etc.
+    # e.g., "Q1 scq", "Q. 2:", "Ques. 3)", "Question 4"
+    text = re.sub(
+        r'^(?:Question|Ques\.?|Q\.)\s*\d+\s*(?:scq|mcq|integer|numerical|passage)?\s*[.:)]\s*',
+        '', text, flags=re.IGNORECASE,
+    )
+    # Variant without trailing punctuation (e.g., "Q1 scq Find...")
+    # Requires type suffix to be present to avoid over-matching.
+    text = re.sub(
+        r'^(?:Question|Ques\.?|Q\.?)\s*\d+\s*(?:scq|mcq|integer|numerical|passage)\s+',
+        '', text, flags=re.IGNORECASE,
+    )
+    # Bare "Q. 1" / "Q.1" — requires the dot to disambiguate from content starting with Q
+    text = re.sub(r'^Q\.\s*\d+\s+', '', text, flags=re.IGNORECASE)
+    # Bare "Q1 " only if followed by a capital letter (strong signal it's a prefix)
+    text = re.sub(r'^Q\d+\s+(?=[A-Z])', '', text, flags=re.IGNORECASE)
 
     return text
 
@@ -142,11 +176,66 @@ def _strip_solution_number(text: str) -> str:
         )
         return text
 
-    # Case 2: Starts with (number) with 2+ digits — e.g., "(54) Answer"
+    # Case 2: "Sol N." / "Sol N. Answer: X" / "Q. N" prefixes in solutions
+    # These appear when OCR captures solution headers inline
+    # "Sol 1.\nAnswer: C\n\n..." → strip "Sol 1.\n" AND "Answer: C\n"
+    text = re.sub(
+        r'^(?:Sol|Soln)\.?\s*\d+\.?\s*(?:Answer|Ans)\s*:\s*\(?[A-Da-d0-9]+\)?\s*(?:\n|$)',
+        '', text, flags=re.IGNORECASE,
+    )
+    # "Sol N." alone on its own or followed by newline
+    text = re.sub(r'^(?:Sol|Soln)\.?\s*\d+\.?\s*\n', '', text, flags=re.IGNORECASE)
+    # "Sol N. Answer: X" same-line with content after
+    text = re.sub(
+        r'^(?:Sol|Soln)\.?\s*\d+\.?\s*(?:Answer|Ans)\s*:\s*\(?[A-Da-d0-9]+\)?\s*\n?',
+        '', text, flags=re.IGNORECASE,
+    )
+    # "Q. N\n" prefix in solutions (cross-numbered from questions)
+    text = re.sub(r'^Q\.?\s*\d+\s*\n', '', text, flags=re.IGNORECASE)
+    # "Q. N Solution:-" prefix
+    text = re.sub(
+        r'^Q\.?\s*\d+\s*(?:Solution|Soln?)[\s:.:-]+\s*\n?',
+        '', text, flags=re.IGNORECASE,
+    )
+
+    # Case 3: "(N) Answer : (X)" full answer header line — strip entire line
+    # e.g., "(130) Answer : (2)\n" or "(147) Answer : (4)\n"
+    text = re.sub(
+        r'^\(\d+\)\s*(?:Answer|Ans)\s*:\s*\(?[A-Da-d0-9]+\)?\s*(?:\n|$)',
+        '', text, flags=re.IGNORECASE,
+    )
+    # Case 3b: Starts with (number) with 2+ digits — e.g., "(54) Answer"
     text = re.sub(r'^\(\d{2,}\)\s*', '', text)
-    # Case 3: Starts with number
+    # Case 4: Starts with bare number (also handle full-width dot ．)
     text = re.sub(r'^\d+\)\s*', '', text)
-    text = re.sub(r'^\d+\.\s*', '', text)
+    text = re.sub(r'^\d+[.\uff0e]\s*', '', text)
+
+    # "Answer: X" standalone line that may remain after Sol N. stripping
+    text = re.sub(
+        r'^Answer\s*:\s*\(?[A-Da-d0-9]+\)?\s*\n',
+        '', text, flags=re.IGNORECASE,
+    )
+
+    # Bare "Solution:" or "Solution:-" label on its own line (after answer line stripped)
+    text = re.sub(r'^Solution\s*[:\-]+\s*\n', '', text, flags=re.IGNORECASE)
+
+    # Case 5: "SOLUTION Ans: X" prefix (e.g., from \section*{SOLUTION Ans: C})
+    # Requires end-of-line or next line boundary — don't eat "SOLUTION Ans: C is colorless"
+    text = re.sub(
+        r'^SOLUTION\s+Ans\s*:\s*\(?[A-Da-d0-9]+\)?\s*(?:\n|$)',
+        '', text, flags=re.IGNORECASE,
+    )
+
+    # Case 5: "Ans:", "Soln:", "Sol." standalone prefixes — only when they're the ENTIRE
+    # prefix (followed by whitespace or option letter, not running into content)
+    text = re.sub(r'^(?:Ans|Soln|Sol)[\.:]\s*(?=\(|[A-D]\b|\s*$)', '', text, flags=re.IGNORECASE)
+
+    # Case 6: "Answer: X" standalone line leaking into solution content
+    # Only strip if the answer is a single letter/number on its own line
+    text = re.sub(
+        r'^Answer\s*:\s*\(?[A-Da-d0-9]+\)?\s*\n',
+        '', text, flags=re.IGNORECASE,
+    )
 
     return text
 
@@ -179,7 +268,27 @@ def _remove_section_headers(text: str, is_solution: bool = False) -> str:
     result = re.sub(r'\\section\*?\{Options:?\}\s*', '', result, flags=re.IGNORECASE)
     result = re.sub(r'^\s*Options:\s*', '', result, flags=re.MULTILINE | re.IGNORECASE)
 
+    # Remove "SOLUTION Ans: X" section headers (e.g., \section*{SOLUTION Ans: C})
+    result = re.sub(r'\\section\*?\{SOLUTION\s+Ans\s*:\s*[^}]*\}\s*', '', result, flags=re.IGNORECASE)
+
+    # Remove subject/section headers (e.g., \section*{Chemistry Section 1}, \section*{SECTION A - ...})
+    result = re.sub(
+        r'\\section\*?\{(?:Chemistry|Physics|Mathematics|Biology|Botany|Zoology)\s+Section\s*\d*[^}]*\}\s*',
+        '', result, flags=re.IGNORECASE,
+    )
+    result = re.sub(r'\\section\*?\{SECTION\s+[A-Z]\s*[-–:][^}]*\}\s*', '', result, flags=re.IGNORECASE)
+
     if is_solution:
+        # \section*{(147) Answer : (4)} — numbered answer header with parenthesized number
+        result = re.sub(r'\\section\*?\{\(\d+\)\s*(?:Answer|Ans)\s*:\s*[^}]*\}\s*', '', result, flags=re.IGNORECASE)
+        # \section*{147. Answer : (4)} — dotted number answer header
+        result = re.sub(r'\\section\*?\{\d+\.?\s*(?:Answer|Ans)\s*:\s*[^}]*\}\s*', '', result, flags=re.IGNORECASE)
+        # \section*{Sol N. Answer: X} — full solution header with answer
+        result = re.sub(r'\\section\*?\{Sol\.?\s*\d+\.?\s*(?:Answer|Ans)\s*:\s*[^}]*\}\s*', '', result, flags=re.IGNORECASE)
+        # \section*{Sol N.} — solution number header
+        result = re.sub(r'\\section\*?\{Sol\.?\s*\d+\.?\}\s*', '', result, flags=re.IGNORECASE)
+        # \section*{(N)} — bare parenthesized number header
+        result = re.sub(r'\\section\*?\{\(\d+\)\}\s*', '', result, flags=re.IGNORECASE)
         result = re.sub(r'\\section\*?\{Sol\.?\}\s*', '', result, flags=re.IGNORECASE)
         result = re.sub(r'\\section\*?\{Solution:?\}\s*', '', result, flags=re.IGNORECASE)
         result = re.sub(r'\\section\*?\{Answer:?\}\s*', '', result, flags=re.IGNORECASE)
@@ -346,6 +455,11 @@ def _clean_text(text: str, is_solution: bool = False) -> str:
         r'<em><strong><span[^>]*>THIS QUESTION CONTAINS IMAGES</span></strong></em><br\s*/?>',
         '', cleaned, flags=re.IGNORECASE)
 
+    # Step 0.5: Protect math blocks EARLY — before number stripping and header removal
+    # This prevents regex from eating math content that starts with digits or "Q".
+    # We'll restore them after steps 1-3, before br injection (which has its own protection).
+    cleaned, early_placeholders = _protect_math_blocks(cleaned)
+
     # Step 1: Remove section headers
     cleaned = _remove_section_headers(cleaned, is_solution=is_solution)
 
@@ -357,6 +471,9 @@ def _clean_text(text: str, is_solution: bool = False) -> str:
 
     # Step 3: Clean MathPIX artifacts
     cleaned = _clean_mathpix_artifacts(cleaned)
+
+    # Step 3.1: Restore early-protected math blocks before br injection
+    cleaned = _restore_math_blocks(cleaned, early_placeholders)
 
     # Step 3.5: Convert solution answer format (1)->(A) etc.
     if is_solution:
@@ -405,6 +522,10 @@ def _clean_question_entry(entry: Dict) -> Dict:
     for ans_key in ("answer", "answer_content"):
         if ans_key in entry and entry[ans_key]:
             cleaned[ans_key] = _strip_answer_number(entry[ans_key])
+
+    # Clean passage_content for passageQuestion items
+    if "passage_content" in entry and entry["passage_content"]:
+        cleaned["passage_content"] = _clean_text(entry["passage_content"], is_solution=False)
 
     # Clean hint if present (legacy format)
     if "hint" in entry:

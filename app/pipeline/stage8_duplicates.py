@@ -246,6 +246,56 @@ class DuplicateCheckStage(BasePipelineStage):
         text = " ".join(parts)
         return text[:MAX_TEXT_LENGTH] if len(text) > MAX_TEXT_LENGTH else text
 
+    def _lookup_db_flags(self, db_qids: Set[str]) -> Dict[str, Dict]:
+        """Look up special flags (isPrevious, isBoard, etc.) for matched DB question IDs.
+
+        Scans the JSONL DB for just the matched IDs — avoids loading entire DB into memory.
+        """
+        from app.config import settings
+        FLAG_KEYS = ("isSolvedExample", "isPrevious", "isBoard", "isNCERT")
+
+        db_path = Path(settings.db_path)
+        if not db_path.exists():
+            return {}
+
+        flags_map: Dict[str, Dict] = {}
+        remaining = set(db_qids)
+
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not remaining:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    qid = entry.get("qid", entry.get("_id", "?"))
+                    if isinstance(qid, dict) and "$oid" in qid:
+                        qid = qid["$oid"]
+                    qid = str(qid)
+                    if qid in remaining:
+                        flags = {k: bool(entry.get(k)) for k in FLAG_KEYS}
+                        flags["has_protected_flag"] = any(flags.values())
+                        # Also extract question HTML for preview rendering
+                        q_html = ""
+                        for qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+                            obj = entry.get(qt)
+                            if isinstance(obj, dict):
+                                q_html = obj.get("question", obj.get("ques", ""))
+                                if q_html:
+                                    break
+                        flags["question_html"] = q_html[:2000] if q_html else ""
+                        flags_map[qid] = flags
+                        remaining.discard(qid)
+        except Exception:
+            pass
+
+        return flags_map
+
     def _detect_engine(self) -> str:
         """Auto-detect best available engine."""
         has_faiss = _check_faiss_available()
@@ -414,7 +464,8 @@ class DuplicateCheckStage(BasePipelineStage):
 
         vectors = np.array(embeddings, dtype="float32")
         faiss.normalize_L2(vectors)
-        all_scores, all_indices = index.search(vectors, TOP_K + 1)
+        k = min(10, len(ids) - 1) if len(ids) > 1 else 1
+        all_scores, all_indices = index.search(vectors, k + 1)
 
         subject_map = {qid: subj for qid, subj in zip(ids, subjects)}
         checked_pairs = set()
@@ -576,12 +627,22 @@ class DuplicateCheckStage(BasePipelineStage):
         # Stage 2: Extract + embed session questions
         self.log("info", "Stage 2/4: Extracting session question text...")
         sess_texts, sess_ids, sess_subjects = [], [], []
+        sess_html_map = {}  # qid -> full question HTML for preview
         for entry in entries:
             text = self._extract_question_text(entry)
             if text and len(text) >= 10:
                 sess_texts.append(text)
-                sess_ids.append(entry.get("qid", "?"))
+                qid = entry.get("qid", "?")
+                sess_ids.append(qid)
                 sess_subjects.append(entry.get("subject", "Unknown"))
+                # Extract question HTML for preview
+                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+                    obj = entry.get(qt)
+                    if isinstance(obj, dict):
+                        q_html = obj.get("question", obj.get("ques", ""))
+                        if q_html:
+                            sess_html_map[qid] = q_html[:2000]
+                            break
 
         self.log("info", "Stage 3/4: Generating session embeddings...")
         sess_embeddings = self._generate_embeddings(sess_texts)
@@ -618,11 +679,20 @@ class DuplicateCheckStage(BasePipelineStage):
                     "similarity": round(score, 3),
                     "session_text": sess_texts[i][:120],
                     "db_text": db_text_map.get(matched_id, "")[:120],
+                    "session_html": sess_html_map.get(qid, ""),
                 })
                 break  # One match per session question is enough
 
             if (i + 1) % 50 == 0:
                 self.progress(50 + (i / len(sess_ids)) * 45, f"Filtering: {i+1}/{len(sess_ids)}")
+
+        # Enrich duplicates with DB entry flags for lock-on-flag feature
+        if duplicates:
+            matched_db_ids = {d["db_qid"] for d in duplicates}
+            db_flags = self._lookup_db_flags(matched_db_ids)
+            for d in duplicates:
+                flags = db_flags.get(d["db_qid"], {})
+                d["db_flags"] = flags
 
         return {
             "session_questions": len(entries),
@@ -952,12 +1022,18 @@ class DuplicateCheckStage(BasePipelineStage):
         writer = csv.writer(output)
 
         if report_type == "cross":
-            writer.writerow(["session_qid", "session_text", "db_qid", "db_text", "similarity", "subject"])
+            writer.writerow([
+                "session_qid", "session_text", "db_oid", "db_text",
+                "similarity", "subject", "isPrevious", "isBoard", "isNCERT", "isSolvedExample",
+            ])
             for dup in report.get("duplicates", []):
+                flags = dup.get("db_flags", {})
                 writer.writerow([
                     dup.get("session_qid", ""), dup.get("session_text", ""),
                     dup.get("db_qid", ""), dup.get("db_text", ""),
                     dup.get("similarity", 0), dup.get("subject", ""),
+                    flags.get("isPrevious", False), flags.get("isBoard", False),
+                    flags.get("isNCERT", False), flags.get("isSolvedExample", False),
                 ])
         else:
             writer.writerow(["qid_a", "question_a", "qid_b", "question_b", "similarity", "subject"])

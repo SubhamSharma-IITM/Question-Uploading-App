@@ -133,7 +133,10 @@ async def advance_session(session_id: str):
 
     # Gate: check that current stage is actually completed
     checkpoint = get_checkpoint(session_id, current)
-    if checkpoint is None or checkpoint.get("status") != "completed":
+    # Allow advancement if stage is completed OR running in background
+    # "smiles_rendered" and "skipped" are legacy/safety — stages should save "completed"
+    ADVANCEABLE_STATUSES = {"completed", "background", "smiles_rendered", "skipped"}
+    if checkpoint is None or checkpoint.get("status") not in ADVANCEABLE_STATUSES:
         stage_label = current.replace("_", " ").replace("stage", "Stage ")
         return JSONResponse(
             status_code=400,
@@ -158,6 +161,23 @@ async def advance_session(session_id: str):
 
     update_session(session_id, current_stage=nxt)
     return APIResponse(data={"session_id": session_id, "stage": nxt})
+
+
+@router.get("/api/sessions/{session_id}/quarantine-count")
+async def get_quarantine_count(session_id: str):
+    """Get the current quarantine count for sidebar display."""
+    from app.db import get_quarantine
+    session = get_session(session_id)
+    if session is None:
+        return JSONResponse(
+            status_code=404,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(code="NOT_FOUND", message="Session not found"),
+            ).model_dump(),
+        )
+    records = get_quarantine(session_id)
+    return APIResponse(data={"count": len(records)})
 
 
 @router.get("/api/sessions/{session_id}/logs/history")

@@ -129,10 +129,11 @@ async def submit_all_passes(session_id: str):
 
 @router.post("/stop")
 async def stop_qa(session_id: str, pass_key: str = ""):
-    """Stop one or all running QA passes for this session."""
+    """Stop one or all running QA passes for this session. Cancels active batch jobs."""
     from app.pipeline.stage9_quality import QualityVerifierStage, PASS_MODELS
     stopped = []
 
+    # First, try to stop any in-memory running stages
     keys_to_stop = [f"{session_id}:{pass_key}"] if pass_key else [
         f"{session_id}:{pk}" for pk in PASS_MODELS
     ]
@@ -143,9 +144,16 @@ async def stop_qa(session_id: str, pass_key: str = ""):
             stage.request_stop()
             stopped.append(tk.split(":")[1])
 
-    if stopped:
-        return APIResponse(data={"status": "stopping", "passes": stopped,
-                                 "message": f"Stop requested for: {', '.join(stopped)}"})
+    # Also cancel any active batch jobs (OpenAI / Gemini)
+    session_dir = Path(settings.sessions_dir) / session_id
+    stage = QualityVerifierStage(session_id, session_dir)
+    cancel_result = await asyncio.to_thread(stage.cancel_batches, pass_key)
+    cancelled = cancel_result.get("cancelled", [])
+
+    all_stopped = list(set(stopped + cancelled))
+    if all_stopped:
+        return APIResponse(data={"status": "stopping", "passes": all_stopped,
+                                 "message": f"Stop requested for: {', '.join(all_stopped)}"})
     return APIResponse(data={"status": "not_running",
                              "message": "No active passes to stop"})
 
@@ -225,10 +233,19 @@ async def merge_votes(session_id: str):
 
 @router.get("/csv")
 async def download_qa_csv(session_id: str, category: str = "3of3"):
-    """Download QA CSV for a category (3of3 or 2of3)."""
+    """Download QA CSV for a category (3of3, 2of3, or all).
+
+    category=all returns comprehensive CSV with every question, full error type splits,
+    per-model verdicts and error details.
+    """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
+
+    if category not in ("3of3", "2of3", "all"):
+        return JSONResponse(status_code=400, content=APIResponse(
+            success=False, error=ErrorDetail(code="BAD_REQUEST", message="category must be '3of3', '2of3', or 'all'"),
+        ).model_dump())
 
     session_dir = Path(settings.sessions_dir) / session_id
 

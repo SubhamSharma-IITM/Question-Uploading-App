@@ -391,11 +391,17 @@ class UploadStage(BasePipelineStage):
 
         self.log("success", f"Step 4/4: Added {embedded} vectors to FAISS index")
 
-        self.save_checkpoint("absorbed", {
+        # Merge absorption data with existing "completed" checkpoint — don't overwrite status
+        from app.db import get_checkpoint
+        existing = get_checkpoint(self.session_id, self.stage_name)
+        existing_data = existing.get("data", {}) if existing else {}
+        merged = {
+            **existing_data,
             "absorbed": absorbed,
             "embedded": embedded,
             "db_path": str(db_path),
-        })
+        }
+        self.save_checkpoint("completed", merged)
 
         return {
             "absorbed": absorbed,
@@ -733,6 +739,293 @@ class UploadStage(BasePipelineStage):
             if row_error == error_level:
                 writer.writerow(row)
         return output.getvalue()
+
+    def generate_pipeline_stats_csv(self) -> str:
+        """Generate comprehensive pipeline stats CSV with per-stage metrics.
+
+        Includes: question flow per stage, removal counts, pass/fail rates,
+        model-wise QA accuracy, image counts (SVG SMILES + actual), error type
+        splits from Stage 9, and final accuracy metrics.
+        """
+        from app.db import get_all_checkpoints, get_quarantine
+
+        # ── Gather checkpoint data per stage ──
+        checkpoints = get_all_checkpoints(self.session_id)
+        cp_map = {}
+        for cp in checkpoints:
+            stage = cp.get("stage", "")
+            data = cp.get("data")
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    data = {}
+            if not isinstance(data, dict):
+                data = {}
+            cp_map[stage] = {"status": cp.get("status", "unknown"), **data}
+
+        # ── Quarantine breakdown by stage/reason ──
+        quarantine_records = get_quarantine(self.session_id)
+        quarantine_by_stage = {}
+        quarantine_by_reason = {}
+        for rec in quarantine_records:
+            st = rec.get("stage", "unknown")
+            reason = rec.get("reason", "unknown")
+            quarantine_by_stage[st] = quarantine_by_stage.get(st, 0) + 1
+            quarantine_by_reason[reason] = quarantine_by_reason.get(reason, 0) + 1
+
+        # ── Load metadata for final state ──
+        file_groups, total_meta = self._load_all_metadata()
+        all_entries = []
+        for _, entries in file_groups:
+            all_entries.extend(entries)
+
+        # Count by error level, subject, type
+        by_error = {1: 0, 2: 0, 3: 0, 4: 0}
+        by_subject = {}
+        by_type = {}
+        img_count = 0
+        svg_count = 0
+        for entry in all_entries:
+            ev = entry.get("error", 2)
+            if isinstance(ev, int) and ev in by_error:
+                by_error[ev] += 1
+            subj = entry.get("subject", "Unknown")
+            by_subject[subj] = by_subject.get(subj, 0) + 1
+            qt = entry.get("questionType", "unknown")
+            by_type[qt] = by_type.get(qt, 0) + 1
+
+            # Count images in question+solution HTML
+            qdata = entry.get(entry.get("questionType", ""), {})
+            if isinstance(qdata, dict):
+                for field in ("question", "ques", "solution"):
+                    html = qdata.get(field, "") or ""
+                    img_count += html.count("<img")
+                    svg_count += html.count("image/svg+xml")
+
+        # ── QA vote summary ──
+        vote_path = self.session_dir / "quality_check" / "vote_summary.json"
+        vote_data = {}
+        if vote_path.exists():
+            try:
+                with open(vote_path, "r") as f:
+                    vote_data = json.load(f)
+            except Exception:
+                pass
+
+        # ── QA error type splits from ledger files ──
+        error_type_counts = {}
+        ledger_dir = self.session_dir / "quality_check" / "ledgers"
+        model_stats = {}  # model → {total: N, approved: N, rejected: N}
+        if ledger_dir.exists():
+            for lf in sorted(ledger_dir.glob("qa_pass*.json")):
+                try:
+                    with open(lf, "r", encoding="utf-8") as f:
+                        entries_l = json.load(f)
+                except Exception:
+                    continue
+                if not isinstance(entries_l, list):
+                    continue
+                for le in entries_l:
+                    model = le.get("model", "Unknown")
+                    if model not in model_stats:
+                        model_stats[model] = {"total": 0, "approved": 0, "rejected": 0}
+                    model_stats[model]["total"] += 1
+                    if le.get("has_error"):
+                        model_stats[model]["rejected"] += 1
+                        for err in le.get("errors", []):
+                            if isinstance(err, dict):
+                                etype = err.get("type", "unknown")
+                            else:
+                                etype = str(err)
+                            error_type_counts[etype] = error_type_counts.get(etype, 0) + 1
+                    else:
+                        model_stats[model]["approved"] += 1
+
+        # ── CDN image stats ──
+        cdn_map_path = self.session_dir / "images_cdn_map.json"
+        cdn_images = 0
+        if cdn_map_path.exists():
+            try:
+                with open(cdn_map_path, "r") as f:
+                    cdn_data = json.load(f)
+                cdn_images = len(cdn_data)
+            except Exception:
+                pass
+
+        # ── Build stage flow data ──
+        # Stage 2: extraction
+        s2 = cp_map.get("stage2_mapping", {})
+        extracted = s2.get("questions", 0)
+
+        # Stage 3: cleaner
+        s3 = cp_map.get("stage3_cleaning", {})
+        cleaned = s3.get("questions_cleaned", 0)
+
+        # Stage 4: metadata
+        s4 = cp_map.get("stage4_metadata", {})
+        meta_total = s4.get("total_entries", 0)
+        meta_triplets = s4.get("triplets", 0)
+        meta_non_triplets = s4.get("non_triplets_quarantined", 0)
+
+        # Stage 5: watermark
+        s5 = cp_map.get("stage5_watermark", {})
+        wm_total = s5.get("total", 0)
+        wm_processed = s5.get("processed", 0)
+        smiles_success = s5.get("smiles_success", 0)
+        smiles_fail = s5.get("smiles_fail", 0)
+        smiles_quarantined = s5.get("smiles_quarantined", 0)
+
+        # Stage 6: CDN images
+        s6 = cp_map.get("stage6_images", {})
+        cdn_uploaded = s6.get("uploaded", 0)
+        cdn_cached = s6.get("cached", 0)
+        cdn_failed = s6.get("failed", 0)
+
+        # Stage 8: duplicates
+        s8 = cp_map.get("stage8_duplicates", {})
+        self_dupes = s8.get("self_duplicates", 0)
+        cross_dupes = s8.get("cross_duplicates", 0)
+
+        # Stage 9: QA
+        s9 = cp_map.get("stage9_quality", {})
+        qa_total = s9.get("total", 0)
+        qa_e1 = s9.get("error_1", 0)
+        qa_e2 = s9.get("error_2", 0)
+        qa_e3 = s9.get("error_3", 0)
+        qa_e4 = s9.get("error_4", 0)
+        qa_quarantined = s9.get("quarantined", 0)
+
+        # Stage 10: upload
+        s10 = cp_map.get("stage10_upload", {})
+        uploaded = s10.get("posted", 0)
+        upload_failed = s10.get("failed", 0)
+
+        # ── Total quarantine ──
+        total_quarantined = len(quarantine_records)
+        final_uploaded = uploaded
+        final_ready = total_meta - by_error.get(3, 0) - by_error.get(4, 0)
+
+        # ── Build CSV with multiple sections ──
+        output = io.StringIO()
+
+        # --- Section 1: Pipeline Flow Overview ---
+        output.write("=== PIPELINE FLOW OVERVIEW ===\n")
+        writer = csv.writer(output)
+        writer.writerow(["Stage", "Description", "Input Count", "Output Count", "Removed", "Pass Rate %"])
+
+        stages_flow = [
+            ("Stage 1", "PDF → MMD (Mathpix OCR)", "—", extracted, "—", "—"),
+            ("Stage 2", "LLM Extraction (Q/A/S)", "—", extracted, 0, "100%"),
+            ("Stage 3", "Text Cleaning", extracted, cleaned, max(0, extracted - cleaned), f"{cleaned / max(extracted, 1) * 100:.1f}%"),
+            ("Stage 4", "Metadata V2 Conversion", cleaned, meta_triplets, meta_non_triplets, f"{meta_triplets / max(meta_total, 1) * 100:.1f}%"),
+            ("Stage 5", "Watermark + SMILES", meta_triplets, meta_triplets - smiles_quarantined, smiles_quarantined, f"{(meta_triplets - smiles_quarantined) / max(meta_triplets, 1) * 100:.1f}%"),
+            ("Stage 6", "CDN Image Upload", cdn_uploaded + cdn_cached + cdn_failed, cdn_uploaded + cdn_cached, cdn_failed, f"{(cdn_uploaded + cdn_cached) / max(cdn_uploaded + cdn_cached + cdn_failed, 1) * 100:.1f}%"),
+            ("Stage 7", "LaTeX→MathML + Tagging", "—", "—", 0, "—"),
+            ("Stage 8", "Duplicate Detection", "—", "—", self_dupes + cross_dupes, f"dupes: {self_dupes} self + {cross_dupes} cross"),
+            ("Stage 9", "QA Verification (3-model)", qa_total, qa_e1 + qa_e2, qa_e3 + qa_e4, f"{(qa_e1 + qa_e2) / max(qa_total, 1) * 100:.1f}%"),
+            ("Stage 10", "DB Upload", final_ready, uploaded, upload_failed, f"{uploaded / max(final_ready, 1) * 100:.1f}%"),
+        ]
+        for row in stages_flow:
+            writer.writerow(row)
+
+        # --- Section 2: Quarantine Breakdown ---
+        output.write("\n=== QUARANTINE BREAKDOWN BY STAGE ===\n")
+        writer.writerow(["Stage", "Questions Quarantined", "Reasons"])
+        for st in sorted(quarantine_by_stage.keys()):
+            # Collect reasons for this stage
+            stage_reasons = {}
+            for rec in quarantine_records:
+                if rec.get("stage") == st:
+                    r = rec.get("reason", "unknown")
+                    stage_reasons[r] = stage_reasons.get(r, 0) + 1
+            reason_str = "; ".join(f"{r}={c}" for r, c in sorted(stage_reasons.items()))
+            writer.writerow([st, quarantine_by_stage[st], reason_str])
+        writer.writerow(["TOTAL", total_quarantined, ""])
+
+        # --- Section 3: QA Model-wise Accuracy ---
+        output.write("\n=== MODEL-WISE QA ACCURACY ===\n")
+        writer.writerow(["Model", "Total Checked", "Approved", "Rejected", "Approval Rate %"])
+        for model in sorted(model_stats.keys()):
+            ms = model_stats[model]
+            rate = f"{ms['approved'] / max(ms['total'], 1) * 100:.1f}%"
+            writer.writerow([model, ms["total"], ms["approved"], ms["rejected"], rate])
+
+        # --- Section 4: QA Error Type Splits ---
+        output.write("\n=== QA ERROR TYPE DISTRIBUTION ===\n")
+        writer.writerow(["Error Type", "Count", "% of Total Errors"])
+        total_errors = sum(error_type_counts.values())
+        for etype, count in sorted(error_type_counts.items(), key=lambda x: -x[1]):
+            pct = f"{count / max(total_errors, 1) * 100:.1f}%"
+            writer.writerow([etype, count, pct])
+        writer.writerow(["TOTAL", total_errors, "100%"])
+
+        # --- Section 5: Subject Distribution ---
+        output.write("\n=== SUBJECT DISTRIBUTION ===\n")
+        writer.writerow(["Subject", "Count", "% of Total"])
+        for subj, count in sorted(by_subject.items(), key=lambda x: -x[1]):
+            pct = f"{count / max(total_meta, 1) * 100:.1f}%"
+            writer.writerow([subj, count, pct])
+
+        # --- Section 6: Question Type Distribution ---
+        output.write("\n=== QUESTION TYPE DISTRIBUTION ===\n")
+        writer.writerow(["Question Type", "Count", "% of Total"])
+        for qt, count in sorted(by_type.items(), key=lambda x: -x[1]):
+            pct = f"{count / max(total_meta, 1) * 100:.1f}%"
+            writer.writerow([qt, count, pct])
+
+        # --- Section 7: Image & SMILES Statistics ---
+        output.write("\n=== IMAGE & SMILES STATISTICS ===\n")
+        writer.writerow(["Metric", "Count"])
+        writer.writerow(["Total <img> tags in metadata", img_count])
+        writer.writerow(["SVG/SMILES images (base64 svg+xml)", svg_count])
+        writer.writerow(["Regular images (non-SVG)", max(0, img_count - svg_count)])
+        writer.writerow(["CDN images uploaded", cdn_uploaded])
+        writer.writerow(["CDN images cached (already existed)", cdn_cached])
+        writer.writerow(["CDN upload failures", cdn_failed])
+        writer.writerow(["SMILES tags rendered successfully", smiles_success])
+        writer.writerow(["SMILES tags render failures", smiles_fail])
+        writer.writerow(["SMILES quarantined (all tags failed)", smiles_quarantined])
+
+        # --- Section 8: Error Level Distribution ---
+        output.write("\n=== QA ERROR LEVEL DISTRIBUTION ===\n")
+        writer.writerow(["Error Level", "Description", "Count", "% of Total"])
+        error_descs = {
+            1: "3/3 approved (clean)",
+            2: "2/3 approved (review)",
+            3: "1/3 approved (rejected)",
+            4: "0/3 approved (rejected)",
+        }
+        for lvl in (1, 2, 3, 4):
+            count = by_error.get(lvl, 0)
+            pct = f"{count / max(total_meta, 1) * 100:.1f}%"
+            writer.writerow([lvl, error_descs.get(lvl, ""), count, pct])
+
+        # --- Section 9: Final Summary ---
+        output.write("\n=== FINAL PIPELINE SUMMARY ===\n")
+        writer.writerow(["Metric", "Value"])
+        writer.writerow(["Questions extracted (Stage 2)", extracted])
+        writer.writerow(["Questions in metadata (final)", total_meta])
+        writer.writerow(["Total quarantined (all stages)", total_quarantined])
+        writer.writerow(["Ready for upload (error 1+2)", final_ready])
+        writer.writerow(["Actually uploaded to DB", uploaded])
+        writer.writerow(["Upload failures", upload_failed])
+        pipeline_accuracy = f"{final_ready / max(extracted, 1) * 100:.1f}%"
+        writer.writerow(["Pipeline pass-through rate", pipeline_accuracy])
+        qa_accuracy = f"{(qa_e1 + qa_e2) / max(qa_total, 1) * 100:.1f}%"
+        writer.writerow(["QA approval rate (error 1+2)", qa_accuracy])
+        clean_accuracy = f"{qa_e1 / max(qa_total, 1) * 100:.1f}%"
+        writer.writerow(["Clean rate (3/3 approved)", clean_accuracy])
+
+        csv_content = output.getvalue()
+
+        # Save to file
+        stats_path = self._get_upload_dir() / "pipeline_stats.csv"
+        with open(stats_path, "w", newline="", encoding="utf-8") as f:
+            f.write(csv_content)
+        self.log("info", f"Pipeline stats CSV saved to {stats_path.name}")
+
+        return csv_content
 
     def dry_run(self, **kwargs) -> Dict[str, Any]:
         return self.upload(dry_run=True)

@@ -323,10 +323,27 @@ def _check_rdkit_available() -> bool:
 HAS_RDKIT = _check_rdkit_available()
 
 
-def smiles_to_svg(smiles_str: str, width: int = 300, height: int = 250) -> Optional[str]:
+def _compute_smiles_dimensions(mol) -> Tuple[int, int]:
+    """Compute SVG dimensions based on molecule complexity.
+
+    Small molecules (< 10 atoms): 200x150
+    Medium molecules (10-25 atoms): 300x200
+    Large molecules (> 25 atoms): 400x250
+    """
+    num_atoms = mol.GetNumAtoms()
+    if num_atoms < 10:
+        return 200, 150
+    elif num_atoms <= 25:
+        return 300, 200
+    else:
+        return 400, 250
+
+
+def smiles_to_svg(smiles_str: str, width: int = 0, height: int = 0) -> Optional[Tuple[str, int, int]]:
     """Render a SMILES string to SVG XML using RDKit.
 
-    Returns SVG string or None on failure.
+    Returns (svg_string, width, height) or None on failure.
+    Width/height auto-computed from molecule complexity if not specified.
     """
     if not HAS_RDKIT:
         return None
@@ -343,28 +360,38 @@ def smiles_to_svg(smiles_str: str, width: int = 300, height: int = 250) -> Optio
         mol = Chem.MolFromSmiles(cleaned)
         if not mol:
             return None
+
+        # Auto-compute dimensions from molecule complexity
+        if width == 0 or height == 0:
+            width, height = _compute_smiles_dimensions(mol)
+
         AllChem.Compute2DCoords(mol)
         drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
         drawer.DrawMolecule(mol)
         drawer.FinishDrawing()
-        return drawer.GetDrawingText()
+        return drawer.GetDrawingText(), width, height
     except Exception:
         return None
 
 
-def smiles_to_svg_data_uri(smiles_str: str) -> str:
-    """Render SMILES to base64 SVG data URI. Returns empty string on failure."""
-    svg = smiles_to_svg(smiles_str)
-    if not svg:
-        return ""
+def smiles_to_svg_data_uri(smiles_str: str) -> Tuple[str, int, int]:
+    """Render SMILES to base64 SVG data URI.
+
+    Returns (data_uri, width, height). Empty string + (0,0) on failure.
+    """
+    result = smiles_to_svg(smiles_str)
+    if not result:
+        return "", 0, 0
+    svg, w, h = result
     b64 = base64.b64encode(svg.encode()).decode("ascii")
-    return f"data:image/svg+xml;base64,{b64}"
+    return f"data:image/svg+xml;base64,{b64}", w, h
 
 
 def replace_smiles_in_html(html: str) -> Tuple[str, int, int]:
     """Replace all <smiles>...</smiles> tags in HTML with rendered SVG <img> tags.
 
     Returns (updated_html, success_count, fail_count).
+    Dimensions are auto-computed based on molecule complexity.
     """
     success = 0
     fail = 0
@@ -372,10 +399,13 @@ def replace_smiles_in_html(html: str) -> Tuple[str, int, int]:
     def _replacer(match):
         nonlocal success, fail
         raw_smiles = match.group(1)
-        svg_uri = smiles_to_svg_data_uri(raw_smiles)
+        svg_uri, w, h = smiles_to_svg_data_uri(raw_smiles)
         if svg_uri:
             success += 1
-            return f'<img src="{svg_uri}" alt="SMILES: {raw_smiles.strip()}" style="vertical-align: middle; max-height: 200px;" />'
+            return (
+                f'<img src="{svg_uri}" alt="SMILES: {raw_smiles.strip()}" '
+                f'style="vertical-align: middle; width:{w}px; height:{h}px;" />'
+            )
         else:
             fail += 1
             return match.group(0)  # Keep original on failure
@@ -677,6 +707,9 @@ class WatermarkStage(BasePipelineStage):
 
         Modifies metadata_v2 files in-place. Only runs if RDKit is available and
         SMILES tags are detected.
+
+        Questions where ALL SMILES tags fail to render are quarantined and removed
+        from metadata so they don't pass downstream with broken <smiles> tags.
         """
         if not HAS_RDKIT:
             return {"error": "RDKit not installed — pip install rdkit", "processed": 0}
@@ -685,11 +718,14 @@ class WatermarkStage(BasePipelineStage):
         if not meta_files:
             return {"error": "No metadata files found", "processed": 0}
 
+        from app.db import quarantine_question
+
         QUESTION_TYPES = ["scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"]
         total_success = 0
         total_fail = 0
         entries_modified = 0
         files_modified = 0
+        quarantined_qids = set()
 
         for mf in meta_files:
             try:
@@ -700,9 +736,13 @@ class WatermarkStage(BasePipelineStage):
 
             questions = data if isinstance(data, list) else data.get("questions", [])
             file_modified = False
+            questions_to_remove = set()
 
             for q in questions:
                 entry_modified = False
+                entry_success = 0
+                entry_fail = 0
+                qid = q.get("qid", "?")
 
                 for qt in QUESTION_TYPES:
                     obj = q.get(qt)
@@ -716,34 +756,72 @@ class WatermarkStage(BasePipelineStage):
                             continue
 
                         new_val, sc, fc = replace_smiles_in_html(val)
-                        if sc > 0:
-                            obj[field_key] = new_val
-                            total_success += sc
-                            total_fail += fc
+                        obj[field_key] = new_val
+                        entry_success += sc
+                        entry_fail += fc
+                        total_success += sc
+                        total_fail += fc
+                        if sc > 0 or fc > 0:
                             entry_modified = True
+
+                # If ALL SMILES tags failed (zero success, some failures),
+                # quarantine this question — it has unrenderable chemical structures
+                if entry_fail > 0 and entry_success == 0:
+                    quarantine_question(
+                        self.session_id, qid,
+                        stage="stage5_watermark",
+                        reason="smiles_render_failure",
+                        data={
+                            "failed_tags": entry_fail,
+                            "message": f"All {entry_fail} SMILES tag(s) failed to render via RDKit",
+                        },
+                    )
+                    quarantined_qids.add(qid)
+                    questions_to_remove.add(qid)
+                    self.log("warning", f"Quarantined {qid}: all {entry_fail} SMILES failed to render")
 
                 if entry_modified:
                     entries_modified += 1
                     file_modified = True
 
+            # Remove fully-failed SMILES questions from metadata
+            if questions_to_remove:
+                if isinstance(data, list):
+                    data[:] = [q for q in data if q.get("qid") not in questions_to_remove]
+                elif "questions" in data:
+                    data["questions"] = [q for q in data["questions"]
+                                         if q.get("qid") not in questions_to_remove]
+                file_modified = True
+
             if file_modified:
                 files_modified += 1
+                self.backup(mf)
                 with open(mf, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
         self.log("success" if total_success > 0 else "info",
                  f"SMILES rendering: {total_success} rendered, {total_fail} failed, "
-                 f"{entries_modified} entries in {files_modified} files")
+                 f"{entries_modified} entries in {files_modified} files"
+                 + (f", {len(quarantined_qids)} quarantined" if quarantined_qids else ""))
 
-        self.save_checkpoint("smiles_rendered", {
-            "success": total_success,
-            "fail": total_fail,
-            "entries_modified": entries_modified,
-        })
+        # Save as "completed" — not "smiles_rendered" — so the advance gate works.
+        # Merge with existing watermark checkpoint data if present.
+        from app.db import get_checkpoint
+        existing = get_checkpoint(self.session_id, self.stage_name)
+        existing_data = existing.get("data", {}) if existing else {}
+        merged = {
+            **existing_data,
+            "smiles_success": total_success,
+            "smiles_fail": total_fail,
+            "smiles_quarantined": len(quarantined_qids),
+            "smiles_entries_modified": entries_modified,
+        }
+        self.save_checkpoint("completed", merged)
 
         return {
             "total_success": total_success,
             "total_fail": total_fail,
             "entries_modified": entries_modified,
             "files_modified": files_modified,
+            "quarantined": list(quarantined_qids),
         }

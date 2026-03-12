@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # ── Gemini ──
     gemini_api_key: str = ""
 
+    # ── Vertex AI (Gemini batch fallback when AI Studio hits 429) ──
+    vertex_ai_credentials: str = ""  # Path to service account JSON
+    vertex_ai_project: str = "gen-lang-client-0276374344"
+    vertex_ai_location: str = "global"
+    vertex_ai_bucket: str = "acadza-qa-batch-0276374344"
+
     # ── OpenAI ──
     openai_api_key: str = ""
 

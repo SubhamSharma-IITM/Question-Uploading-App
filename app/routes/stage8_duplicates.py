@@ -53,7 +53,17 @@ async def self_duplicate_check(session_id: str, threshold: float = 0.85):
 
     from app.pipeline.stage8_duplicates import DuplicateCheckStage
     stage = DuplicateCheckStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.self_check, threshold=threshold)
+
+    try:
+        result = await asyncio.to_thread(stage.self_check, threshold=threshold)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(code="SELF_CHECK_ERROR", message=str(e)),
+            ).model_dump(),
+        )
 
     # Mark stage as completed so advancement works after individual checks
     if "error" not in result:
@@ -76,7 +86,17 @@ async def cross_duplicate_check(session_id: str, threshold: float = 0.85):
 
     from app.pipeline.stage8_duplicates import DuplicateCheckStage
     stage = DuplicateCheckStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.cross_check, threshold=threshold)
+
+    try:
+        result = await asyncio.to_thread(stage.cross_check, threshold=threshold)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(code="CROSS_CHECK_ERROR", message=str(e)),
+            ).model_dump(),
+        )
 
     # Mark stage as completed so advancement works after individual checks
     if "error" not in result:

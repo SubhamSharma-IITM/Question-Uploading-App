@@ -30,6 +30,10 @@ latex2mathml>=3.78.0
 Pillow>=10.0.0
 numpy>=1.24.0
 opencv-python>=4.8.0
+cairosvg>=2.7.0
+
+# Cloud Storage (for Vertex AI batch I/O)
+google-cloud-storage>=2.14.0
 
 # Vector Search (for duplicate checking)
 faiss-cpu>=1.9.0

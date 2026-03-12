@@ -188,18 +188,24 @@ def estimate_model_compatibility(mmd_text: str) -> Dict[str, Any]:
 def _scan_subject_boundaries(raw_lines: List[str]) -> List[Dict]:
     """Scan document for subject headers to help the model identify subjects."""
     boundaries = []
+    _SUBJECT_RE = r"PHYSICS|CHEMISTRY|MATH(?:EMATICS)?|BIOLOGY|BOTANY|ZOOLOGY|MATHS"
     patterns = [
-        r"\\section\*?\{(PHYSICS|CHEMISTRY|MATH(?:EMATICS)?|BIOLOGY|MATHS)\}",
-        r"^##?\s+(PHYSICS|CHEMISTRY|MATH(?:EMATICS)?|BIOLOGY|MATHS)\s*$",
-        r"^\s*(PHYSICS|CHEMISTRY|MATH(?:EMATICS)?|BIOLOGY)\s*$",
+        rf"\\section\*?\{{({_SUBJECT_RE})\s*:?\}}",
+        rf"^##?\s+({_SUBJECT_RE})\s*:?\s*$",
+        rf"^\s*({_SUBJECT_RE})\s*:?\s*$",
     ]
+    # Normalize subject names to canonical form
+    _SUBJECT_MAP = {
+        "Maths": "Mathematics",
+        "Botany": "Biology",
+        "Zoology": "Biology",
+    }
     for idx, line in enumerate(raw_lines):
         for pat in patterns:
             m = re.search(pat, line, re.IGNORECASE)
             if m:
                 subj_raw = m.group(1).strip().title()
-                if subj_raw in ("Maths",):
-                    subj_raw = "Mathematics"
+                subj_raw = _SUBJECT_MAP.get(subj_raw, subj_raw)
                 boundaries.append({"line": idx, "subject": subj_raw})
                 break
     return boundaries

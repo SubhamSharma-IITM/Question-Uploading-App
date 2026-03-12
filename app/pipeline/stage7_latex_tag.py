@@ -1165,6 +1165,43 @@ class LatexTagStage(BasePipelineStage):
 
         return result
 
+    def cancel_batches(self) -> Dict[str, Any]:
+        """Cancel active OpenAI batches for this session."""
+        batch_status = self._load_batch_status()
+        cancelled = []
+        errors = []
+
+        if not batch_status.get("tagging_batch_id") and not batch_status.get("latex_batch_id"):
+            return {"status": "nothing_to_cancel", "message": "No active batches found"}
+
+        client = self._get_openai_client()
+
+        for batch_type in ["tagging", "latex"]:
+            batch_id = batch_status.get(f"{batch_type}_batch_id")
+            if not batch_id:
+                continue
+            try:
+                client.batches.cancel(batch_id)
+                cancelled.append(batch_type)
+                self.log("info", f"Cancelled {batch_type} batch: {batch_id}")
+            except Exception as e:
+                err_str = str(e)
+                # Already completed/cancelled batches can't be cancelled — that's fine
+                if "Cannot cancel" in err_str or "already" in err_str.lower():
+                    self.log("info", f"{batch_type} batch already finished: {batch_id}")
+                else:
+                    errors.append(f"{batch_type}: {err_str}")
+                    self.log("error", f"Failed to cancel {batch_type} batch: {e}")
+
+        batch_status["status"] = "cancelled"
+        self._save_batch_status(batch_status)
+
+        return {
+            "status": "cancelled" if cancelled else "stop_requested",
+            "cancelled": cancelled,
+            "errors": errors,
+        }
+
     def download_results(self) -> Dict[str, Any]:
         """Download batch results from OpenAI and merge into metadata_v2."""
         batch_status = self._load_batch_status()
@@ -1220,24 +1257,26 @@ class LatexTagStage(BasePipelineStage):
 
                 # Merge into metadata_v2 files
                 meta_dir = self._get_metadata_dir()
+
+                # Load chunk lookup ONCE before iterating files (used for tag resolution)
+                chunk_lookup = {}
+                if batch_type == "tagging":
+                    chunk_map_path = self._get_batch_dir() / "chunk_id_map.json"
+                    if chunk_map_path.exists():
+                        try:
+                            with open(chunk_map_path, "r", encoding="utf-8") as cl:
+                                cm = json.load(cl)
+                            chunk_lookup = cm.get("chunk_lookup", {})
+                            self.log("info", f"Loaded chunk lookup: {len(chunk_lookup)} chunks")
+                        except Exception as e:
+                            self.log("warning", f"Failed to load chunk_id_map.json: {e}")
+
                 for f in sorted(meta_dir.glob("*_metadata_v2.json")):
                     try:
                         with open(f, "r", encoding="utf-8") as fh:
                             data = json.load(fh)
                         if not isinstance(data, list):
                             continue
-
-                        # Load chunk lookup for tag resolution (if tagging)
-                        chunk_lookup = {}
-                        if batch_type == "tagging":
-                            chunk_map_path = self._get_batch_dir() / "chunk_id_map.json"
-                            if chunk_map_path.exists():
-                                try:
-                                    with open(chunk_map_path, "r", encoding="utf-8") as cl:
-                                        cm = json.load(cl)
-                                    chunk_lookup = cm.get("chunk_lookup", {})
-                                except Exception:
-                                    pass
 
                         modified = False
                         for entry in data:
@@ -1263,6 +1302,20 @@ class LatexTagStage(BasePipelineStage):
                                             chunk_subject = first_chunk.get("subject", "")
                                             if chunk_subject:
                                                 entry["subject"] = chunk_subject
+
+                                            # Build tagSubConcept array from ALL resolved chunks
+                                            tag_sub_concepts = []
+                                            for cid in selected_ids[:3]:
+                                                chunk = chunk_lookup.get(cid, {})
+                                                if chunk:
+                                                    tag_sub_concepts.append({
+                                                        "subject": chunk.get("subject", ""),
+                                                        "chapter": chunk.get("chapter", ""),
+                                                        "concept": chunk.get("concept", ""),
+                                                        "subConcept": chunk.get("subconcept", ""),
+                                                    })
+                                            entry["tagSubConcept"] = tag_sub_concepts
+
                                             tags_merged += 1
                                             modified = True
                                         else:

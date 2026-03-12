@@ -81,6 +81,18 @@ def _normalize_options_to_ABCD(html: str) -> str:
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*3\s*\)', r'\1(C)', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*4\s*\)', r'\1(D)', result, flags=re.MULTILINE)
 
+    # Handle A) B) C) D) format (without parentheses)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Aa]\)\s*', r'\1(A) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Bb]\)\s*', r'\1(B) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Cc]\)\s*', r'\1(C) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Dd]\)\s*', r'\1(D) ', result, flags=re.MULTILINE)
+
+    # Handle A. B. C. D. format (letter-dot)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Aa]\.\s*', r'\1(A) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Bb]\.\s*', r'\1(B) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Cc]\.\s*', r'\1(C) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*[Dd]\.\s*', r'\1(D) ', result, flags=re.MULTILINE)
+
     return result
 
 

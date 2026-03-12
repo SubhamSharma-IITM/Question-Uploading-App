@@ -547,7 +547,7 @@ async function pollPasses(silent) {
                     progressEl.textContent = `${info.results}/${info.total}`;
                 }
 
-                // Update submit button text
+                // Update submit button text and state
                 const btn = document.getElementById(pk + '-btn');
                 if (btn) {
                     if (info.status === 'completed') {
@@ -556,7 +556,9 @@ async function pollPasses(silent) {
                     } else if (info.status === 'stopped') {
                         btn.textContent = 'Stopped';
                         btn.disabled = true;
-                    } else if (info.status === 'running') {
+                    } else if (info.status === 'running' || info.status === 'batch_submitted'
+                               || info.status === 'in_progress' || info.status === 'validating'
+                               || info.status === 'finalizing') {
                         btn.textContent = 'Running...';
                         btn.disabled = true;
                     }
@@ -564,6 +566,17 @@ async function pollPasses(silent) {
             }
             html += '</tbody></table>';
             document.getElementById('status-content').innerHTML = html;
+
+            // Update Submit All button: disable if all passes are submitted/running/completed
+            const allPassStatuses = Object.values(d.passes || {}).map(p => p.status);
+            const nonIdleStatuses = ['completed', 'stopped', 'running', 'batch_submitted', 'in_progress', 'validating', 'finalizing', 'batch_complete'];
+            const allSubmitted = allPassStatuses.length > 0 && allPassStatuses.every(s => nonIdleStatuses.includes(s));
+            const submitAllBtn = document.getElementById('submit-all-btn');
+            if (submitAllBtn && allSubmitted) {
+                submitAllBtn.disabled = true;
+                const allDone = allPassStatuses.every(s => s === 'completed' || s === 'stopped');
+                if (allDone) submitAllBtn.textContent = 'All Done \u2713';
+            }
 
             // Detailed per-pass breakdown
             let detailsHtml = '';

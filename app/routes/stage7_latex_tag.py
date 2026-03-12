@@ -163,16 +163,19 @@ async def poll_batch(session_id: str):
 
 @router.post("/stop")
 async def stop_batch(session_id: str):
-    """Request stop of batch processing. Partial results are preserved."""
+    """Request stop of batch processing. Cancels OpenAI batches and preserves partial results."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
     from app.db import insert_log
     insert_log(session_id, "stage7_batch", "warning", "Batch stop requested by user")
-    # Note: OpenAI batches can be cancelled via the API if needed.
-    # For now, this is a UI-level stop — user can still poll/download partial results.
-    return APIResponse(data={"status": "stop_requested"})
+
+    session_dir = Path(settings.sessions_dir) / session_id
+    from app.pipeline.stage7_latex_tag import LatexTagStage
+    stage = LatexTagStage(session_id, session_dir)
+    result = await asyncio.to_thread(stage.cancel_batches)
+    return APIResponse(data=result)
 
 
 @router.post("/background")
