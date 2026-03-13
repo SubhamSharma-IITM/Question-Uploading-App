@@ -1,14 +1,19 @@
 """Stage 5: Watermark Removal — pipeline adapter.
 
 Smart watermark removal that preserves black text/lines on white background.
-Removes colored watermarks (blue, red, grey) by analyzing pixel distributions.
+Removes colored watermarks (blue, red, grey) using a multi-step CV pipeline.
 
-Approach: Multi-method grayscale conversion + adaptive thresholding
-- Method 1: Saturation-based — desaturate colored pixels (removes colored watermarks)
-- Method 2: Luminance threshold — push light greys to white (removes grey watermarks)
-- Method 3: Adaptive contrast — auto-contrast + gamma for text preservation
+Pipeline (forked from Colab watermark_removal.ipynb "Final Code"):
+1. Red watermark removal via HSV masking + cv2.inpaint (TELEA algorithm)
+2. Grayscale conversion
+3. Bilateral denoise (edge-preserving noise removal)
+4. Adaptive threshold (local region binarization)
+5. Dilation (fill dotted gaps in lines)
+6. CLAHE local contrast enhancement
+7. Unsharp mask sharpening
+8. Gamma correction (push whites whiter, blacks blacker)
 
-Forked from: CodeBase/soft_fade_watermark.py (OpenCV-based)
+Forked from: watermark_removal.ipynb (Colab), watermark-removal/src/remove_watermark.py
 """
 
 import base64
@@ -42,15 +47,38 @@ except ImportError:
     HAS_CV2 = False
 
 
+# ── Watermark removal tuning parameters ──────────────────────────────────
+# Tuned via Colab experiments on 120 sample images (wm_001 – wm_120).
+
+# Red watermark HSV ranges (catches solid + faded/outline red, e.g. TG @bohring_bot)
+_LOWER_RED1 = np.array([0, 100, 100]) if HAS_NUMPY else None     # solid red
+_UPPER_RED1 = np.array([15, 255, 255]) if HAS_NUMPY else None
+_LOWER_RED2 = np.array([160, 30, 30]) if HAS_NUMPY else None     # faded/outline red
+_UPPER_RED2 = np.array([180, 255, 255]) if HAS_NUMPY else None
+
+_INPAINT_RADIUS = 10       # how far inpaint looks for fill pixels
+_RED_DILATE_ITER = 2        # expand red mask to catch anti-aliased edges
+
+# Processing pipeline parameters
+_DENOISE_STRENGTH = 15      # bilateral filter d — higher = smoother bg
+_ADAPTIVE_BLOCK = 21        # local threshold region (must be odd)
+_ADAPTIVE_C = 8             # darkness offset for adaptive threshold
+_CLAHE_CLIP = 4.0           # CLAHE contrast clip limit
+_CLAHE_GRID = (16, 16)      # CLAHE tile grid size
+_SHARPEN_STRENGTH = 8       # unsharp mask centre weight
+_GAMMA = 1.3                # gamma correction (>1 = whiter whites, blacker blacks)
+
+
 def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.ndarray]]:
-    """Pre-check: detect and remove red/dark-red watermark pixels.
+    """Detect and remove red watermark pixels via inpainting.
 
-    Uses HSV color space to target saturated red pixels (e.g., "bohring bot",
-    "TG" labels) while preserving black text (low saturation) and diagram lines.
+    Uses HSV color space to target saturated red pixels (e.g., "TG @bohring_bot",
+    "bohring bot" labels) and fills them using cv2.inpaint (TELEA algorithm) which
+    reconstructs the area from surrounding pixels — much better than white-fill.
 
-    Returns (temp_path, dilated_mask) or (None, None).
-    The dilated mask is used AFTER grayscale processing to force those pixels
-    back to white, preventing the sharpening/LUT from creating dark outlines.
+    Returns (temp_path, None) or (None, None).
+    Unlike the old approach, inpainting fills naturally so no red mask re-application
+    is needed after grayscale processing.
     """
     if HAS_CV2:
         img = cv2.imread(img_path)
@@ -58,44 +86,34 @@ def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.nda
             return None, None
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # Red in HSV wraps around 0/180: H ∈ [0,10] ∪ [170,180]
-        # S > 50 (must be saturated — not grey/black text)
-        # V > 50 (must have brightness — not dark text)
-        lower_red1 = np.array([0, 50, 50])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 50, 50])
-        upper_red2 = np.array([180, 255, 255])
+        # Two HSV ranges for red (wraps around 0/180 in hue):
+        # Range 1: H [0,15], S>100, V>100 — solid bright red
+        # Range 2: H [160,180], S>30, V>30 — faded/outline/dark red
+        mask_red = cv2.bitwise_or(
+            cv2.inRange(hsv, _LOWER_RED1, _UPPER_RED1),
+            cv2.inRange(hsv, _LOWER_RED2, _UPPER_RED2),
+        )
 
-        # Also catch dark maroon/brown-red: H ∈ [0,15], S > 40, V > 30
-        lower_maroon = np.array([0, 40, 30])
-        upper_maroon = np.array([15, 255, 200])
-
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask3 = cv2.inRange(hsv, lower_maroon, upper_maroon)
-        red_mask = mask1 | mask2 | mask3
-
-        red_pixel_count = np.count_nonzero(red_mask)
+        red_pixel_count = np.count_nonzero(mask_red)
         total_pixels = img.shape[0] * img.shape[1]
 
-        # Only apply if red pixels are < 15% of image (watermark, not a red diagram)
+        # Safety: skip if red > 15% of image (likely red content, not watermark)
+        # or < 10 pixels (noise)
         if red_pixel_count < 10 or red_pixel_count > total_pixels * 0.15:
             return None, None
 
-        # Dilate the mask by 3px to catch anti-aliased edge pixels around red text.
-        # Without this, edge pixels (mixed red+white, low saturation) survive the
-        # red detection but get darkened by the grayscale LUT/sharpening → black outlines.
-        dilate_kernel = np.ones((3, 3), np.uint8)
-        dilated_mask = cv2.dilate(red_mask, dilate_kernel, iterations=3)
+        # Dilate mask to catch anti-aliased edge pixels around red text
+        kernel = np.ones((3, 3), np.uint8)
+        mask_red = cv2.dilate(mask_red, kernel, iterations=_RED_DILATE_ITER)
 
-        # Replace red pixels (and their edges) with white
-        img[dilated_mask > 0] = [255, 255, 255]
+        # Inpaint: fill masked area using surrounding pixels (TELEA algorithm)
+        # This is far superior to white-fill — preserves background texture
+        img = cv2.inpaint(img, mask_red, _INPAINT_RADIUS, cv2.INPAINT_TELEA)
 
-        # Save to temp file
         import tempfile
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         cv2.imwrite(tmp.name, img)
-        return tmp.name, dilated_mask
+        return tmp.name, None
 
     elif HAS_PIL:
         try:
@@ -117,20 +135,19 @@ def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.nda
 
         # Manual dilation for PIL path (no cv2.dilate available)
         dilated = red_mask.copy()
-        for _ in range(3):
+        for _ in range(_RED_DILATE_ITER):
             padded = np.pad(dilated, 1, mode='constant', constant_values=False)
             dilated = (padded[:-2, :-2] | padded[:-2, 1:-1] | padded[:-2, 2:] |
                        padded[1:-1, :-2] | padded[1:-1, 1:-1] | padded[1:-1, 2:] |
                        padded[2:, :-2] | padded[2:, 1:-1] | padded[2:, 2:])
 
-        # Replace red pixels (and their edges) with white
+        # PIL has no inpainting — fall back to white fill
         result = np.array(img)
         result[dilated] = [255, 255, 255]
 
         import tempfile
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         Image.fromarray(result).save(tmp.name)
-        # Convert bool mask to uint8 for downstream use
         return tmp.name, (dilated.astype(np.uint8) * 255)
 
     return None, None
@@ -139,33 +156,28 @@ def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.nda
 def remove_watermark(img_path: str, method: str = "auto") -> Optional[bytes]:
     """Remove watermark from an image. Returns cleaned image as PNG bytes.
 
-    Strategy:
-    0. Pre-check: Remove red watermark pixels (if detected)
-    1. Convert to grayscale via luminance (preserves black text)
-    2. Analyze histogram to find the watermark/background boundary
-    3. Push light pixels (watermark + background) to white
-    4. Enhance contrast for remaining dark pixels (text/lines)
-    5. Apply gentle sharpening to preserve detail
-    6. Re-apply red mask to force formerly-red areas to white
-
-    This works because:
-    - Text/diagrams are dark (grayscale < 128)
-    - Watermarks are light colored or grey (grayscale > 160)
-    - Background is white/near-white (grayscale > 230)
+    Pipeline (forked from Colab watermark_removal.ipynb):
+    0. Pre-check: Remove red watermark via HSV masking + inpainting
+    1. Grayscale conversion
+    2. Bilateral denoise (edge-preserving background smoothing)
+    3. Adaptive threshold (local binarization — handles variable brightness)
+    4. Dilation (fill dotted line gaps)
+    5. CLAHE local contrast enhancement
+    6. Unsharp mask sharpening
+    7. Gamma correction (push whites whiter, blacks blacker)
     """
-    # Step 0: Red watermark pre-check — returns dilated mask for re-application
+    # Step 0: Red watermark pre-check (inpainting for cv2, white-fill for PIL)
     temp_path, red_mask = _remove_red_watermark(img_path)
     effective_path = temp_path if temp_path else img_path
 
     try:
         if HAS_CV2:
-            return _remove_watermark_cv2(effective_path, red_mask=red_mask)
+            return _remove_watermark_cv2(effective_path)
         elif HAS_PIL:
             return _remove_watermark_pil(effective_path, red_mask=red_mask)
         else:
             return None
     finally:
-        # Clean up temp file
         if temp_path:
             try:
                 os.unlink(temp_path)
@@ -173,115 +185,114 @@ def remove_watermark(img_path: str, method: str = "auto") -> Optional[bytes]:
                 pass
 
 
-def _remove_watermark_cv2(img_path: str, red_mask: Optional[np.ndarray] = None) -> Optional[bytes]:
-    """OpenCV-based watermark removal."""
+def _remove_watermark_cv2(img_path: str) -> Optional[bytes]:
+    """OpenCV watermark removal — Colab pipeline.
+
+    Steps: grayscale → bilateral denoise → adaptive threshold → dilation →
+    CLAHE contrast → sharpen → gamma correction.
+
+    No red mask re-application needed because inpainting (Step 0) fills
+    naturally — no dark outlines to fix.
+    """
     img = cv2.imread(img_path)
     if img is None:
         return None
 
-    # Step 1: Convert to grayscale
+    # Step 1: Grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Step 2: Analyze histogram to find watermark threshold
-    # The key insight: text pixels cluster around 0-120, watermarks around 150-210,
-    # background around 230-255. We want to push everything > threshold to white.
-    hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+    # Step 2: Bilateral denoise — smooths flat background (kills stripes, noise,
+    # watermark texture) while preserving hard edges (text, arrows, lines).
+    denoised = cv2.bilateralFilter(gray, d=_DENOISE_STRENGTH, sigmaColor=75, sigmaSpace=75)
 
-    # Find the valley between text and watermark peaks
-    # Use percentile-based approach: text is darkest 30%, rest gets lightened
-    p5 = np.percentile(gray, 5)    # darkest pixels (text)
-    p50 = np.percentile(gray, 50)  # median
-    p90 = np.percentile(gray, 90)  # lightest (background)
+    # Step 3: Adaptive threshold — looks at LOCAL regions to decide content vs bg.
+    # "Is this pixel darker than its neighbours?" YES → black (content), NO → white.
+    # Works even when watermark and content have similar global brightness
+    # (where the old fixed-threshold LUT approach would fail).
+    binary = cv2.adaptiveThreshold(
+        denoised, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=_ADAPTIVE_BLOCK,
+        C=_ADAPTIVE_C,
+    )
 
-    # Adaptive threshold: midpoint between text cluster and background
-    threshold = int(min(max(p50 + 20, 160), 210))
+    # Step 4: Dilation — spreads dark pixels outward slightly, fills small gaps
+    # in dotted/thin lines that adaptive threshold may have broken.
+    binary = cv2.dilate(binary, np.ones((1, 1), np.uint8), iterations=1)
 
-    # Step 3: Push watermark pixels to white using a smooth curve
-    # Create lookup table for smooth transition
-    lut = np.zeros(256, dtype=np.uint8)
-    for i in range(256):
-        if i < threshold - 40:
-            # Dark pixels (text): enhance contrast, make darker
-            # Map [0, threshold-40] -> [0, ~80] with slight darkening
-            ratio = i / max(threshold - 40, 1)
-            lut[i] = int(ratio * min(i, 180))
-        elif i < threshold:
-            # Transition zone: gentle fade to white
-            ratio = (i - (threshold - 40)) / 40.0
-            dark_val = int(min(i, 180))
-            lut[i] = int(dark_val * (1 - ratio) + 255 * ratio)
-        else:
-            # Light pixels (watermark + background): push to white
-            lut[i] = 255
+    # Step 5: CLAHE — local contrast enhancement. Boosts dark content darker
+    # and light background lighter, region by region.
+    clahe = cv2.createCLAHE(clipLimit=_CLAHE_CLIP, tileGridSize=_CLAHE_GRID)
+    enhanced = clahe.apply(binary)
 
-    cleaned = cv2.LUT(gray, lut)
+    # Step 6: Sharpen — unsharp mask to crisp up edges after all the smoothing.
+    sharpen_kernel = np.array([
+        [0, -1, 0],
+        [-1, _SHARPEN_STRENGTH, -1],
+        [0, -1, 0],
+    ], dtype=np.float32)
+    sharp = cv2.filter2D(enhanced, -1, sharpen_kernel)
 
-    # Step 4: Auto-contrast stretch
-    p_low = np.percentile(cleaned[cleaned < 250], 2) if np.any(cleaned < 250) else 0
-    p_high = 255
-    if p_low < p_high:
-        cleaned = np.clip((cleaned.astype(float) - p_low) / (p_high - p_low) * 255, 0, 255).astype(np.uint8)
+    # Step 7: Gamma correction — final push. Whites become whiter, blacks blacker.
+    lut = np.array([
+        np.clip(((i / 255.0) ** _GAMMA) * 255, 0, 255)
+        for i in range(256)
+    ], dtype=np.uint8)
+    final = cv2.LUT(sharp, lut)
 
-    # Step 5: Final sharpening to preserve text edges
-    kernel = np.array([[-0.5, -0.5, -0.5],
-                       [-0.5,  5.0, -0.5],
-                       [-0.5, -0.5, -0.5]])
-    cleaned = cv2.filter2D(cleaned, -1, kernel)
-    cleaned = np.clip(cleaned, 0, 255).astype(np.uint8)
-
-    # Step 6: Re-apply red mask — force formerly-red areas to pure white.
-    # The LUT + sharpening can create dark outlines at red/white boundaries
-    # from anti-aliased edge pixels. The dilated mask covers those edges.
-    if red_mask is not None and red_mask.shape == cleaned.shape:
-        cleaned[red_mask > 0] = 255
-
-    # Encode as PNG bytes
-    success, buffer = cv2.imencode('.png', cleaned)
+    success, buffer = cv2.imencode('.png', final)
     return buffer.tobytes() if success else None
 
 
 def _remove_watermark_pil(img_path: str, red_mask: Optional[np.ndarray] = None) -> Optional[bytes]:
-    """Pillow-based watermark removal (fallback)."""
+    """Pillow-based watermark removal (fallback when cv2 is unavailable).
+
+    Approximates the cv2 pipeline using PIL equivalents:
+    grayscale → denoise (median filter) → threshold → contrast → sharpen → gamma.
+    """
     try:
         img = Image.open(img_path)
     except Exception:
         return None
 
-    # Convert to grayscale
+    # Step 1: Grayscale
     gray = img.convert("L")
-
-    # Get pixel data as numpy array
     arr = np.array(gray, dtype=np.float32)
 
-    # Analyze distribution
-    p50 = np.percentile(arr, 50)
-    threshold = min(max(p50 + 20, 160), 210)
+    # Step 2: Denoise — median filter (PIL's closest to bilateral)
+    gray = gray.filter(ImageFilter.MedianFilter(size=3))
+    arr = np.array(gray, dtype=np.float32)
 
-    # Apply LUT: dark pixels stay, light pixels (watermark) -> white
-    result = np.where(arr > threshold, 255,
-                      np.where(arr > threshold - 40,
-                               255 * (arr - (threshold - 40)) / 40.0 + arr * (1 - (arr - (threshold - 40)) / 40.0),
-                               arr))
-    result = np.clip(result, 0, 255).astype(np.uint8)
+    # Step 3: Adaptive threshold approximation — since PIL has no adaptive threshold,
+    # use a local mean approach: compare each pixel to its local neighbourhood.
+    # Simulate with box blur as local mean, then threshold.
+    from PIL import ImageFilter as IF
+    local_mean = gray.filter(IF.BoxBlur(radius=_ADAPTIVE_BLOCK // 2))
+    local_arr = np.array(local_mean, dtype=np.float32)
+    # Pixel is content if it's significantly darker than local mean
+    binary = np.where(arr < local_arr - _ADAPTIVE_C, 0, 255).astype(np.uint8)
 
-    # Auto-contrast
-    low = np.percentile(result[result < 250], 2) if np.any(result < 250) else 0
-    if low < 255:
-        result = np.clip((result.astype(float) - low) / (255 - low) * 255, 0, 255).astype(np.uint8)
+    # Step 4: Contrast enhancement (CLAHE approximation)
+    out_img = Image.fromarray(binary)
+    out_img = ImageOps.autocontrast(out_img, cutoff=1)
 
-    # Convert back to PIL and sharpen
-    out_img = Image.fromarray(result)
+    # Step 5: Sharpen
+    out_img = out_img.filter(ImageFilter.SHARPEN)
     out_img = out_img.filter(ImageFilter.SHARPEN)
 
-    # Re-apply red mask AFTER sharpening — force formerly-red areas to white.
-    # Must be last step so the sharpen filter can't re-create dark edges.
+    # Step 6: Gamma correction
+    arr_final = np.array(out_img, dtype=np.float32)
+    arr_final = np.clip(((arr_final / 255.0) ** _GAMMA) * 255, 0, 255).astype(np.uint8)
+    out_img = Image.fromarray(arr_final)
+
+    # Re-apply red mask for PIL path (uses white-fill, not inpainting)
     if red_mask is not None:
         result_final = np.array(out_img)
         if red_mask.shape == result_final.shape:
             result_final[red_mask > 0] = 255
             out_img = Image.fromarray(result_final)
 
-    # Encode as PNG bytes
     buf = io.BytesIO()
     out_img.save(buf, format="PNG")
     return buf.getvalue()
