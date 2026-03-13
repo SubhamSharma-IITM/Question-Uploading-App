@@ -375,19 +375,19 @@ def _call_gemini(
     model_name: str = "gemini-3-flash-preview",
 ) -> Optional[Any]:
     """Call Gemini API for extraction. Returns parsed JSON."""
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=settings.gemini_api_key)
 
-    model = genai.GenerativeModel(
-        model_name,
-        system_instruction=system_instruction,
-    )
-
-    response = model.generate_content(
-        [decorated_content, prompt],
-        generation_config={"response_mime_type": "application/json"},
-        request_options={"timeout": GENERATION_TIMEOUT},
+    response = client.models.generate_content(
+        model=model_name,
+        contents=[decorated_content, prompt],
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=GENERATION_TIMEOUT * 1000),
+        ),
     )
 
     return json.loads(response.text)
@@ -404,20 +404,26 @@ def _call_gemini_cached(
 
     Returns (parsed_json, cache_handle) — pass cache_handle to subsequent calls.
     Cache saves ~90% on repeated calls with the same document content.
+    Uses google.genai SDK (not deprecated google.generativeai).
     """
-    import google.generativeai as genai
-    from google.generativeai import caching
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=settings.gemini_api_key)
 
     if cache_handle is None:
         # Create cache on first call
         try:
-            cache_handle = caching.CachedContent.create(
+            cache_handle = client.caches.create(
                 model=model_name,
-                system_instruction=system_instruction,
-                contents=[{"role": "user", "parts": [decorated_content]}],
-                ttl=datetime.timedelta(minutes=60),
+                config=types.CreateCachedContentConfig(
+                    system_instruction=system_instruction,
+                    contents=[types.Content(
+                        role="user",
+                        parts=[types.Part(text=decorated_content)],
+                    )],
+                    ttl=f"{60 * 60}s",  # 60 minutes in seconds
+                ),
             )
         except Exception:
             # Fallback to non-cached if caching not supported
@@ -425,11 +431,14 @@ def _call_gemini_cached(
             return result, None
 
     try:
-        model = genai.GenerativeModel.from_cached_content(cache_handle)
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"},
-            request_options={"timeout": GENERATION_TIMEOUT},
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                cached_content=cache_handle.name,
+                response_mime_type="application/json",
+                http_options=types.HttpOptions(timeout=GENERATION_TIMEOUT * 1000),
+            ),
         )
         return json.loads(response.text), cache_handle
     except Exception as e:
@@ -437,17 +446,25 @@ def _call_gemini_cached(
         # Cache expired or not found — recreate
         if "not found" in err_str.lower() or "403" in err_str or "expired" in err_str.lower():
             try:
-                cache_handle = caching.CachedContent.create(
+                cache_handle = client.caches.create(
                     model=model_name,
-                    system_instruction=system_instruction,
-                    contents=[{"role": "user", "parts": [decorated_content]}],
-                    ttl=datetime.timedelta(minutes=60),
+                    config=types.CreateCachedContentConfig(
+                        system_instruction=system_instruction,
+                        contents=[types.Content(
+                            role="user",
+                            parts=[types.Part(text=decorated_content)],
+                        )],
+                        ttl=f"{60 * 60}s",
+                    ),
                 )
-                model = genai.GenerativeModel.from_cached_content(cache_handle)
-                response = model.generate_content(
-                    prompt,
-                    generation_config={"response_mime_type": "application/json"},
-                    request_options={"timeout": GENERATION_TIMEOUT},
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        cached_content=cache_handle.name,
+                        response_mime_type="application/json",
+                        http_options=types.HttpOptions(timeout=GENERATION_TIMEOUT * 1000),
+                    ),
                 )
                 return json.loads(response.text), cache_handle
             except Exception:

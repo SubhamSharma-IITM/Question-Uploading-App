@@ -12,11 +12,6 @@ class CreateSessionRequest(BaseModel):
     config: Optional[Dict[str, Any]] = Field(None, description="Session-specific settings")
 
 
-class StageActionRequest(BaseModel):
-    """Generic request for stage actions that need optional parameters."""
-    params: Optional[Dict[str, Any]] = None
-
-
 # ── Response Models ──
 
 

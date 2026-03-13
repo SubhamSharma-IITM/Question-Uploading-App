@@ -9,7 +9,7 @@
     </span>
 </div>
 <p class="stage-description">
-    All 9 stages have been completed. Below is the final summary of the pipeline run.
+    All 10 stages have been completed. Below is the final summary of the pipeline run.
 </p>
 
 <div class="stage-layout">
@@ -75,6 +75,7 @@
                     <button class="btn" onclick="downloadUploadCSV(0)" id="csv-btn" disabled>Download CSV (All)</button>
                     <button class="btn" onclick="downloadUploadCSV(1)" id="csv-btn-e1" disabled>CSV Error=1</button>
                     <button class="btn" onclick="downloadUploadCSV(2)" id="csv-btn-e2" disabled>CSV Error=2</button>
+                    <button class="btn" onclick="downloadPipelineStats()" id="stats-btn">Download Pipeline Stats</button>
                 </div>
                 <div id="upload-result" style="margin-top: 12px; display: none;"></div>
 
@@ -111,7 +112,7 @@
         <div class="log-body" id="log-body">
             <div class="log-entry success">
                 <span class="log-level">[OK]</span>
-                <span class="log-msg">Pipeline complete — all 9 stages finished</span>
+                <span class="log-msg">Pipeline complete — all 10 stages finished</span>
             </div>
         </div>
     </div>
@@ -189,6 +190,7 @@ const STAGE_NAMES = {
     'stage7_batch': '7. LaTeX + Tagging',
     'stage8_duplicates': '8. Duplicate Check',
     'stage9_quality': '9. Quality Verifier',
+    'stage10_upload': '10. Upload to DB',
 };
 
 document.addEventListener('DOMContentLoaded', loadSummary);
@@ -284,7 +286,7 @@ async function loadSummary() {
             let html = '';
             // Sort by stage order
             const stageOrder = ['stage1_upload', 'stage2_mapping', 'stage3_cleaning', 'stage4_metadata',
-                                'stage5_watermark', 'stage6_images', 'stage7_batch', 'stage8_duplicates', 'stage9_quality'];
+                                'stage5_watermark', 'stage6_images', 'stage7_batch', 'stage8_duplicates', 'stage9_quality', 'stage10_upload'];
             for (const stageKey of stageOrder) {
                 const info = s.stage_stats[stageKey];
                 if (!info) continue;
@@ -363,7 +365,7 @@ async function scanUpload() {
     appendLog('info', 'Scanning upload readiness...');
 
     try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage10/scan?session_id={{ session.id }}');
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage10/scan');
         if (!r.success) { appendLog('error', r.error?.message || 'Scan failed'); return; }
 
         const d = r.data;
@@ -389,7 +391,7 @@ async function dryRunUpload() {
     appendLog('info', 'Running dry-run upload (CSV only)...');
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/dry-run?session_id={{ session.id }}');
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/dry-run');
         if (r.success) {
             const d = r.data;
             appendLog('success', `Dry run: ${d.total || 0} total, ${d.skipped || 0} skipped — CSV generated`);
@@ -419,7 +421,7 @@ async function uploadToDB() {
     appendLog('info', 'Uploading to database...');
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/upload?session_id={{ session.id }}');
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/upload');
         if (r.success) {
             const d = r.data;
             appendLog('success', `Upload complete: ${d.posted} posted, ${d.failed} failed, ${d.skipped} skipped`);
@@ -458,8 +460,8 @@ async function downloadUploadCSV(errorLevel) {
     const label = errorLevel > 0 ? `error=${errorLevel}` : 'all';
     appendLog('info', `Downloading upload CSV (${label})...`);
     try {
-        let url = `/api/sessions/{{ session.id }}/stage10/download-csv?session_id={{ session.id }}`;
-        if (errorLevel > 0) url += `&error_level=${errorLevel}`;
+        let url = `/api/sessions/{{ session.id }}/stage10/download-csv`;
+        if (errorLevel > 0) url += `?error_level=${errorLevel}`;
         const response = await fetch(url);
         if (!response.ok) { appendLog('error', 'CSV not found'); return; }
 
@@ -476,6 +478,30 @@ async function downloadUploadCSV(errorLevel) {
     }
 }
 
+async function downloadPipelineStats() {
+    const btn = document.getElementById('stats-btn');
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    appendLog('info', 'Downloading pipeline stats CSV...');
+    try {
+        const url = `/api/sessions/{{ session.id }}/stage10/download-stats`;
+        const response = await fetch(url);
+        if (!response.ok) { appendLog('error', 'Stats CSV not found'); btn.disabled = false; btn.textContent = 'Download Pipeline Stats'; return; }
+
+        const blob = await response.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'pipeline_stats.csv';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        appendLog('success', 'Pipeline stats download started');
+    } catch (e) {
+        appendLog('error', 'Stats download error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Download Pipeline Stats';
+}
+
 async function downloadReadyFiles() {
     const btn = document.getElementById('download-btn');
     btn.disabled = true;
@@ -483,7 +509,7 @@ async function downloadReadyFiles() {
     appendLog('info', 'Preparing download...');
 
     try {
-        const url = '/api/sessions/{{ session.id }}/stage9/download-ready?session_id={{ session.id }}';
+        const url = '/api/sessions/{{ session.id }}/stage9/download-ready';
         const response = await fetch(url);
         if (!response.ok) {
             const err = await response.json();
@@ -518,7 +544,7 @@ async function absorbToDB() {
     appendLog('info', 'Absorbing uploaded entries into local DB + FAISS index...');
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb?session_id={{ session.id }}');
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
         if (r.success) {
             const d = r.data;
             appendLog('success', `Absorbed ${d.absorbed} entries to local DB, ${d.embedded} vectors added to FAISS`);

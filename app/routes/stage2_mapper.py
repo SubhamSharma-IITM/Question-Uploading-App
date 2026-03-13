@@ -49,11 +49,13 @@ async def test_api(session_id: str, provider: str = "gemini"):
         else:
             if not settings.gemini_api_key:
                 return APIResponse(data={"status": "error", "message": "Gemini API key not set in .env"})
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel("gemini-3-flash-preview")
-            response = model.generate_content("Reply with exactly: OK")
-            return APIResponse(data={"status": "ok", "message": f"Gemini connected"})
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents="Reply with exactly: OK",
+            )
+            return APIResponse(data={"status": "ok", "message": "Gemini connected"})
     except Exception as e:
         return APIResponse(data={"status": "error", "message": f"Connection failed: {str(e)[:200]}"})
 

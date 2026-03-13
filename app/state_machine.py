@@ -3,7 +3,7 @@
 State machine:
   created -> stage1_upload -> stage2_mapping -> stage3_cleaning -> stage4_metadata
   -> stage5_watermark -> stage6_images -> stage7_batch -> stage8_duplicates
-  -> stage9_quality -> completed
+  -> stage9_quality -> stage10_upload -> completed
 """
 
 from typing import Optional
@@ -20,6 +20,7 @@ STAGES = [
     "stage7_batch",
     "stage8_duplicates",
     "stage9_quality",
+    "stage10_upload",
     "completed",
 ]
 
@@ -35,6 +36,7 @@ STAGE_LABELS = {
     "stage7_batch": "7. LaTeX + Tagging",
     "stage8_duplicates": "8. Duplicate Check",
     "stage9_quality": "9. Quality Verifier",
+    "stage10_upload": "10. Upload to DB",
     "completed": "Complete",
 }
 
@@ -49,6 +51,7 @@ STAGE_SHORT = {
     "stage7_batch": "Batch",
     "stage8_duplicates": "Dupes",
     "stage9_quality": "QA",
+    "stage10_upload": "Upload",
 }
 
 

@@ -181,6 +181,7 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
         "stage7_batch": "stage7.html",
         "stage8_duplicates": "stage8.html",
         "stage9_quality": "stage9.html",
+        "stage10_upload": "completed.html",
         "completed": "completed.html",
     }
     template_name = template_map.get(stage, "stage1.html")
