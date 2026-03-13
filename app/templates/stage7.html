@@ -469,7 +469,7 @@ async function buildBatch() {
                 // If no batch requests at all, enable advance directly
                 if (d.total_requests === 0) {
                     appendLog('info', 'No batch requests needed — you can advance to the next stage');
-                    document.getElementById('advance-btn').disabled = false;
+                    { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
                 }
             }
         } else {
@@ -614,7 +614,7 @@ async function runInBackground() {
     }
     if (!confirm('Run batch in background? You can advance to Stage 8 and return later to check results.')) return;
     appendLog('info', 'Batch running in background — you can now advance to Stage 8');
-    document.getElementById('advance-btn').disabled = false;
+    { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
     document.getElementById('bg-btn').disabled = true;
     document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
     // Save background state to checkpoint so we know to show poll on revisit
@@ -643,7 +643,7 @@ async function downloadResults() {
                 if (quarantined > 0) {
                     updateSidebarQuarantineCount(quarantined);
                 }
-                document.getElementById('advance-btn').disabled = false;
+                { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
                 markStepComplete(5);
                 btn.textContent = 'Downloaded \u2713';
                 document.getElementById('stop-btn').style.display = 'none';

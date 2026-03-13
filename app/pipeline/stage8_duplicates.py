@@ -40,11 +40,31 @@ IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 
 # ── Text helpers ─────────────────────────────────────────────────────────
 
+def _mathml_to_latex_text(html_text: str) -> str:
+    """Convert MathML blocks to LaTeX for semantic preservation in embeddings.
+
+    Uses the production MathML→LaTeX converter from PROOF-READING_v2.0 codebase.
+    Falls back to text extraction if converter fails.
+    """
+    try:
+        from app.pipeline._mathml_to_latex import convert_mathml_to_latex
+        return convert_mathml_to_latex(html_text)
+    except Exception:
+        # Fallback: extract text content from MathML tags
+        def _extract_text(m):
+            inner = re.sub(r'<[^>]+>', ' ', m.group())
+            import html as html_mod
+            inner = html_mod.unescape(inner)
+            inner = WHITESPACE_RE.sub(' ', inner).strip()
+            return f' {inner} ' if inner else ' '
+        return MATHML_RE.sub(_extract_text, html_text)
+
+
 def _strip_html(html: str) -> str:
     """Strip HTML tags and normalize for comparison."""
     if not html:
         return ""
-    text = MATHML_RE.sub(' MATH ', html)
+    text = _mathml_to_latex_text(html)
     text = HTML_TAG_RE.sub(' ', text)
     import html as html_mod
     text = html_mod.unescape(text)
@@ -57,7 +77,7 @@ def _strip_html_keep_images(html: str) -> str:
     if not html:
         return ""
     img_urls = IMG_SRC_RE.findall(html)
-    text = MATHML_RE.sub(' MATH ', html)
+    text = _mathml_to_latex_text(html)
     text = HTML_TAG_RE.sub(' ', text)
     import html as html_mod
     text = html_mod.unescape(text)
@@ -247,12 +267,16 @@ class DuplicateCheckStage(BasePipelineStage):
         return text[:MAX_TEXT_LENGTH] if len(text) > MAX_TEXT_LENGTH else text
 
     def _lookup_db_flags(self, db_qids: Set[str]) -> Dict[str, Dict]:
-        """Look up special flags (isPrevious, isBoard, etc.) for matched DB question IDs.
+        """Look up protected flags for matched DB question IDs.
+
+        Protected flags (cannot unselect in UI):
+          isPrevious, positivePick, negativePick, isSolvedExample
+        These questions MUST be quarantined if duplicated — they are curated DB entries.
 
         Scans the JSONL DB for just the matched IDs — avoids loading entire DB into memory.
         """
         from app.config import settings
-        FLAG_KEYS = ("isSolvedExample", "isPrevious", "isBoard", "isNCERT")
+        FLAG_KEYS = ("isPrevious", "positivePick", "negativePick", "isSolvedExample")
 
         db_path = Path(settings.db_path)
         if not db_path.exists():
@@ -273,11 +297,18 @@ class DuplicateCheckStage(BasePipelineStage):
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    qid = entry.get("qid", entry.get("_id", "?"))
-                    if isinstance(qid, dict) and "$oid" in qid:
-                        qid = qid["$oid"]
-                    qid = str(qid)
-                    if qid in remaining:
+                    # Match by OID (preferred) or qid
+                    raw_id = entry.get("_id", "")
+                    if isinstance(raw_id, dict) and "$oid" in raw_id:
+                        oid = raw_id["$oid"]
+                    elif isinstance(raw_id, str) and len(raw_id) == 24:
+                        oid = raw_id
+                    else:
+                        oid = ""
+                    qid = entry.get("qid", str(raw_id))
+                    # Try matching by OID first, then by qid
+                    matched_key = oid if oid in remaining else (qid if qid in remaining else None)
+                    if matched_key and matched_key in remaining:
                         flags = {k: bool(entry.get(k)) for k in FLAG_KEYS}
                         flags["has_protected_flag"] = any(flags.values())
                         # Also extract question HTML for preview rendering
@@ -289,8 +320,8 @@ class DuplicateCheckStage(BasePipelineStage):
                                 if q_html:
                                     break
                         flags["question_html"] = q_html[:2000] if q_html else ""
-                        flags_map[qid] = flags
-                        remaining.discard(qid)
+                        flags_map[matched_key] = flags
+                        remaining.discard(matched_key)
         except Exception:
             pass
 
@@ -345,6 +376,34 @@ class DuplicateCheckStage(BasePipelineStage):
         text_map = {qid: text[:500] for qid, text in zip(ids, texts)}
         self.log("info", f"Built FAISS index: {index.ntotal} vectors ({EMBEDDING_DIM}-dim)")
         return index, ids, text_map
+
+    def _save_session_embeddings(self, ids: List[str], embeddings: List) -> None:
+        """Save session embeddings to disk for reuse between self/cross checks."""
+        import numpy as np
+        emb_dir = self._get_index_dir() / "session_embeddings"
+        emb_dir.mkdir(parents=True, exist_ok=True)
+        np.save(str(emb_dir / "vectors.npy"), np.array(embeddings, dtype="float32"))
+        (emb_dir / "ids.json").write_text(json.dumps(ids), encoding="utf-8")
+
+    def _load_session_embeddings(self, expected_ids: List[str]):
+        """Load saved session embeddings if they match current session questions."""
+        import numpy as np
+        emb_dir = self._get_index_dir() / "session_embeddings"
+        vec_path = emb_dir / "vectors.npy"
+        ids_path = emb_dir / "ids.json"
+        if not vec_path.exists() or not ids_path.exists():
+            return None
+        try:
+            saved_ids = json.loads(ids_path.read_text(encoding="utf-8"))
+            if set(saved_ids) != set(expected_ids) or len(saved_ids) != len(expected_ids):
+                return None
+            vectors = np.load(str(vec_path))
+            # Reorder to match expected_ids order
+            id_to_idx = {qid: i for i, qid in enumerate(saved_ids)}
+            reordered = [vectors[id_to_idx[qid]] for qid in expected_ids]
+            return reordered
+        except Exception:
+            return None
 
     def _faiss_search(self, index, id_map, query_embedding, k=10, exclude_id=None):
         """Search FAISS index for nearest neighbors."""
@@ -441,17 +500,31 @@ class DuplicateCheckStage(BasePipelineStage):
         # Stage 1: Extract text
         self.log("info", "Stage 1/4: Extracting question text...")
         texts, ids, subjects = [], [], []
+        html_map = {}  # qid -> full question HTML for preview
         for q in questions:
             text = self._extract_question_text(q)
             if text and len(text) >= 10:
                 texts.append(text)
-                ids.append(q.get("qid", "?"))
+                qid = q.get("qid", "?")
+                ids.append(qid)
                 subjects.append(q.get("subject", "?"))
+                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+                    obj = q.get(qt)
+                    if isinstance(obj, dict):
+                        q_html = obj.get("question", obj.get("ques", ""))
+                        if q_html:
+                            html_map[qid] = q_html[:2000]
+                            break
         self.log("info", f"Extracted {len(texts)} question texts ({len(questions) - len(texts)} skipped)")
 
-        # Stage 2: Generate embeddings
-        self.log("info", "Stage 2/4: Generating embeddings via OpenAI API...")
-        embeddings = self._generate_embeddings(texts)
+        # Stage 2: Generate embeddings (or reuse if already cached)
+        embeddings = self._load_session_embeddings(ids)
+        if embeddings is not None:
+            self.log("info", "Stage 2/4: Reusing cached session embeddings")
+        else:
+            self.log("info", "Stage 2/4: Generating embeddings via OpenAI API...")
+            embeddings = self._generate_embeddings(texts)
+            self._save_session_embeddings(ids, embeddings)
 
         # Stage 3: Build FAISS index
         self.log("info", "Stage 3/4: Building FAISS index...")
@@ -496,6 +569,8 @@ class DuplicateCheckStage(BasePipelineStage):
                     "similarity": round(score, 3),
                     "text_a": text_map.get(qid, "")[:150],
                     "text_b": text_map.get(matched_id, "")[:150],
+                    "html_a": html_map.get(qid, ""),
+                    "html_b": html_map.get(matched_id, ""),
                 })
 
             if (i + 1) % 100 == 0:
@@ -601,10 +676,17 @@ class DuplicateCheckStage(BasePipelineStage):
                         text = self._extract_question_text(entry)
                         if not text or len(text) < 10:
                             continue
-                        qid = entry.get("qid", entry.get("_id", "?"))
-                        if isinstance(qid, dict) and "$oid" in qid:
-                            qid = qid["$oid"]
-                        db_ids.append(str(qid))
+                        # Prefer _id.$oid (24-digit hex OID) for DB entries
+                        raw_id = entry.get("_id", "")
+                        if isinstance(raw_id, dict) and "$oid" in raw_id and raw_id["$oid"]:
+                            db_oid = raw_id["$oid"]
+                        elif isinstance(raw_id, str) and len(raw_id) == 24:
+                            db_oid = raw_id
+                        else:
+                            db_oid = entry.get("qid", "") or str(raw_id) or f"unknown_{db_count}"
+                        if not db_oid:
+                            continue
+                        db_ids.append(str(db_oid))
                         db_texts.append(text)
                         if db_count % 10000 == 0:
                             self.log("info", f"  Read {db_count:,} DB entries...")
@@ -624,7 +706,7 @@ class DuplicateCheckStage(BasePipelineStage):
         else:
             db_count = db_index.ntotal
 
-        # Stage 2: Extract + embed session questions
+        # Stage 2: Extract + embed session questions (reuse from self-check if available)
         self.log("info", "Stage 2/4: Extracting session question text...")
         sess_texts, sess_ids, sess_subjects = [], [], []
         sess_html_map = {}  # qid -> full question HTML for preview
@@ -644,8 +726,14 @@ class DuplicateCheckStage(BasePipelineStage):
                             sess_html_map[qid] = q_html[:2000]
                             break
 
-        self.log("info", "Stage 3/4: Generating session embeddings...")
-        sess_embeddings = self._generate_embeddings(sess_texts)
+        # Try to reuse session embeddings from self-check (avoids double API cost)
+        sess_embeddings = self._load_session_embeddings(sess_ids)
+        if sess_embeddings is not None:
+            self.log("info", "Stage 3/4: Reusing session embeddings from self-check (saved API cost)")
+        else:
+            self.log("info", "Stage 3/4: Generating session embeddings...")
+            sess_embeddings = self._generate_embeddings(sess_texts)
+            self._save_session_embeddings(sess_ids, sess_embeddings)
 
         # Stage 4: Batch search all session questions against DB index
         self.log("info", f"Stage 4/4: Batch searching {len(sess_ids)} questions against {db_index.ntotal:,} DB vectors...")
@@ -674,7 +762,8 @@ class DuplicateCheckStage(BasePipelineStage):
                 duplicate_ids.add(qid)
                 duplicates.append({
                     "session_qid": qid,
-                    "db_qid": matched_id,
+                    "db_qid": matched_id,  # Now contains 24-digit OID
+                    "db_oid": matched_id,
                     "subject": subj,
                     "similarity": round(score, 3),
                     "session_text": sess_texts[i][:120],
@@ -1024,7 +1113,7 @@ class DuplicateCheckStage(BasePipelineStage):
         if report_type == "cross":
             writer.writerow([
                 "session_qid", "session_text", "db_oid", "db_text",
-                "similarity", "subject", "isPrevious", "isBoard", "isNCERT", "isSolvedExample",
+                "similarity", "subject", "isPrevious", "positivePick", "negativePick", "isSolvedExample",
             ])
             for dup in report.get("duplicates", []):
                 flags = dup.get("db_flags", {})
@@ -1032,8 +1121,8 @@ class DuplicateCheckStage(BasePipelineStage):
                     dup.get("session_qid", ""), dup.get("session_text", ""),
                     dup.get("db_qid", ""), dup.get("db_text", ""),
                     dup.get("similarity", 0), dup.get("subject", ""),
-                    flags.get("isPrevious", False), flags.get("isBoard", False),
-                    flags.get("isNCERT", False), flags.get("isSolvedExample", False),
+                    flags.get("isPrevious", False), flags.get("positivePick", False),
+                    flags.get("negativePick", False), flags.get("isSolvedExample", False),
                 ])
         else:
             writer.writerow(["qid_a", "question_a", "qid_b", "question_b", "similarity", "subject"])

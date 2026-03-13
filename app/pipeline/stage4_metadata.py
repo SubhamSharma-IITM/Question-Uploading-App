@@ -63,11 +63,22 @@ def _normalize_options_to_ABCD(html: str) -> str:
     if not html:
         return ""
 
-    # Check if we already have (A),(B),(C),(D) format
+    # Check if we already have (A),(B),(C),(D) format (uppercase)
     if re.search(r'\(A\)', html) and re.search(r'\(B\)', html):
+        # Already uppercase — just ensure <br/> before (A) if missing
+        if re.search(r'[^>]\(A\)', html) and not re.search(r'(<br/>|<br>)\s*\(A\)', html):
+            html = re.sub(r'(?<!<br/>)(?<!<br>)\s*(\(A\))', r'<br/>\1', html, count=1)
         return html
 
     result = html
+
+    # ── Handle (a)(b)(c)(d) lowercase parenthesized → uppercase ──
+    result = re.sub(r'(<br/>|<br>|^)\s*\(\s*a\s*\)', r'\1(A)', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*\(\s*b\s*\)', r'\1(B)', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*\(\s*c\s*\)', r'\1(C)', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*\(\s*d\s*\)', r'\1(D)', result, flags=re.MULTILINE)
+    # Also catch (a) without preceding <br> (inline after question text)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)\s*\(\s*a\s*\)', r'<br/>(A)', result, count=1)
 
     # Pattern: <br/>N. or start-of-string followed by N.
     result = re.sub(r'(<br/>|<br>|^)1\.\s*', r'\1(A) ', result, flags=re.MULTILINE)
@@ -92,6 +103,10 @@ def _normalize_options_to_ABCD(html: str) -> str:
     result = re.sub(r'(<br/>|<br>|^)\s*[Bb]\.\s*', r'\1(B) ', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*[Cc]\.\s*', r'\1(C) ', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*[Dd]\.\s*', r'\1(D) ', result, flags=re.MULTILINE)
+
+    # Final pass: ensure <br/> before (A) if it appears inline after question text
+    if re.search(r'[^>]\(A\)', result) and not re.search(r'(<br/>|<br>)\s*\(A\)', result):
+        result = re.sub(r'(?<!<br/>)(?<!<br>)\s*(\(A\))', r'<br/>\1', result, count=1)
 
     return result
 

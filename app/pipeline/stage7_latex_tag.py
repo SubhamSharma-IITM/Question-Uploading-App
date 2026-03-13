@@ -1338,7 +1338,7 @@ class LatexTagStage(BasePipelineStage):
                                     empty_tag_qids.append(qid)
                             else:  # latex
                                 qtype = entry.get("questionType", "")
-                                qdata = entry.get(qtype, {})
+                                qdata = entry.setdefault(qtype, {})
                                 if content_text and len(content_text) > 10:
                                     # New format: JSON with question/solution keys
                                     q_part = ""

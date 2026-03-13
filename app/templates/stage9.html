@@ -136,7 +136,7 @@
         <div class="card" id="status-card" style="display: none;">
             <div class="card-header">
                 <h2>Pass Status</h2>
-                <button class="btn btn-sm" onclick="pollPasses()">Refresh</button>
+                <button class="btn btn-sm" onclick="pollPasses()" id="refresh-poll-btn">Refresh</button>
             </div>
             <div class="card-body">
                 <div id="status-content"></div>
@@ -263,7 +263,12 @@ const ERROR_TYPES = [
     "MISSING_QUESTION", "TRUNCATED_QUESTION", "GARBLED_OCR", "WRONG_OPTION_COUNT",
     "MISSING_ANSWER", "WRONG_ANSWER_FORMAT", "ANSWER_MISMATCH",
     "MISSING_SOLUTION", "TRUNCATED_SOLUTION", "SOLUTION_MISMATCH",
-    "WRONG_SUBJECT", "WRONG_QUESTION_TYPE", "BROKEN_LATEX", "BROKEN_HTML"
+    "WRONG_SUBJECT", "WRONG_QUESTION_TYPE", "BROKEN_LATEX", "BROKEN_HTML",
+    "malformed_mathml", "math_logic_error", "mathml_parsing_error",
+    "missing_options", "invalid_option", "wrong_answer", "wrong_tagging",
+    "cleaner_artifact", "latex_not_converted", "latex_artifacts",
+    "missing_image", "broken_image", "content_mismatch", "match_format_content",
+    "broken_chemical_structure"
 ];
 
 let _pollInterval = null;
@@ -274,7 +279,14 @@ function setQARunning(running) {
     window._activeProcess = running;
     window._activeStopUrl = running ? '/api/sessions/{{ session.id }}/stage9/stop' : '';
     document.getElementById('stop-btn').style.display = running ? 'inline-block' : 'none';
-    document.getElementById('submit-all-btn').disabled = running;
+    // Only DISABLE submit-all when running — never re-enable (only build enables it)
+    if (running) {
+        document.getElementById('submit-all-btn').disabled = true;
+        ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
+    }
     // Freeze inputs during processing
     const inputs = ['qa-extra-context', 'strict-mode', 'check-latex'];
     inputs.forEach(id => {
@@ -508,6 +520,8 @@ async function stopAll() {
 
 async function pollPasses(silent) {
     if (!silent) appendLog('info', 'Polling all QA passes...');
+    const refreshBtn = document.getElementById('refresh-poll-btn');
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = 'Polling...'; }
 
     try {
         const r = await apiGet('/api/sessions/{{ session.id }}/stage9/poll');
@@ -600,6 +614,8 @@ async function pollPasses(silent) {
         }
     } catch (e) {
         if (!silent) appendLog('error', 'Poll error: ' + e.message);
+    } finally {
+        if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
     }
 }
 

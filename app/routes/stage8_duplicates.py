@@ -157,7 +157,7 @@ async def download_csv(session_id: str, report_type: str = "self"):
 
 @router.post("/quarantine")
 async def quarantine_duplicates(session_id: str, qids: Optional[List[str]] = Body(None)):
-    """Mark duplicate QIDs for quarantine."""
+    """Mark duplicate QIDs for quarantine. Requires at least 1 unique question remaining."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
@@ -169,7 +169,27 @@ async def quarantine_duplicates(session_id: str, qids: Optional[List[str]] = Bod
 
     from app.pipeline.stage8_duplicates import DuplicateCheckStage
     stage = DuplicateCheckStage(session_id, session_dir)
+
+    # Check that at least 1 question will remain after quarantine
+    all_entries = stage._load_all_metadata()
+    all_qids = {e.get("qid") for e in all_entries}
+    remaining = all_qids - set(qids)
+    if not remaining:
+        return JSONResponse(
+            status_code=400,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(
+                    code="ALL_QUARANTINED",
+                    message=f"Cannot quarantine all {len(all_qids)} questions. "
+                            f"At least 1 unique question must remain for the pipeline to continue. "
+                            f"Uncheck some duplicates to keep them.",
+                ),
+            ).model_dump(),
+        )
+
     result = stage.quarantine_duplicates(qids)
+    result["remaining_questions"] = len(remaining)
     return APIResponse(data=result)
 
 

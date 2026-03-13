@@ -373,12 +373,25 @@ Do NOT flag:
   - HTML escape sequences that look like LaTeX
 
 ─── MathML Validation ───
-  - malformed_mathml: MathML tags nested in wrong order producing WRONG rendered output.
-    Example: <mi> wrapping <mrow>, triple-nested empty <mrow><mrow><mrow></mrow></mrow></mrow>.
+  - malformed_mathml: MathML TAGS structurally broken → renders WRONG visual output.
+    ONLY for TAG-LEVEL problems: <mi> wrapping <mrow>, triple-nested empty
+    <mrow><mrow><mrow></mrow></mrow></mrow>, missing closing tags within <math>.
     Do NOT flag complex-but-correct MathML (deeply nested fractions, matrices are fine if
     they render the correct math expression).
+    IMPORTANT: Do NOT use malformed_mathml for mathematical LOGIC errors (wrong
+    inequality direction, incorrect formula, wrong derivation step). Those belong
+    under math_logic_error below.
   - mathml_parsing_error: Unclosed <math> tags. Missing </math> closing. Unmatched opening/closing
     tags. MathML entities corrupted into garbage text.
+
+─── Mathematical Logic Errors ───
+  - math_logic_error: The mathematical CONTENT is logically wrong — inequality reversed,
+    incorrect formula application, wrong substitution, derivation step contradicts itself,
+    bounds applied incorrectly, sign error in calculation, missing negative sign.
+    Use this for errors in the MATHEMATICS itself, NOT in the MathML tag structure.
+    Example: Solution says "since x²>x, we get e^{x²} < e^{x}" — the inequality direction
+    is reversed. This is math_logic_error, NOT malformed_mathml.
+    Example: "∫₀¹ f(t)dt ≤ ∫₀¹ t dt = 1" when upper bound should be different — math_logic_error.
 
   Do NOT flag:
   - Valid HTML/XML numeric character references like &#x00063; (= 'c'), &#x003B1; (= 'α'),
@@ -386,6 +399,7 @@ Do NOT flag:
     in browsers and CKEditor. They are NOT malformed MathML or encoding errors.
   - Plain text (letters, commas, simple expressions) wrapped in MathML <math><mi>...</mi></math>.
     This is unnecessary but harmless — it renders identically to plain text. Not an error.
+  - Mathematical approaches you disagree with but that are logically valid.
 
 ================================================================================
 SECTION 6: SOLUTION COMPLETENESS
@@ -508,7 +522,8 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 |----------|------------------------|-----------------------------------------------------|
 | question | match_format_content   | ANY match-type content (Section 0 — gate check)     |
 | question | missing_options        | SCQ/MCQ missing one or more of (A),(B),(C),(D)      |
-| question | malformed_mathml       | MathML structurally broken → wrong rendered output   |
+| question | malformed_mathml       | MathML TAGS structurally broken → wrong visual render |
+| question | math_logic_error       | Mathematical logic wrong (inequality, formula, sign)  |
 | question | mathml_parsing_error   | Unclosed/unmatched <math> tags                       |
 | question | latex_not_converted    | Raw LaTeX remains outside <math> tags                |
 | question | latex_artifacts        | Orphaned LaTeX fragments producing no math output    |
@@ -522,7 +537,8 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 | question | content_mismatch       | Content differs from source MMD ground truth         |
 | solution | missing_solution       | Solution field empty/null/whitespace-only            |
 | solution | partial_solution       | Solution truncated mid-derivation or incomplete      |
-| solution | malformed_mathml       | Same as question — broken MathML in solution         |
+| solution | malformed_mathml       | Same as question — broken MathML TAGS in solution    |
+| solution | math_logic_error       | Math logic error in solution derivation/reasoning     |
 | solution | mathml_parsing_error   | Same as question — unclosed tags in solution         |
 | solution | latex_not_converted    | Raw LaTeX syntax in solution                         |
 | solution | latex_artifacts        | Orphaned LaTeX fragments in solution                 |
@@ -1643,13 +1659,13 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
     # ── Vertex AI Batch (primary when credentials exist, AI Studio fallback) ──
 
-    def _get_vertex_client(self):
-        """Get a google.genai Client configured for Vertex AI."""
+    def _ensure_vertex_credentials(self):
+        """Set GOOGLE_APPLICATION_CREDENTIALS env var for GCS and Vertex AI clients.
+
+        Must be called BEFORE creating any google.cloud.storage or genai Client.
+        """
         import os
         from app.config import settings
-        from google import genai
-        from google.genai import types
-
         creds_path = settings.vertex_ai_credentials
         if not creds_path or not os.path.exists(creds_path):
             raise RuntimeError(
@@ -1657,6 +1673,15 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 "Set VERTEX_AI_CREDENTIALS in .env to the service account JSON path."
             )
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+        return creds_path
+
+    def _get_vertex_client(self):
+        """Get a google.genai Client configured for Vertex AI."""
+        from app.config import settings
+        from google import genai
+        from google.genai import types
+
+        self._ensure_vertex_credentials()
 
         return genai.Client(
             vertexai=True,
@@ -1751,7 +1776,8 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         with open(mapping_path, "w") as f:
             json.dump(qid_line_map, f)
 
-        # Upload JSONL to GCS
+        # Upload JSONL to GCS (credentials must be set first)
+        self._ensure_vertex_credentials()
         from google.cloud import storage as gcs_storage
         gcs_client = gcs_storage.Client()
         bucket = gcs_client.bucket(settings.vertex_ai_bucket)
@@ -1882,8 +1908,9 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         with open(mapping_path, "r") as f:
             qid_line_map = json.load(f)
 
-        # Download results from GCS
+        # Download results from GCS (credentials must be set first)
         from app.config import settings
+        self._ensure_vertex_credentials()
         from google.cloud import storage as gcs_storage
         gcs_client = gcs_storage.Client()
         bucket = gcs_client.bucket(settings.vertex_ai_bucket)
@@ -2512,6 +2539,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                         gcs_output = sd.get("gcs_output", "")
                         if gcs_output:
                             try:
+                                self._ensure_vertex_credentials()
                                 from google.cloud import storage as gcs_storage
                                 gcs_client = gcs_storage.Client()
                                 bucket = gcs_client.bucket(settings.vertex_ai_bucket)

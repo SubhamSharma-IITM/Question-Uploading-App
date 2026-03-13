@@ -326,7 +326,7 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         const isLocked = flags.has_protected_flag || false;
         const lockTitle = isLocked
             ? 'This question matches a protected DB entry (' +
-              [flags.isPrevious && 'PYQ', flags.isBoard && 'Board', flags.isNCERT && 'NCERT', flags.isSolvedExample && 'Solved Example']
+              [flags.isPrevious && 'PYQ', flags.positivePick && 'Positive Pick', flags.negativePick && 'Negative Pick', flags.isSolvedExample && 'Solved Example']
               .filter(Boolean).join(', ') + ') — must be quarantined'
             : '';
 
@@ -335,20 +335,25 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         if (dup.db_qid) {
             flagBadges += `<a href="https://www.acadza.com/question/view-question/${dup.db_qid}" target="_blank" class="db-qid-badge" style="text-decoration:none; color:var(--primary);" onclick="event.stopPropagation();">${escapeHtml(dup.db_qid)}</a>`;
             if (flags.isPrevious) flagBadges += '<span class="flag-badge pyq">PYQ</span>';
-            if (flags.isBoard) flagBadges += '<span class="flag-badge board">Board</span>';
-            if (flags.isNCERT) flagBadges += '<span class="flag-badge ncert">NCERT</span>';
+            if (flags.positivePick) flagBadges += '<span class="flag-badge board">+Pick</span>';
+            if (flags.negativePick) flagBadges += '<span class="flag-badge ncert">-Pick</span>';
             if (flags.isSolvedExample) flagBadges += '<span class="flag-badge solved">Solved Ex</span>';
         }
 
         // Get full HTML content for rich preview (MathML renders properly)
-        const sessHtml = dup.session_html || '';
-        const dbHtml = (flags.question_html) || '';
+        // For self-check: html_a/html_b; for cross-check: session_html + db flags
+        const htmlA = dup.html_a || dup.session_html || '';
+        const htmlB = dup.html_b || (flags.question_html) || '';
+        // Determine if this is a cross-check (has db_qid/db_oid)
+        const isCrossCheck = !!dup.db_qid || !!dup.db_oid;
+        const labelA = isCrossCheck ? 'Current Document' : 'Question A';
+        const labelB = isCrossCheck ? 'Database Question' : 'Question B';
         // Lock reason label (visible, not just tooltip)
         let lockLabel = '';
         if (isLocked) {
-            const reasons = [flags.isPrevious && 'PYQ', flags.isBoard && 'Board',
-                flags.isNCERT && 'NCERT', flags.isSolvedExample && 'Solved Example'].filter(Boolean);
-            lockLabel = `<span style="color:var(--error); font-size:11px; font-weight:600; margin-left:6px;">⊘ Cannot unselect: ${reasons.join(', ')}</span>`;
+            const reasons = [flags.isPrevious && 'PYQ', flags.positivePick && 'Positive Pick',
+                flags.negativePick && 'Negative Pick', flags.isSolvedExample && 'Solved Example'].filter(Boolean);
+            lockLabel = `<span style="color:var(--error); font-size:11px; font-weight:600; margin-left:6px;">Cannot unselect: ${reasons.join(', ')}</span>`;
         }
 
         html += `<div class="dup-pair${isLocked ? ' locked' : ''}" onclick="this.classList.toggle('expanded')">
@@ -365,14 +370,14 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
                 </span>
                 <span class="dup-sim">${(dup.similarity * 100).toFixed(1)}%</span>
             </div>
-            <div class="dup-body">
-                <div style="padding: 8px; background: var(--bg-primary); border-radius: 4px; margin-bottom: 6px; border-left: 3px solid var(--primary);">
-                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">Session: ${escapeHtml(idA)}</div>
-                    <div style="font-size: 13px;" class="math-preview">${sessHtml || escapeHtml(textA)}</div>
+            <div class="dup-body" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div style="padding: 10px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--primary);">
+                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">${labelA}: <code style="font-size:11px;">${escapeHtml(idA)}</code></div>
+                    <div style="font-size: 13px; overflow-x: auto;" class="math-preview">${htmlA || escapeHtml(textA)}</div>
                 </div>
-                <div style="padding: 8px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--warning, #e6a817);">
-                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">DB Match: <code style="background:#333; padding:1px 5px; border-radius:3px; color:var(--primary); font-size:12px;">${escapeHtml(idB)}</code></div>
-                    <div style="font-size: 13px;" class="math-preview">${dbHtml || escapeHtml(textB)}</div>
+                <div style="padding: 10px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--warning, #e6a817);">
+                    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">${labelB}: <code style="background:#333; padding:1px 5px; border-radius:3px; color:var(--primary); font-size:11px;">${escapeHtml(idB)}</code></div>
+                    <div style="font-size: 13px; overflow-x: auto;" class="math-preview">${htmlB || escapeHtml(textB)}</div>
                 </div>
             </div>
         </div>`;
@@ -728,11 +733,18 @@ async function advanceWithQuarantine(sessionId) {
             const r = await apiPost(`/api/sessions/${sessionId}/stage8/quarantine`, qids);
             if (r.success) {
                 const d = r.data;
-                appendLog('success', `Quarantined ${d.quarantined} questions`);
+                appendLog('success', `Quarantined ${d.quarantined} questions (${d.remaining_questions} remaining)`);
                 // Update sidebar quarantine count
                 if (typeof updateSidebarQuarantineCount === 'function') {
                     updateSidebarQuarantineCount(d.quarantined);
                 }
+            } else {
+                // Handle ALL_QUARANTINED error
+                const msg = r.error?.message || 'Quarantine failed';
+                appendLog('error', msg);
+                btn.disabled = false;
+                btn.textContent = 'Advance to Stage 9';
+                return;
             }
         } catch (e) {
             appendLog('error', 'Auto-quarantine error: ' + e.message);
