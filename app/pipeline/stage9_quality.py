@@ -1789,9 +1789,11 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         self.log("info", f"Uploaded to GCS: gs://{settings.vertex_ai_bucket}/{gcs_input_path}")
 
         # Submit batch via Vertex AI
+        # Vertex AI expects bare model ID (SDK adds publishers/google/models/ prefix)
+        # NOT "models/{model}" which is the AI Studio format
         client = self._get_vertex_client()
         batch_job = client.batches.create(
-            model=f"models/{model}",
+            model=model,
             src=f"gs://{settings.vertex_ai_bucket}/{gcs_input_path}",
             config={"dest": f"gs://{settings.vertex_ai_bucket}/{gcs_output_path}"},
         )
