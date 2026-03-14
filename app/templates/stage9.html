@@ -273,6 +273,40 @@ const ERROR_TYPES = [
 
 let _pollInterval = null;
 let _qaRunning = false;
+let _submittingAll = false;       // guard against re-entry into submitAll()
+let _submittedPasses = new Set(); // track which passes have been submitted/completed
+let _batchesBuilt = false;        // track whether batches have been built
+
+function updateSubmitAllState() {
+    const btn = document.getElementById('submit-all-btn');
+    if (!btn) return;
+
+    // All 3 submitted or completed → permanently deactivate
+    if (_submittedPasses.size >= 3) {
+        btn.disabled = true;
+        btn.textContent = 'All Submitted \u2713';
+        return;
+    }
+
+    // Currently running or submitting → keep disabled
+    if (_qaRunning || _submittingAll) {
+        btn.disabled = true;
+        return;
+    }
+
+    // Batches not built yet → keep disabled
+    if (!_batchesBuilt) {
+        btn.disabled = true;
+        return;
+    }
+
+    // Some passes remaining and not running → enable with count
+    const remaining = 3 - _submittedPasses.size;
+    btn.disabled = false;
+    btn.textContent = _submittedPasses.size > 0
+        ? `Submit Remaining (${remaining})`
+        : 'Submit All Passes';
+}
 
 function setQARunning(running) {
     _qaRunning = running;
@@ -423,10 +457,12 @@ async function buildQA() {
                 appendLog('success', `Built ${d.total_requests} total QA requests across 3 passes`);
 
                 // Enable submit buttons
+                _batchesBuilt = true;
+                _submittedPasses.clear();
                 document.getElementById('pass1-btn').disabled = false;
                 document.getElementById('pass2-btn').disabled = false;
                 document.getElementById('pass3-btn').disabled = false;
-                document.getElementById('submit-all-btn').disabled = false;
+                updateSubmitAllState();
                 btn.textContent = 'Built \u2713';
                 document.getElementById('skip-btn').disabled = true;
                 return;
@@ -440,6 +476,9 @@ async function buildQA() {
 }
 
 async function submitPass(passKey) {
+    // Guard: already submitted or currently running
+    if (_submittedPasses.has(passKey)) return;
+
     const btn = document.getElementById(passKey + '-btn');
     const indicator = document.getElementById(passKey + '-indicator');
     btn.disabled = true;
@@ -460,13 +499,17 @@ async function submitPass(passKey) {
                 btn.textContent = 'Submit';
                 checkIfAllDone();
             } else if (d.status === 'already_completed' || d.status === 'already_running') {
+                _submittedPasses.add(passKey);
                 appendLog('info', `${passKey}: ${d.message || d.status}`);
                 if (d.status === 'already_completed') {
                     indicator.className = 'qa-pass-indicator complete';
                     btn.textContent = 'Done \u2713';
                 }
+                updateSubmitAllState();
             } else {
+                _submittedPasses.add(passKey);
                 appendLog('info', `${passKey}: Started in background`);
+                updateSubmitAllState();
                 startAutoPoll();
             }
         }
@@ -480,27 +523,63 @@ async function submitPass(passKey) {
 }
 
 async function submitAll() {
-    appendLog('info', 'Submitting all 3 passes concurrently...');
+    // Guard against re-entry and double-clicks
+    if (_submittingAll || _qaRunning) return;
+
+    const passesToSubmit = ['pass1', 'pass2', 'pass3'].filter(pk => !_submittedPasses.has(pk));
+    if (passesToSubmit.length === 0) {
+        updateSubmitAllState();
+        return;
+    }
+
+    _submittingAll = true;
+    const submitAllBtn = document.getElementById('submit-all-btn');
+    submitAllBtn.disabled = true;
+    submitAllBtn.textContent = 'Submitting...';
+
+    appendLog('info', `Submitting ${passesToSubmit.length} pass(es) concurrently...`);
     setQARunning(true);
 
-    // Disable all individual submit buttons
-    ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
-        document.getElementById(id).disabled = true;
-        document.getElementById(id).textContent = 'Running...';
-    });
-    ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {
-        document.getElementById(id).className = 'qa-pass-indicator running';
+    // Set indicators for passes being submitted
+    passesToSubmit.forEach(pk => {
+        document.getElementById(pk + '-btn').disabled = true;
+        document.getElementById(pk + '-btn').textContent = 'Running...';
+        document.getElementById(pk + '-indicator').className = 'qa-pass-indicator running';
     });
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit-all');
-        if (r.success) {
-            appendLog('info', 'All passes launched — auto-polling for progress...');
-            startAutoPoll();
-        }
+        // Submit each unsubmitted pass in parallel via individual endpoints
+        const results = await Promise.allSettled(passesToSubmit.map(async (pk) => {
+            const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + pk);
+            if (r.success) {
+                const d = r.data;
+                if (d.error) {
+                    appendLog('error', `${pk}: ${d.error}`);
+                    document.getElementById(pk + '-indicator').className = 'qa-pass-indicator failed';
+                    document.getElementById(pk + '-btn').textContent = 'Submit';
+                    document.getElementById(pk + '-btn').disabled = false;
+                } else {
+                    _submittedPasses.add(pk);
+                    if (d.status === 'already_completed') {
+                        document.getElementById(pk + '-indicator').className = 'qa-pass-indicator complete';
+                        document.getElementById(pk + '-btn').textContent = 'Done \u2713';
+                        appendLog('info', `${pk}: already completed`);
+                    } else {
+                        appendLog('info', `${pk}: started in background`);
+                    }
+                }
+            }
+            return r;
+        }));
+
+        appendLog('info', 'All passes launched — auto-polling for progress...');
+        startAutoPoll();
     } catch (e) {
         appendLog('error', 'Submit all error: ' + e.message);
         setQARunning(false);
+    } finally {
+        _submittingAll = false;
+        updateSubmitAllState();
     }
 }
 
@@ -581,15 +660,23 @@ async function pollPasses(silent) {
             html += '</tbody></table>';
             document.getElementById('status-content').innerHTML = html;
 
-            // Update Submit All button: disable if all passes are submitted/running/completed
-            const allPassStatuses = Object.values(d.passes || {}).map(p => p.status);
+            // Sync _submittedPasses from poll status
             const nonIdleStatuses = ['completed', 'stopped', 'running', 'batch_submitted', 'in_progress', 'validating', 'finalizing', 'batch_complete'];
-            const allSubmitted = allPassStatuses.length > 0 && allPassStatuses.every(s => nonIdleStatuses.includes(s));
-            const submitAllBtn = document.getElementById('submit-all-btn');
-            if (submitAllBtn && allSubmitted) {
-                submitAllBtn.disabled = true;
-                const allDone = allPassStatuses.every(s => s === 'completed' || s === 'stopped');
-                if (allDone) submitAllBtn.textContent = 'All Done \u2713';
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                if (nonIdleStatuses.includes(info.status)) {
+                    _submittedPasses.add(pk);
+                }
+            }
+            // Update Submit All button state based on tracked submissions
+            updateSubmitAllState();
+            const allPassStatuses = Object.values(d.passes || {}).map(p => p.status);
+            const allDone = allPassStatuses.length > 0 && allPassStatuses.every(s => s === 'completed' || s === 'stopped');
+            if (allDone && allPassStatuses.length >= 3) {
+                const submitAllBtn = document.getElementById('submit-all-btn');
+                if (submitAllBtn) {
+                    submitAllBtn.disabled = true;
+                    submitAllBtn.textContent = 'All Done \u2713';
+                }
             }
 
             // Detailed per-pass breakdown
@@ -605,6 +692,7 @@ async function pollPasses(silent) {
             if (!d.any_running) {
                 stopAutoPoll();
                 setQARunning(false);
+                updateSubmitAllState();
             }
 
             if (d.can_vote) {
@@ -772,6 +860,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const cp = _checkpoints.find(c => c.stage === 'stage9_quality');
     if (cp && cp.status === 'completed') {
         const d = cp.data || {};
+        _batchesBuilt = true;
+        _submittedPasses = new Set(['pass1', 'pass2', 'pass3']);
         document.getElementById('pipeline-card').style.display = 'block';
         document.getElementById('build-btn').disabled = true;
         document.getElementById('build-btn').textContent = 'Built \u2713';
@@ -779,6 +869,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('complete-btn').disabled = true;
         document.getElementById('complete-btn').textContent = 'Completed \u2713';
         document.getElementById('submit-all-btn').disabled = true;
+        document.getElementById('submit-all-btn').textContent = 'All Done \u2713';
         // Freeze inputs
         ['qa-extra-context', 'strict-mode', 'check-latex'].forEach(id => {
             const el = document.getElementById(id);
