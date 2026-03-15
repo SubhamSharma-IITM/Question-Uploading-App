@@ -1791,7 +1791,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         # Submit batch via Vertex AI
         client = self._get_vertex_client()
         batch_job = client.batches.create(
-            model=f"models/{model}",
+            model=model,
             src=f"gs://{settings.vertex_ai_bucket}/{gcs_input_path}",
             config={"dest": f"gs://{settings.vertex_ai_bucket}/{gcs_output_path}"},
         )
