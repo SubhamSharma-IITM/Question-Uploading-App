@@ -194,19 +194,20 @@ async def quarantine_duplicates(session_id: str, qids: Optional[List[str]] = Bod
 
 
 @router.post("/skip")
-async def skip_duplicates(session_id: str):
-    """Skip duplicate checking (for testing or small datasets)."""
+async def skip_duplicates(session_id: str, reason: str = "manual"):
+    """Skip duplicate checking (PYQ mode, testing, or small datasets)."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
     from app.db import insert_log, upsert_checkpoint
     from app.sse import sse_manager
-    insert_log(session_id, "stage8_duplicates", "info", "Duplicate checking skipped")
-    sse_manager.emit(session_id, {"type": "log", "level": "info", "message": "Duplicate checking skipped"})
-    upsert_checkpoint(session_id, "stage8_duplicates", "completed", {"skipped": True})
+    msg = f"Duplicate checking skipped (reason: {reason})"
+    insert_log(session_id, "stage8_duplicates", "info", msg)
+    sse_manager.emit(session_id, {"type": "log", "level": "info", "message": msg})
+    upsert_checkpoint(session_id, "stage8_duplicates", "completed", {"skipped": True, "reason": reason})
 
-    return APIResponse(data={"skipped": True})
+    return APIResponse(data={"skipped": True, "reason": reason})
 
 
 @router.post("/run-all")

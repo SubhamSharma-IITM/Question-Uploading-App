@@ -53,6 +53,8 @@ MATHPIX_APP_ID=...
 MATHPIX_APP_KEY=...
 
 # Vertex AI (PRIMARY for Stage 9 QA Pass 1)
+# WARNING: VERTEX_AI_CREDENTIALS must be an ABSOLUTE path to the service account JSON.
+# This path is MACHINE-SPECIFIC — update it when deploying to a new machine.
 VERTEX_AI_CREDENTIALS=/path/to/service-account.json
 VERTEX_AI_PROJECT=your-project-id
 VERTEX_AI_LOCATION=global
@@ -94,6 +96,11 @@ Stage 10: Upload to Acadza DB API + local DB absorption + FAISS update
 ### Vertex AI Credentials
 `_ensure_vertex_credentials()` MUST be called before ANY `gcs_storage.Client()` or `genai.Client(vertexai=True)` creation. The method sets `GOOGLE_APPLICATION_CREDENTIALS` env var.
 
+### Vertex AI Model Format
+- **Vertex AI batch**: `model=model` (bare model ID, e.g. `gemini-3-flash-preview`)
+- **Gemini AI Studio batch**: `model=f"models/{model}"` (with `models/` prefix)
+- Do NOT mix these — Vertex AI rejects `models/` prefix, AI Studio requires it.
+
 ### Stage 7 Metadata Merge
 Use `entry.setdefault(qtype, {})` NOT `entry.get(qtype, {})` when modifying nested question data. `.get()` returns a detached dict — changes are lost.
 
@@ -101,6 +108,19 @@ Use `entry.setdefault(qtype, {})` NOT `entry.get(qtype, {})` when modifying nest
 - MathML→LaTeX via `app/pipeline/_mathml_to_latex.py` (forked from PROOF-READING_v2.0)
 - Session embeddings cached to disk (`session_embeddings/vectors.npy`) — reused between self-check and cross-check
 - DB OIDs (24-digit hex from `_id.$oid`) used as identifiers, not `qid`
+
+### Stage 8 PYQ Auto-Skip
+When `session_config.json` has `is_pyq: true` (set in Stage 2), Stage 8 auto-skips duplicate checking on page load. All PYQs go to DB regardless of similarity.
+
+### Stage 9 Skip Path
+Skip QA sets `error=2` on ALL metadata entries. No QA verification performed. Questions uploaded with error=Yes for manual review.
+
+### CSV Naming Convention
+All downloadable CSVs are prefixed with the sanitized session name:
+`SessionName_upload_log.csv`, `SessionName_qa_3of3.csv`, `SessionName_pipeline_stats.csv`
+
+### CSV View Link
+Stage 10 CSVs use the uploaded MongoDB OID (24-digit hex) for View Link after successful upload. FAILED/QUARANTINED rows keep meta QID. Stage 9 CSVs use meta QID (pre-upload).
 
 ### Session Persistence
 All state survives server restart — SQLite checkpoints, disk files, batch IDs. Polling resumes automatically on page load via `DOMContentLoaded` handler.

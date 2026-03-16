@@ -239,6 +239,8 @@ class UploadStage(BasePipelineStage):
                         upload_map[qid] = uploaded_id
                         base = QUESTION_EDIT_URL.get(qtype_key, "")
                         link = f"{base}{uploaded_id}" if base else "N/A"
+                        # Override view_link with uploaded OID (24-digit hex)
+                        view_link = f"{QUESTION_VIEW_URL}{uploaded_id}"
                         status = uploaded_id
                     else:
                         failed += 1

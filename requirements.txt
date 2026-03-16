@@ -38,3 +38,7 @@ google-cloud-storage>=2.14.0
 
 # Vector Search (for duplicate checking)
 faiss-cpu>=1.9.0
+
+# Optional: SMILES chemistry rendering (Stage 5) — install separately if needed
+# rdkit  (install via: pip install rdkit or conda install -c conda-forge rdkit)
+# lxml is pulled in by beautifulsoup4 automatically

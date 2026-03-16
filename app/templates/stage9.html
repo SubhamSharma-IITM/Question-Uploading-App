@@ -170,6 +170,20 @@
         </div>
     </div>
 </div>
+
+<!-- Skip QA Warning Dialog -->
+<div id="skip-dialog" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:var(--bg-primary); border:2px solid var(--error); border-radius:12px; padding:28px 32px; max-width:480px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+        <h3 style="color:var(--error); margin:0 0 12px 0; font-size:18px;">Warning</h3>
+        <p style="font-size:14px; line-height:1.6; margin:0 0 20px 0; color:var(--text-primary);">
+            Skipping this step shall cause <strong>all questions</strong> to be uploaded as <strong>Error = Yes (error=2)</strong>. No QA verification will be performed.
+        </p>
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button class="btn" onclick="cancelSkipQA()" style="min-width:100px;">Don't Agree</button>
+            <button class="btn btn-danger" onclick="confirmSkipQA()" style="min-width:100px;">Agree</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -811,23 +825,35 @@ async function mergeVotes() {
     }
 }
 
-async function skipQA() {
-    if (!confirm('Skip quality verification?\n\nQuestions will follow the faculty review path (AIT/NIT).')) return;
+function skipQA() {
+    // Show warning dialog instead of browser confirm
+    const dialog = document.getElementById('skip-dialog');
+    dialog.style.display = 'flex';
+}
+
+function cancelSkipQA() {
+    document.getElementById('skip-dialog').style.display = 'none';
+}
+
+async function confirmSkipQA() {
+    document.getElementById('skip-dialog').style.display = 'none';
 
     const skipBtn = document.getElementById('skip-btn');
     skipBtn.disabled = true;
-    appendLog('info', 'Skipping quality verification...');
+    appendLog('info', 'Skipping quality verification — setting error=2 on all questions...');
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage9/skip');
         if (r.success) {
+            const d = r.data;
             const card = document.getElementById('results-card');
             card.style.display = 'block';
             document.getElementById('results-content').innerHTML =
-                '<div class="alert alert-info">Quality verification skipped. Questions follow the faculty review path (AIT/NIT).</div>';
+                `<div class="alert alert-warning">Quality verification skipped. ${d.error_2_count || 'All'} questions set to error=2 (review required). No QA performed.</div>`;
             document.getElementById('complete-btn').disabled = false;
             document.getElementById('build-btn').disabled = true;
+            document.getElementById('submit-all-btn').disabled = true;
             skipBtn.textContent = 'Skipped \u2713';
-            appendLog('info', 'QA skipped — faculty review required before upload');
+            appendLog('success', `QA skipped — ${d.error_2_count || 0} questions set to error=2`);
             return;
         }
     } catch (e) {

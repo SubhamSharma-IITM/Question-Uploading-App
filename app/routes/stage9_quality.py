@@ -258,7 +258,9 @@ async def download_qa_csv(session_id: str, category: str = "3of3"):
             success=False, error=ErrorDetail(code="NOT_FOUND", message=f"No {category} CSV found -- run vote merge first"),
         ).model_dump())
 
-    filename = f"qa_{category}_{session_id[:8]}.csv"
+    import re as _re
+    safe_name = _re.sub(r'[^\w\-]', '_', session.get("name", session_id[:8]))
+    filename = f"{safe_name}_qa_{category}.csv"
     return StreamingResponse(
         io.BytesIO(csv_content.encode("utf-8")),
         media_type="text/csv",

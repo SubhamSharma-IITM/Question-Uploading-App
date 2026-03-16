@@ -2,7 +2,14 @@
 
 import asyncio
 import io
+import re
 from pathlib import Path
+
+
+def _safe_csv_name(session: dict) -> str:
+    """Sanitize session name for use in CSV filenames."""
+    name = session.get("name", "session") if session else "session"
+    return re.sub(r'[^\w\-]', '_', name)
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -143,7 +150,7 @@ async def download_pipeline_stats(session_id: str):
     return StreamingResponse(
         io.StringIO(csv_content),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=pipeline_stats_{session_id[:8]}.csv"},
+        headers={"Content-Disposition": f"attachment; filename={_safe_csv_name(session)}_pipeline_stats.csv"},
     )
 
 
@@ -178,5 +185,5 @@ async def download_csv(session_id: str, error_level: int = 0):
     return StreamingResponse(
         io.StringIO(csv_content),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=upload_log{suffix}.csv"},
+        headers={"Content-Disposition": f"attachment; filename={_safe_csv_name(session)}_upload_log{suffix}.csv"},
     )

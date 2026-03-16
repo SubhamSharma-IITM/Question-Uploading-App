@@ -2667,10 +2667,20 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         any_running = any(s["status"] in ("running", "batch_submitted", "in_progress", "validating", "finalizing") for s in statuses.values())
         # batch_complete means results ready but not yet downloaded into ledger
         any_batch_ready = any(s["status"] == "batch_complete" for s in statuses.values())
+
+        # Ledger-based override: if all ledger files exist on disk, voting is possible
+        # regardless of what status files say (handles stuck batch_complete, failed downloads)
+        ledger_dir = self._get_ledger_dir()
+        all_ledgers_exist = all(
+            (ledger_dir / f"qa_{pk}_{pi['name'].lower().replace(' ', '_')}.json").exists()
+            for pk, pi in PASS_MODELS.items()
+        )
+        can_vote = (all_done and any_started) or all_ledgers_exist
+
         return {
             "passes": statuses,
-            "all_complete": all_done and any_started,
-            "can_vote": all_done and any_started,
+            "all_complete": (all_done and any_started) or all_ledgers_exist,
+            "can_vote": can_vote,
             "any_running": any_running,
             "any_batch_ready": any_batch_ready,
         }
@@ -3158,10 +3168,40 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         return {**scan, **passes}
 
     def skip(self) -> Dict[str, Any]:
-        """Skip QA verification."""
-        self.log("info", "Quality verification skipped (taggedBy indicates faculty review path)")
-        self.save_checkpoint("completed", {"skipped": True, "reason": "taggedBy not AITAI/NITAI"})
-        return {"skipped": True}
+        """Skip QA verification — sets error=2 on all metadata entries.
+
+        All questions will be uploaded with error=Yes (error=2) since no QA
+        verification was performed. This is the manual bypass path.
+        """
+        self.log("info", "Quality verification skipped — setting error=2 on all metadata entries")
+
+        # Set error=2 on all metadata_v2 entries
+        meta_dir = self._get_metadata_dir()
+        count = 0
+        if meta_dir.exists():
+            for sub in sorted(meta_dir.iterdir()):
+                meta_files = []
+                if sub.is_dir():
+                    meta_files = [f for f in sub.glob("*_metadata_v2.json") if "backup" not in f.name]
+                elif sub.suffix == ".json" and "metadata_v2" in sub.name and "backup" not in sub.name:
+                    meta_files = [sub]
+                for f in meta_files:
+                    try:
+                        with open(f, "r", encoding="utf-8") as fh:
+                            data = json.load(fh)
+                        if not isinstance(data, list):
+                            continue
+                        for entry in data:
+                            entry["error"] = 2
+                            count += 1
+                        with open(f, "w", encoding="utf-8") as fh:
+                            json.dump(data, fh, indent=2, ensure_ascii=False)
+                    except Exception:
+                        continue
+
+        self.log("success", f"Set error=2 on {count} metadata entries (no QA verification)")
+        self.save_checkpoint("completed", {"skipped": True, "reason": "manual_skip", "error_2_count": count})
+        return {"skipped": True, "error_2_count": count}
 
     def dry_run(self, **kwargs) -> Dict[str, Any]:
         return self.scan()

@@ -634,7 +634,32 @@ async function skipDuplicates() {
 }
 
 // Restore state from checkpoint when revisiting
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // PYQ auto-skip: if session is PYQ mode, skip duplicate checking entirely
+    try {
+        const cfgR = await apiGet('/api/sessions/{{ session.id }}/stage2/config');
+        if (cfgR.success && cfgR.data && cfgR.data.is_pyq) {
+            const existingCp = _checkpoints.find(c => c.stage === 'stage8_duplicates');
+            if (!existingCp || existingCp.status !== 'completed') {
+                appendLog('info', 'PYQ mode detected — auto-skipping duplicate checking (all PYQs uploaded)');
+                const skipR = await apiPost('/api/sessions/{{ session.id }}/stage8/skip?reason=pyq_mode');
+                if (skipR.success) {
+                    document.getElementById('scan-result').innerHTML =
+                        '<div class="alert alert-info" style="margin:0;">Duplicate checking auto-skipped — PYQ mode. All questions will be uploaded to the database.</div>';
+                    document.getElementById('controls-card').style.display = 'block';
+                    ['self-btn', 'cross-btn', 'run-all-btn', 'skip-btn', 'scan-btn'].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.disabled = true;
+                    });
+                    document.getElementById('skip-btn').textContent = 'PYQ Auto-Skipped \u2713';
+                    { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
+                    appendLog('success', 'Duplicate checking skipped — PYQ mode');
+                    return; // Don't process checkpoint logic below
+                }
+            }
+        }
+    } catch (e) { /* non-fatal, continue with normal flow */ }
+
     const cp = _checkpoints.find(c => c.stage === 'stage8_duplicates');
     if (cp && cp.status === 'completed') {
         const d = cp.data || {};

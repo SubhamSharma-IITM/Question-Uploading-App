@@ -193,6 +193,8 @@ const STAGE_NAMES = {
     'stage10_upload': '10. Upload to DB',
 };
 
+const _sessionName = "{{ session.name }}".replace(/[^\w\-]/g, '_');
+
 document.addEventListener('DOMContentLoaded', loadSummary);
 
 async function loadSummary() {
@@ -469,7 +471,7 @@ async function downloadUploadCSV(errorLevel) {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         const suffix = errorLevel > 0 ? `_error${errorLevel}` : '';
-        a.download = `upload_log${suffix}.csv`;
+        a.download = `${_sessionName}_upload_log${suffix}.csv`;
         a.click();
         URL.revokeObjectURL(a.href);
         appendLog('success', `CSV download started (${label})`);
@@ -491,7 +493,7 @@ async function downloadPipelineStats() {
         const blob = await response.blob();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'pipeline_stats.csv';
+        a.download = `${_sessionName}_pipeline_stats.csv`;
         a.click();
         URL.revokeObjectURL(a.href);
         appendLog('success', 'Pipeline stats download started');

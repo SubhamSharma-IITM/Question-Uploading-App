@@ -495,11 +495,138 @@ class LatexTagStage(BasePipelineStage):
             count += len(re.findall(pat, html))
         return count
 
+    # Common hex entities from latex2mathml that CKEditor may not handle.
+    # Replace with direct Unicode characters for maximum compatibility.
+    _HEX_ENTITY_MAP = {
+        "&#x0003D;": "=", "&#x0002B;": "+", "&#x02212;": "\u2212",
+        "&#x0003C;": "<", "&#x0003E;": ">",
+        "&#x00028;": "(", "&#x00029;": ")",
+        "&#x0005B;": "[", "&#x0005D;": "]",
+        "&#x0007B;": "{", "&#x0007D;": "}",
+        "&#x0007C;": "|",
+        "&#x0222B;": "\u222B", "&#x0222C;": "\u222C", "&#x0222D;": "\u222D",
+        "&#x0222E;": "\u222E",
+        "&#x02211;": "\u2211", "&#x0220F;": "\u220F",
+        "&#x0221E;": "\u221E", "&#x02264;": "\u2264", "&#x02265;": "\u2265",
+        "&#x02260;": "\u2260", "&#x02248;": "\u2248",
+        "&#x003B1;": "\u03B1", "&#x003B2;": "\u03B2", "&#x003B3;": "\u03B3",
+        "&#x003B4;": "\u03B4", "&#x003B5;": "\u03B5", "&#x003B8;": "\u03B8",
+        "&#x003BB;": "\u03BB", "&#x003BC;": "\u03BC", "&#x003C0;": "\u03C0",
+        "&#x003C3;": "\u03C3", "&#x003C6;": "\u03C6", "&#x003C9;": "\u03C9",
+        "&#x02207;": "\u2207", "&#x02202;": "\u2202",
+        "&#x0221A;": "\u221A",
+        "&#x000B1;": "\u00B1",  # ±
+        "&#x000D7;": "\u00D7",  # ×
+        "&#x000F7;": "\u00F7",  # ÷
+        "&#x02026;": "\u2026",  # …
+        "&#x02192;": "\u2192",  # →
+        "&#x02190;": "\u2190",  # ←
+        "&#x021D2;": "\u21D2",  # ⇒
+        "&#x02203;": "\u2203",  # ∃
+        "&#x02200;": "\u2200",  # ∀
+        "&#x02208;": "\u2208",  # ∈
+        "&#x02282;": "\u2282",  # ⊂
+        "&#x02229;": "\u2229",  # ∩
+        "&#x0222A;": "\u222A",  # ∪
+        "&#x000A0;": "\u00A0",
+        "&#x0005E;": "^",      # hat (circumflex)
+        "&#x0007E;": "~",      # tilde
+        "&#x000AF;": "\u00AF", # macron (bar)
+        "&#x002D9;": "\u02D9", # dot above
+        "&#x02220;": "\u2220", # angle
+        "&#x022C5;": "\u22C5", # dot operator
+        "&#x02297;": "\u2297", # tensor product
+        "&#x02295;": "\u2295", # direct sum
+        "&#x02261;": "\u2261", # identical to
+        "&#x02243;": "\u2243", # asymptotically equal
+        "&#x021D4;": "\u21D4", # ⇔
+        "&#x02205;": "\u2205", # empty set
+    }
+
+    @classmethod
+    def _postprocess_mathml(cls, mathml: str, is_display: bool) -> str:
+        """Fix known latex2mathml output issues for CKEditor compatibility.
+
+        Targeted fixes (only when specific structures are detected):
+        1. Hex entities → Unicode chars (CKEditor rejects some hex entities)
+        2. Matrix: <mtable> inside parentheses/brackets — add spacing
+        3. Integral/Sum limits: <msubsup> with ∫/∑/∏ → <munderover> in display mode
+        """
+        # ── Fix 0: Replace hex entities with Unicode chars for CKEditor ──
+        for entity, char in cls._HEX_ENTITY_MAP.items():
+            if entity in mathml:
+                mathml = mathml.replace(entity, char)
+        # ── Fix 1: Matrix row separation ──
+        # latex2mathml merges rows when \\\\ isn't parsed properly.
+        # Detect: <mtable> with multiple <mtd> but only one <mtr> — split into rows.
+        # Also add columnspacing for readability.
+        if '<mtable>' in mathml:
+            # Detect matrix context: <mo>( or &#x00028;</mo> anywhere before <mtable>,
+            # AND <mo>) or &#x00029;</mo> anywhere after </mtable>
+            # This catches pmatrix, bmatrix, vmatrix etc. but NOT standalone tables/arrays
+            # Convert bare <mo>DELIM</mo><mtable>...</mtable><mo>DELIM</mo> to
+            # <mfenced open="DELIM" close="DELIM"><mtable>...</mtable></mfenced>
+            # This matches CKEditor's native MathML format for matrices.
+            _MATRIX_PATTERN = re.compile(
+                r'<mo>([(\[{|])</mo>\s*(<mtable[^>]*>.*?</mtable>)\s*<mo>([)\]}|])</mo>',
+                re.DOTALL
+            )
+            _matrix_match = _MATRIX_PATTERN.search(mathml)
+            if _matrix_match:
+                left_delim = _matrix_match.group(1)
+                table_content = _matrix_match.group(2)
+                right_delim = _matrix_match.group(3)
+                # Add spacing to mtable
+                if 'columnspacing=' not in table_content:
+                    table_content = table_content.replace('<mtable', '<mtable columnspacing="1em" rowspacing="0.5em"', 1)
+                replacement = f'<mfenced open="{left_delim}" close="{right_delim}">{table_content}</mfenced>'
+                mathml = mathml[:_matrix_match.start()] + replacement + mathml[_matrix_match.end():]
+
+        # ── Fix 2: Integral/Sum/Product limits in display mode ──
+        # latex2mathml generates <msubsup><mo>∫</mo>... for \int_{a}^{b}
+        # In display mode, limits should be above/below (munderover), not side (msubsup)
+        if is_display:
+            # Convert msubsup → munderover for large operators in display mode.
+            # CKEditor quirk: ∑/∏ in munderover only work with displaystyle="false"
+            # wrapper, while ∫ works with displaystyle="true". Handle separately.
+            _INTEGRAL_OPS = ('\u222B', '\u222C', '\u222D', '\u222E')
+            _SUMPRODUCT_OPS = ('\u2211', '\u220F')
+
+            for op_char in _INTEGRAL_OPS:
+                _pattern = (
+                    r'<msubsup>\s*<mo>' + re.escape(op_char) + r'</mo>'
+                    r'\s*(<mrow>.*?</mrow>)\s*(<mrow>.*?</mrow>)\s*</msubsup>'
+                )
+                _match = re.search(_pattern, mathml, re.DOTALL)
+                if _match:
+                    old = _match.group(0)
+                    lower = _match.group(1)
+                    upper = _match.group(2)
+                    new = f'<munderover><mo>{op_char}</mo>{lower}{upper}</munderover>'
+                    mathml = mathml.replace(old, new, 1)
+
+            # For ∑/∏: same munderover conversion, limits render on top
+            for op_char in _SUMPRODUCT_OPS:
+                _pattern = (
+                    r'<msubsup>\s*<mo>' + re.escape(op_char) + r'</mo>'
+                    r'\s*(<mrow>.*?</mrow>)\s*(<mrow>.*?</mrow>)\s*</msubsup>'
+                )
+                _match = re.search(_pattern, mathml, re.DOTALL)
+                if _match:
+                    old = _match.group(0)
+                    lower = _match.group(1)
+                    upper = _match.group(2)
+                    new = f'<munderover><mo>{op_char}</mo>{lower}{upper}</munderover>'
+                    mathml = mathml.replace(old, new, 1)
+
+        return mathml
+
     def _convert_latex_to_mathml(self, html: str) -> Tuple[str, int, int]:
         """Convert all LaTeX blocks in HTML to MathML.
 
         Finds all LaTeX patterns ($...$, $$...$$, \\(...\\), \\[...\\]),
         converts each to MathML using latex2mathml, and replaces in-place.
+        Post-processes for matrix spacing and integral limit placement.
 
         Returns:
             (converted_html, success_count, fail_count)
@@ -524,32 +651,55 @@ class LatexTagStage(BasePipelineStage):
             (r'(?<!\$)\$(?!\$)([^$]+)\$(?!\$)', False),
         ]
 
+        # Matrix environments where \\ must be replaced with \cr for latex2mathml
+        _MATRIX_ENVS = ('pmatrix', 'bmatrix', 'vmatrix', 'Vmatrix', 'matrix', 'Bmatrix',
+                         'smallmatrix', 'cases', 'array')
+
         for pattern, is_display in latex_patterns:
             def _replace_match(match, _is_display=is_display):
                 nonlocal success_count, fail_count
                 raw_latex = match.group(1).strip()
+
+                # Pre-process: replace row separators with \cr inside matrix environments.
+                # latex2mathml only understands \cr as row separator.
+                # Real data uses: \\ (double backslash) OR <br/> (from MathPIX OCR).
+                _TWO_BS = chr(92) + chr(92)  # literal \\
+                _CR_SEP = chr(92) + 'cr '    # literal \cr
+                for env in _MATRIX_ENVS:
+                    begin_tag = chr(92) + 'begin{' + env + '}'
+                    end_tag = chr(92) + 'end{' + env + '}'
+                    bi = raw_latex.find(begin_tag)
+                    ei = raw_latex.find(end_tag)
+                    if bi >= 0 and ei > bi:
+                        body_start = bi + len(begin_tag)
+                        body = raw_latex[body_start:ei]
+                        # Replace \\ with \cr
+                        body = body.replace(_TWO_BS, _CR_SEP)
+                        # Replace <br/> and <br /> with \cr (MathPIX OCR format)
+                        body = re.sub(r'<br\s*/?\s*>', lambda _: _CR_SEP, body)
+                        raw_latex = raw_latex[:body_start] + body + raw_latex[ei:]
+
                 try:
                     mathml = latex_to_mathml(raw_latex)
+                    # Post-process: fix matrix spacing + integral limits
+                    mathml = self._postprocess_mathml(mathml, _is_display)
                     # Ensure xmlns is present
                     if 'xmlns=' not in mathml:
                         mathml = mathml.replace(
                             '<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"', 1
                         )
                     if _is_display:
-                        # Display math: replace any existing display attr with display="block"
+                        # Display math: set display="block" on <math> tag,
+                        # wrap content in <mstyle displaystyle="true"> for proper sizing.
+                        # CKEditor 4 supports <mstyle> natively (verified via MathmlTest.png).
                         mathml = re.sub(r'display="[^"]*"', '', mathml, count=1)
                         mathml = mathml.replace(
                             '<math', '<math display="block"', 1
                         )
-                        # Wrap inner content in <mstyle displaystyle="true">
-                        # Find closing </math> and insert mstyle wrapper
-                        import re as _mre
-                        mathml = _mre.sub(
+                        mathml = re.sub(
                             r'(<math[^>]*>)(.*)(</math>)',
                             r'\1<mstyle displaystyle="true">\2</mstyle>\3',
-                            mathml,
-                            count=1,
-                            flags=re.DOTALL,
+                            mathml, count=1, flags=re.DOTALL,
                         )
                     else:
                         # Inline math
