@@ -120,19 +120,6 @@ PASS_MODELS = {
 }
 
 
-def _resolve_gemini_api() -> str:
-    """Decide whether to use Vertex AI or AI Studio for Gemini batches.
-
-    Priority: Vertex AI (paid quota, no 429) > AI Studio (free tier, hits 429).
-    Returns 'vertex' or 'gemini'.
-    """
-    import os
-    from app.config import settings
-    creds = settings.vertex_ai_credentials
-    if creds and os.path.exists(creds) and settings.vertex_ai_project:
-        return "vertex"
-    return "gemini"
-
 QUESTION_EDIT_URL = {
     "scq": "https://www.acadza.com/question/edit-question/single-question/",
     "mcq": "https://www.acadza.com/question/edit-question/multi-question/",
@@ -1116,39 +1103,20 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 self.log("error", f"{pass_key} OpenAI batch submission failed: {e}")
                 return {"error": f"Batch submission failed: {e}"}
         elif pass_info["api"] == "gemini":
-            # Resolve whether to use Vertex AI (primary) or AI Studio (fallback)
-            resolved_api = _resolve_gemini_api()
-
-            if resolved_api == "vertex":
-                # Vertex AI: primary path — paid quota, no 429 problem
-                self.log("info", f"{pass_key} using Vertex AI (credentials found, paid quota)")
-                try:
-                    result = self._submit_vertex_batch(pass_key)
-                    return result
-                except Exception as e:
-                    error_str = str(e)
-                    self.log("error", f"{pass_key} Vertex AI batch failed: {error_str}")
-                    # Fallback to AI Studio if Vertex AI fails
-                    self.log("warning", f"{pass_key} falling back to AI Studio...")
-                    try:
-                        result = self._submit_gemini_batch(pass_key)
-                        return result
-                    except Exception as e2:
-                        self.log("error", f"{pass_key} AI Studio fallback also failed: {e2}")
-                        return {"error": f"Both Vertex AI and AI Studio failed: Vertex={error_str}, Studio={e2}"}
-            else:
-                # AI Studio: used when no Vertex AI credentials configured
-                self.log("info", f"{pass_key} using AI Studio (no Vertex AI credentials)")
-                try:
-                    result = self._submit_gemini_batch(pass_key)
-                    return result
-                except Exception as e:
-                    error_str = str(e)
-                    self.log("error", f"{pass_key} AI Studio batch failed: {error_str}")
-                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                        self.log("warning", f"{pass_key} AI Studio hit quota limit. "
-                                 "Configure VERTEX_AI_CREDENTIALS in .env to avoid this.")
-                    return {"error": f"Batch submission failed: {e}"}
+            # Vertex AI only — no AI Studio fallback (unreliable downloads)
+            self.log("info", f"{pass_key} submitting via Vertex AI (paid quota)")
+            try:
+                self._ensure_vertex_credentials()
+            except RuntimeError as e:
+                self.log("error", f"{pass_key} Vertex AI not configured: {e}")
+                return {"error": f"Vertex AI credentials required for {pass_key}. "
+                        f"Set VERTEX_AI_CREDENTIALS in .env to the service account JSON path."}
+            try:
+                result = self._submit_vertex_batch(pass_key)
+                return result
+            except Exception as e:
+                self.log("error", f"{pass_key} Vertex AI batch failed: {e}")
+                return {"error": f"Vertex AI batch submission failed: {e}"}
 
     def download_pass_results(self, pass_key: str = "") -> Dict[str, Any]:
         """Download batch results for completed passes (OpenAI or Gemini).
@@ -1929,6 +1897,13 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
         self.log("info", f"Downloaded {len(all_lines)} results from Vertex AI for {pass_key}")
 
+        # Save raw results locally (same pattern as OpenAI: pass1_batch_results.jsonl)
+        results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+        with open(results_path, "w", encoding="utf-8") as f:
+            for line in all_lines:
+                f.write(line + "\n")
+        self.log("info", f"Saved raw results: {results_path.name}")
+
         # Parse results and build ledger
         ledger = []
         approved = 0
@@ -1994,7 +1969,13 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
         self.log("success", f"{pass_key} Vertex AI results: {approved} approved, {rejected} rejected, {len(errors_list)} errors")
 
+        # Verify ledger was actually written before cleaning up cloud files
+        if not ledger_path.exists():
+            self.log("error", f"{pass_key} CRITICAL: ledger file not found after write — skipping GCS cleanup")
+            return {"error": f"Ledger verification failed for {pass_key}"}
+
         # ── GCS cleanup: delete input + output files to avoid storage cost ──
+        # ONLY after ledger is verified on disk
         self._cleanup_gcs_files(pass_key, gcs_output, bucket)
 
         # Update status
@@ -2511,19 +2492,8 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     client.batches.cancel(batch_id)
                     cancelled.append(pk)
                     self.log("info", f"Cancelled OpenAI batch for {pk}: {batch_id}")
-                elif api_type == "gemini" and settings.gemini_api_key:
-                    client = self._get_gemini_batch_client()
-                    try:
-                        client.batches.delete(name=batch_id)
-                    except Exception:
-                        # Some Gemini SDK versions use cancel instead of delete
-                        try:
-                            client.batches.cancel(name=batch_id)
-                        except Exception:
-                            pass
-                    cancelled.append(pk)
-                    self.log("info", f"Cancelled Gemini batch for {pk}: {batch_id}")
-                elif api_type == "vertex":
+                elif api_type in ("vertex", "gemini"):
+                    # All Gemini passes now use Vertex AI (no AI Studio)
                     vertex_client = self._get_vertex_client()
                     if vertex_client:
                         try:
@@ -2609,7 +2579,21 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 statuses[pass_key] = pass_status
                 continue
 
-            # Poll batch status for passes with batch_id (OpenAI or Gemini)
+            # No ledger exists — check if status file falsely claims "completed"
+            # This happens when old Gemini AI Studio download failed silently
+            if status_path.exists():
+                try:
+                    with open(status_path, "r") as f:
+                        sd_check = json.load(f)
+                    if sd_check.get("status") == "completed":
+                        self.log("warning", f"{pass_key} status says completed but no ledger — resetting to allow resubmit")
+                        sd_check["status"] = "not_started"
+                        with open(status_path, "w") as f:
+                            json.dump(sd_check, f)
+                except Exception:
+                    pass
+
+            # Poll batch status for passes with batch_id (OpenAI or Vertex AI)
             if status_path.exists():
                 try:
                     with open(status_path, "r") as f:
@@ -2618,10 +2602,18 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     if sd.get("batch_id") and sd.get("status") not in ("completed", "stopped", "failed"):
                         # Live poll from Batch API
                         api_type = sd.get("api", pass_info["api"])
-                        if api_type == "vertex":
+                        if api_type in ("vertex", "gemini"):
+                            # All Gemini passes use Vertex AI (gemini = legacy status files)
                             batch_result = self._poll_vertex_batch(pass_key)
-                        elif api_type == "gemini":
-                            batch_result = self._poll_gemini_batch(pass_key)
+                            # Legacy "gemini" batch_ids are invalid for Vertex AI — detect and reset
+                            if batch_result.get("error") and api_type == "gemini":
+                                self.log("warning", f"{pass_key} legacy Gemini AI Studio batch — resetting to allow resubmit via Vertex AI")
+                                sd["status"] = "not_started"
+                                with open(status_path, "w") as f:
+                                    json.dump(sd, f)
+                                pass_status["status"] = "not_started"
+                                statuses[pass_key] = pass_status
+                                continue
                         else:
                             batch_result = self._poll_openai_batch(pass_key)
 
@@ -2636,19 +2628,24 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                         # Auto-download if batch is complete
                         if pass_status["status"] == "batch_complete":
                             try:
-                                if api_type == "vertex":
+                                if api_type in ("vertex", "gemini"):
                                     dl_result = self._download_vertex_batch_results(pass_key)
-                                elif api_type == "gemini":
-                                    dl_result = self._download_gemini_batch_results(pass_key)
-                                else:
+                                elif api_type == "openai":
                                     dl_result = self._download_openai_batch_results(pass_key)
-                                pass_status["status"] = "completed"
-                                pass_status["approved"] = dl_result.get("approved", 0)
-                                pass_status["rejected"] = dl_result.get("rejected", 0)
-                                pass_status["results"] = dl_result.get("total", 0)
-                                pass_status["total"] = dl_result.get("total", 0)
+                                else:
+                                    dl_result = {"error": f"Unknown API type: {api_type}"}
+                                # Check download actually succeeded (not error dict)
+                                if dl_result.get("error"):
+                                    self.log("warning", f"Auto-download failed for {pass_key}: {dl_result['error']}")
+                                    pass_status["status"] = "batch_complete"
+                                else:
+                                    pass_status["status"] = "completed"
+                                    pass_status["approved"] = dl_result.get("approved", 0)
+                                    pass_status["rejected"] = dl_result.get("rejected", 0)
+                                    pass_status["results"] = dl_result.get("total", 0)
+                                    pass_status["total"] = dl_result.get("total", 0)
                             except Exception as e:
-                                self.log("warning", f"Auto-download failed for {pass_key}: {e}")
+                                self.log("warning", f"Auto-download exception for {pass_key}: {e}")
                                 pass_status["status"] = "batch_complete"
                     else:
                         # Completed/failed/stopped — use cached status
@@ -2668,21 +2665,31 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         # batch_complete means results ready but not yet downloaded into ledger
         any_batch_ready = any(s["status"] == "batch_complete" for s in statuses.values())
 
-        # Ledger-based override: if all ledger files exist on disk, voting is possible
-        # regardless of what status files say (handles stuck batch_complete, failed downloads)
+        # Ledger-based can_vote: count available ledgers on disk
         ledger_dir = self._get_ledger_dir()
-        all_ledgers_exist = all(
-            (ledger_dir / f"qa_{pk}_{pi['name'].lower().replace(' ', '_')}.json").exists()
-            for pk, pi in PASS_MODELS.items()
+        ledger_count = sum(
+            1 for pk, pi in PASS_MODELS.items()
+            if (ledger_dir / f"qa_{pk}_{pi['name'].lower().replace(' ', '_')}.json").exists()
         )
-        can_vote = (all_done and any_started) or all_ledgers_exist
+        all_ledgers_exist = ledger_count == len(PASS_MODELS)
+
+        # can_vote conditions (any of these):
+        # 1. All 3 ledgers exist on disk (ideal case)
+        # 2. All started passes are terminal AND at least 2 ledgers exist
+        #    (handles: 1 pass failed/credentials missing, other 2 completed)
+        # 3. All passes are terminal (completed/stopped) and at least 1 started
+        all_started_terminal = all(
+            s["status"] in ("completed", "stopped", "not_started") for s in statuses.values()
+        ) and any_started
+        can_vote = all_ledgers_exist or (all_started_terminal and ledger_count >= 2) or (all_done and any_started)
 
         return {
             "passes": statuses,
-            "all_complete": (all_done and any_started) or all_ledgers_exist,
+            "all_complete": all_ledgers_exist or (all_done and any_started),
             "can_vote": can_vote,
             "any_running": any_running,
             "any_batch_ready": any_batch_ready,
+            "ledger_count": ledger_count,
         }
 
     def merge_votes(self) -> Dict[str, Any]:

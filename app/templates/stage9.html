@@ -660,9 +660,12 @@ async function pollPasses(silent) {
                     if (info.status === 'completed') {
                         btn.textContent = 'Done \u2713';
                         btn.disabled = true;
-                    } else if (info.status === 'stopped') {
-                        btn.textContent = 'Stopped';
-                        btn.disabled = true;
+                    } else if (info.status === 'stopped' || info.status === 'not_started' || info.status === 'failed') {
+                        // Allow resubmission for stopped/failed/not_started passes
+                        btn.textContent = info.status === 'stopped' ? 'Resubmit' :
+                                          info.status === 'failed' ? 'Retry' : 'Submit';
+                        btn.disabled = false;
+                        _submittedPasses.delete(pk);  // Allow resubmission
                     } else if (info.status === 'running' || info.status === 'batch_submitted'
                                || info.status === 'in_progress' || info.status === 'validating'
                                || info.status === 'finalizing') {
@@ -702,8 +705,10 @@ async function pollPasses(silent) {
             }
             document.getElementById('pass-details').innerHTML = detailsHtml;
 
-            // Check if done
-            if (!d.any_running) {
+            // Check if done or still running
+            if (d.any_running) {
+                _qaRunning = true;  // Track for auto-poll restart on reopen
+            } else {
                 stopAutoPoll();
                 setQARunning(false);
                 updateSubmitAllState();
@@ -933,9 +938,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else {
         // Check if any passes are currently running (page reload mid-process)
-        pollPasses(true).then(() => {
-            // If any pass is running, start auto-poll
-            // The poll response will set the UI state
+        pollPasses(false).then(() => {
+            // After initial poll, check if any passes are actively running
+            // If so, restart auto-polling for live progress updates
+            const statusCard = document.getElementById('status-card');
+            if (statusCard && statusCard.style.display !== 'none') {
+                // Poll returned data — check if auto-poll needed
+                // _qaRunning is set by pollPasses if any pass is running
+                if (_qaRunning) {
+                    startAutoPoll();
+                    appendLog('info', 'Resumed auto-polling for active batch processes');
+                }
+            }
         });
     }
 });
