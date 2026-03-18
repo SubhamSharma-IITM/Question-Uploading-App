@@ -1,4 +1,4 @@
-"""Stage 7: LaTeX + Tagging Batch — pipeline adapter.
+"""Stage 7: LaTeX + Tagging Batch --pipeline adapter.
 
 Builds JSONL batch files for:
   1. Concept tagging (subject -> chapter -> concept -> subConcept)
@@ -434,6 +434,71 @@ class LatexTagStage(BasePipelineStage):
     def stage_name(self) -> str:
         return "stage7_batch"
 
+    def get_resume_state(self) -> Dict[str, Any]:
+        """Determine resume point by walking the ledger backwards.
+
+        Returns the current sub-step state with what action is needed next.
+        This is the core resume logic --called on page load and Refresh.
+        """
+        steps = self.ledger_get_all()
+
+        # Walk backwards from final step to find where we are
+        merge = steps.get("merge", {})
+        if merge.get("status") == "completed":
+            return {"resume_from": "completed", "action": "advance",
+                    "message": "All steps complete --ready to advance"}
+
+        download = steps.get("batch_download", {})
+        if download.get("status") == "completed":
+            # Verify files actually exist
+            tag_ok = self.ledger_verify_file("batch_results/tagging_results.jsonl")
+            if tag_ok:
+                return {"resume_from": "batch_download", "action": "merge",
+                        "message": "Results downloaded --ready to merge"}
+            else:
+                return {"resume_from": "batch_poll", "action": "download",
+                        "message": "Download claimed complete but files missing --re-download needed"}
+
+        poll = steps.get("batch_poll", {})
+        if poll.get("status") == "completed":
+            return {"resume_from": "batch_poll", "action": "download",
+                    "message": "Batches complete --ready to download"}
+
+        submit = steps.get("batch_submit", {})
+        if submit.get("status") == "submitted":
+            batch_id = submit.get("tagging_batch_id")
+            if batch_id:
+                return {"resume_from": "batch_submit", "action": "poll",
+                        "batch_ids": {"tagging": batch_id, "latex": submit.get("latex_batch_id")},
+                        "message": f"Batches submitted --poll for progress (tagging: {batch_id[:20]}...)"}
+            return {"resume_from": "batch_submit", "action": "poll",
+                    "message": "Batches submitted --poll for progress"}
+
+        build = steps.get("batch_build", {})
+        if build and build.get("status") == "completed":
+            return {"resume_from": "batch_build", "action": "submit",
+                    "message": "Batches built --ready to submit"}
+
+        mathml = steps.get("mathml_conversion", {})
+        if mathml.get("status") == "completed":
+            if not mathml.get("latex_batch_needed", True):
+                return {"resume_from": "mathml_conversion", "action": "merge_direct",
+                        "message": "All MathML converted locally --no batch needed, ready to merge"}
+            return {"resume_from": "mathml_conversion", "action": "build",
+                    "message": f"MathML done ({mathml.get('fail', 0)} failed) --ready to build batch"}
+
+        # Also check batch_status.json as fallback (for sessions without ledger)
+        batch_status = self._load_batch_status()
+        if batch_status.get("tagging_batch_id"):
+            return {"resume_from": "batch_submit", "action": "poll",
+                    "batch_ids": {"tagging": batch_status["tagging_batch_id"],
+                                  "latex": batch_status.get("latex_batch_id")},
+                    "message": "Found batch_status.json with batch IDs --resuming from poll",
+                    "from_legacy": True}
+
+        return {"resume_from": "idle", "action": "scan",
+                "message": "No previous progress --start from scan"}
+
     def _get_metadata_dir(self) -> Path:
         return self.session_dir / "metadata_v2"
 
@@ -549,7 +614,7 @@ class LatexTagStage(BasePipelineStage):
 
         Targeted fixes (only when specific structures are detected):
         1. Hex entities → Unicode chars (CKEditor rejects some hex entities)
-        2. Matrix: <mtable> inside parentheses/brackets — add spacing
+        2. Matrix: <mtable> inside parentheses/brackets --add spacing
         3. Integral/Sum limits: <msubsup> with ∫/∑/∏ → <munderover> in display mode
         """
         # ── Fix 0: Replace hex entities with Unicode chars for CKEditor ──
@@ -558,7 +623,7 @@ class LatexTagStage(BasePipelineStage):
                 mathml = mathml.replace(entity, char)
         # ── Fix 1: Matrix row separation ──
         # latex2mathml merges rows when \\\\ isn't parsed properly.
-        # Detect: <mtable> with multiple <mtd> but only one <mtr> — split into rows.
+        # Detect: <mtable> with multiple <mtd> but only one <mtr> --split into rows.
         # Also add columnspacing for readability.
         if '<mtable>' in mathml:
             # Detect matrix context: <mo>( or &#x00028;</mo> anywhere before <mtable>,
@@ -619,6 +684,27 @@ class LatexTagStage(BasePipelineStage):
                     new = f'<munderover><mo>{op_char}</mo>{lower}{upper}</munderover>'
                     mathml = mathml.replace(old, new, 1)
 
+        # ── Fix 3: Remove LaTeX alignment artifact <mi>&</mi> ──
+        # LaTeX \begin{aligned} column separators leak into MathML as <mi>&</mi>.
+        # These have no mathematical meaning -- safe to remove entirely.
+        # Confirmed safe: legitimate & uses &#x00026; entity, not bare &.
+        mathml = re.sub(r'<mi>\s*(?:&amp;|&)\s*</mi>', '', mathml)
+
+        # ── Fix 4: Hat/circumflex rendering ──
+        # <mo stretchy="false">^</mo> inside <mover> renders as double-dots in CKEditor.
+        # Replace with proper combining circumflex &#x0302; for correct hat display.
+        # Only appears inside <mover> blocks (unit vectors i-hat, j-hat, k-hat).
+        mathml = mathml.replace('<mo stretchy="false">^</mo>', '<mo>&#x0302;</mo>')
+
+        # ── Fix 5: Limit underscript ──
+        # <msub><mo>lim</mo>...</msub> renders limit subscript as tiny text.
+        # Correct: <munder><mo>lim</mo>...</munder> puts it underneath.
+        mathml = re.sub(
+            r'<msub>(\s*<mo>lim</mo>)(.*?)</msub>',
+            r'<munder>\1\2</munder>',
+            mathml, flags=re.DOTALL,
+        )
+
         return mathml
 
     def _convert_latex_to_mathml(self, html: str) -> Tuple[str, int, int]:
@@ -647,7 +733,7 @@ class LatexTagStage(BasePipelineStage):
             (r'\\\[([^\]]+)\\\]', True),
             # \(...\) (inline math)
             (r'\\\(([^)]+)\\\)', False),
-            # $...$ (inline math) — last to avoid matching $$ content
+            # $...$ (inline math) --last to avoid matching $$ content
             (r'(?<!\$)\$(?!\$)([^$]+)\$(?!\$)', False),
         ]
 
@@ -702,10 +788,18 @@ class LatexTagStage(BasePipelineStage):
                             mathml, count=1, flags=re.DOTALL,
                         )
                     else:
-                        # Inline math
+                        # Inline math: set display="inline" and add displaystyle
+                        # for proper fraction/sum sizing (confirmed: CKEditor renders
+                        # fractions squeezed without displaystyle even in inline mode)
                         if 'display=' not in mathml:
                             mathml = mathml.replace(
                                 '<math', '<math display="inline"', 1
+                            )
+                        if 'displaystyle' not in mathml:
+                            mathml = re.sub(
+                                r'(<math[^>]*>)(.*)(</math>)',
+                                r'\1<mstyle displaystyle="true">\2</mstyle>\3',
+                                mathml, count=1, flags=re.DOTALL,
                             )
                     success_count += 1
                     return mathml
@@ -722,7 +816,7 @@ class LatexTagStage(BasePipelineStage):
         """Scan metadata and report what batches would be built."""
         entries = self._load_all_metadata()
         if not entries:
-            return {"error": "No metadata_v2 files found — run Stage 4 first"}
+            return {"error": "No metadata_v2 files found --run Stage 4 first"}
 
         # Count questions needing tagging
         needs_tagging = 0
@@ -770,7 +864,7 @@ class LatexTagStage(BasePipelineStage):
         and returns both the original text and the converted version with counts.
         """
         if not HAS_LATEX2MATHML:
-            self.log("warning", "latex2mathml not installed — run: pip install latex2mathml")
+            self.log("warning", "latex2mathml not installed --run: pip install latex2mathml")
             return {
                 "error": "latex2mathml library not installed",
                 "mathml_available": False,
@@ -827,7 +921,7 @@ class LatexTagStage(BasePipelineStage):
         Returns dict with counts + list of failed QIDs for batch processing.
         """
         if not HAS_LATEX2MATHML:
-            self.log("warning", "latex2mathml not installed — cannot convert")
+            self.log("warning", "latex2mathml not installed --cannot convert")
             return {"error": "latex2mathml library not installed", "failed_qids": []}
 
         meta_dir = self._get_metadata_dir()
@@ -917,6 +1011,15 @@ class LatexTagStage(BasePipelineStage):
         with open(failed_path, "w", encoding="utf-8") as fh:
             json.dump(failed_qids, fh)
 
+        self.ledger_set("mathml_conversion", {
+            "status": "completed",
+            "total_questions": total_questions,
+            "with_latex": questions_with_latex,
+            "success": total_success,
+            "fail": total_fail,
+            "failed_qids": failed_qids,
+            "latex_batch_needed": len(failed_qids) > 0,
+        })
         self.save_checkpoint("mathml_converted", {
             "total_success": total_success,
             "total_fail": total_fail,
@@ -955,7 +1058,7 @@ class LatexTagStage(BasePipelineStage):
             try:
                 with open(failed_qids_path, "r", encoding="utf-8") as fh:
                     failed_qids_set = set(json.load(fh))
-                self.log("info", f"Loaded {len(failed_qids_set)} failed QIDs from MathML conversion — only these will get LaTeX batch")
+                self.log("info", f"Loaded {len(failed_qids_set)} failed QIDs from MathML conversion --only these will get LaTeX batch")
             except Exception:
                 pass
 
@@ -1028,7 +1131,7 @@ class LatexTagStage(BasePipelineStage):
                     subj = te["subject"]
                     if subj not in faiss_loaded:
                         # Fallback: no FAISS for this subject, skip tagging
-                        self.log("warning", f"Skipping tag for {te['qid']} — no FAISS for {subj}")
+                        self.log("warning", f"Skipping tag for {te['qid']} --no FAISS for {subj}")
                         continue
 
                     index, chunk_data, cache = faiss_loaded[subj]
@@ -1082,16 +1185,16 @@ class LatexTagStage(BasePipelineStage):
                 self.log("info", f"Saved chunk ID map: {len(chunk_id_map)} questions, {len(cache_data)} chunks")
 
             elif tagging_entries and not faiss_loaded:
-                self.log("error", "No FAISS indexes available — tagging cannot proceed")
+                self.log("error", "No FAISS indexes available --tagging cannot proceed")
 
-            # LaTeX conversion loop — separate from tagging
+            # LaTeX conversion loop --separate from tagging
             for entry in entries:
                 qid = entry.get("qid", "unknown")
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
                 question_text = qdata.get("question", "")
 
-                # LaTeX conversion — ONLY for QIDs that failed local MathML conversion
+                # LaTeX conversion --ONLY for QIDs that failed local MathML conversion
                 # If no failed_qids file exists, fall back to checking for LaTeX blocks
                 needs_latex = False
                 if failed_qids_set:
@@ -1135,7 +1238,7 @@ class LatexTagStage(BasePipelineStage):
 
         self.log("success", f"Built batch files: {tagging_lines} tagging + {latex_lines} LaTeX requests")
         if failed_qids_set and latex_lines == 0:
-            self.log("info", "All LaTeX was converted locally via MathML — no LaTeX batch needed!")
+            self.log("info", "All LaTeX was converted locally via MathML --no LaTeX batch needed!")
 
         self.save_checkpoint("batch_built", {
             "tagging_lines": tagging_lines,
@@ -1180,6 +1283,47 @@ class LatexTagStage(BasePipelineStage):
         with open(self._get_batch_status_path(), "w", encoding="utf-8") as f:
             json.dump(status, f, indent=2)
 
+    def _submit_openai_file(self, client, file_path: Path, batch_type: str,
+                            batch_status: Dict) -> Dict[str, Any]:
+        """Upload and submit a single JSONL file to OpenAI, with auto-split if >190MB."""
+        chunk_paths = self.split_jsonl_by_size(file_path)
+        is_split = len(chunk_paths) > 1
+
+        if is_split:
+            self.log("info", f"{batch_type} batch is {file_path.stat().st_size // (1024*1024)}MB"
+                     f" -- splitting into {len(chunk_paths)} chunks")
+
+        chunk_batches = []
+        for idx, cp in enumerate(chunk_paths):
+            label = f"{batch_type}" if not is_split else f"{batch_type} chunk {idx+1}/{len(chunk_paths)}"
+            self.log("info", f"Uploading {label} ({cp.stat().st_size // (1024*1024)}MB)...")
+            with open(cp, "rb") as f:
+                file_obj = client.files.create(file=f, purpose="batch")
+            self.log("info", f"File uploaded: {file_obj.id}")
+
+            batch = client.batches.create(
+                input_file_id=file_obj.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={"session_id": self.session_id, "type": batch_type,
+                          "chunk": str(idx)},
+            )
+            chunk_batches.append({"batch_id": batch.id, "file_id": file_obj.id,
+                                  "chunk_file": cp.name})
+            self.log("success", f"{label} submitted: {batch.id}")
+
+        # Save to batch_status (backward-compatible flat fields for single batch)
+        primary_id = chunk_batches[0]["batch_id"]
+        primary_fid = chunk_batches[0]["file_id"]
+        batch_status[f"{batch_type}_batch_id"] = primary_id
+        batch_status[f"{batch_type}_file_id"] = primary_fid
+        if is_split:
+            batch_status[f"{batch_type}_split"] = True
+            batch_status[f"{batch_type}_chunks"] = chunk_batches
+
+        return {"batch_id": primary_id, "status": "submitted",
+                "split": is_split, "chunk_count": len(chunk_batches)}
+
     def submit_batch(self) -> Dict[str, Any]:
         """Submit batch files to OpenAI Batch API."""
         creds = self.check_credentials()
@@ -1195,65 +1339,50 @@ class LatexTagStage(BasePipelineStage):
         latex_path = batch_dir / "latex_batch.jsonl"
 
         if not tagging_path.exists() and not latex_path.exists():
-            return {"error": "No batch files found — run Build Batch first"}
+            return {"error": "No batch files found --run Build Batch first"}
 
         client = self._get_openai_client()
         batch_status = self._load_batch_status()
         results = {}
 
-        # Submit tagging batch
+        # Submit tagging batch (with split support for >190MB files)
         if tagging_path.exists() and tagging_path.stat().st_size > 0:
             if batch_status.get("tagging_batch_id"):
                 self.log("info", f"Tagging batch already submitted: {batch_status['tagging_batch_id']}")
                 results["tagging"] = {"batch_id": batch_status["tagging_batch_id"], "status": "already_submitted"}
             else:
                 try:
-                    self.log("info", "Uploading tagging batch file to OpenAI...")
-                    with open(tagging_path, "rb") as f:
-                        file_obj = client.files.create(file=f, purpose="batch")
-                    self.log("info", f"File uploaded: {file_obj.id}")
-
-                    batch = client.batches.create(
-                        input_file_id=file_obj.id,
-                        endpoint="/v1/chat/completions",
-                        completion_window="24h",
-                        metadata={"session_id": self.session_id, "type": "tagging"},
-                    )
-                    batch_status["tagging_batch_id"] = batch.id
-                    batch_status["tagging_file_id"] = file_obj.id
-                    results["tagging"] = {"batch_id": batch.id, "status": "submitted"}
-                    self.log("success", f"Tagging batch submitted: {batch.id}")
+                    result = self._submit_openai_file(client, tagging_path, "tagging", batch_status)
+                    results["tagging"] = result
                 except Exception as e:
                     self.log("error", f"Tagging batch submit failed: {e}")
                     results["tagging"] = {"error": str(e)}
 
-        # Submit LaTeX batch
+        # Submit LaTeX batch (with split support)
         if latex_path.exists() and latex_path.stat().st_size > 0:
             if batch_status.get("latex_batch_id"):
                 self.log("info", f"LaTeX batch already submitted: {batch_status['latex_batch_id']}")
                 results["latex"] = {"batch_id": batch_status["latex_batch_id"], "status": "already_submitted"}
             else:
                 try:
-                    self.log("info", "Uploading LaTeX batch file to OpenAI...")
-                    with open(latex_path, "rb") as f:
-                        file_obj = client.files.create(file=f, purpose="batch")
-                    self.log("info", f"File uploaded: {file_obj.id}")
-
-                    batch = client.batches.create(
-                        input_file_id=file_obj.id,
-                        endpoint="/v1/chat/completions",
-                        completion_window="24h",
-                        metadata={"session_id": self.session_id, "type": "latex"},
-                    )
-                    batch_status["latex_batch_id"] = batch.id
-                    batch_status["latex_file_id"] = file_obj.id
-                    results["latex"] = {"batch_id": batch.id, "status": "submitted"}
-                    self.log("success", f"LaTeX batch submitted: {batch.id}")
+                    result = self._submit_openai_file(client, latex_path, "latex", batch_status)
+                    results["latex"] = result
                 except Exception as e:
                     self.log("error", f"LaTeX batch submit failed: {e}")
                     results["latex"] = {"error": str(e)}
 
         self._save_batch_status(batch_status)
+
+        # Update ledger with submission details
+        self.ledger_set("batch_submit", {
+            "status": "submitted",
+            "tagging_batch_id": batch_status.get("tagging_batch_id"),
+            "tagging_file_id": batch_status.get("tagging_file_id"),
+            "latex_batch_id": batch_status.get("latex_batch_id"),
+            "latex_file_id": batch_status.get("latex_file_id"),
+            "api": "openai",
+        })
+
         return results
 
     def poll_status(self) -> Dict[str, Any]:
@@ -1264,7 +1393,7 @@ class LatexTagStage(BasePipelineStage):
             return {
                 "tagging_batch": {"id": None, "status": "not_submitted", "progress": 0},
                 "latex_batch": {"id": None, "status": "not_submitted", "progress": 0},
-                "message": "No batches submitted yet — run Submit first",
+                "message": "No batches submitted yet --run Submit first",
             }
 
         client = self._get_openai_client()
@@ -1301,7 +1430,7 @@ class LatexTagStage(BasePipelineStage):
                     info["error"] = str(batch.errors) if batch.errors else "Unknown error"
 
                 result[f"{batch_type}_batch"] = info
-                self.log("info", f"{batch_type.title()} batch: {batch.status} ({progress}% — {completed}/{total})")
+                self.log("info", f"{batch_type.title()} batch: {batch.status} ({progress}% --{completed}/{total})")
             except Exception as e:
                 result[f"{batch_type}_batch"] = {"id": batch_id, "status": "error", "error": str(e), "progress": 0}
                 self.log("error", f"{batch_type.title()} batch poll error: {e}")
@@ -1312,6 +1441,15 @@ class LatexTagStage(BasePipelineStage):
         tag_done = result.get("tagging_batch", {}).get("status") in ("completed", "not_submitted")
         latex_done = result.get("latex_batch", {}).get("status") in ("completed", "not_submitted")
         result["all_complete"] = tag_done and latex_done
+
+        # Update ledger with poll results
+        self.ledger_set("batch_poll", {
+            "status": "completed" if result["all_complete"] else "polling",
+            "tagging_status": result.get("tagging_batch", {}).get("status", "unknown"),
+            "latex_status": result.get("latex_batch", {}).get("status", "unknown"),
+            "tagging_output_file_id": batch_status.get("tagging_output_file_id"),
+            "latex_output_file_id": batch_status.get("latex_output_file_id"),
+        })
 
         return result
 
@@ -1336,7 +1474,7 @@ class LatexTagStage(BasePipelineStage):
                 self.log("info", f"Cancelled {batch_type} batch: {batch_id}")
             except Exception as e:
                 err_str = str(e)
-                # Already completed/cancelled batches can't be cancelled — that's fine
+                # Already completed/cancelled batches can't be cancelled --that's fine
                 if "Cannot cancel" in err_str or "already" in err_str.lower():
                     self.log("info", f"{batch_type} batch already finished: {batch_id}")
                 else:
@@ -1369,7 +1507,7 @@ class LatexTagStage(BasePipelineStage):
         for batch_type in ["tagging", "latex"]:
             output_file_id = batch_status.get(f"{batch_type}_output_file_id")
             if not output_file_id:
-                self.log("info", f"No output file for {batch_type} batch — skipping")
+                self.log("info", f"No output file for {batch_type} batch --skipping")
                 continue
 
             try:
@@ -1548,7 +1686,7 @@ class LatexTagStage(BasePipelineStage):
         quarantined_count = 0
 
         if still_failed_qids:
-            self.log("warning", f"{len(still_failed_qids)} questions still have MathML failures after batch — quarantining")
+            self.log("warning", f"{len(still_failed_qids)} questions still have MathML failures after batch --quarantining")
             for qid in still_failed_qids:
                 quarantine_question(
                     self.session_id, qid, self.stage_name,
@@ -1558,7 +1696,7 @@ class LatexTagStage(BasePipelineStage):
                 quarantined_count += 1
 
         if empty_tag_qids:
-            self.log("warning", f"{len(empty_tag_qids)} questions have empty/TBD tags after batch — quarantining")
+            self.log("warning", f"{len(empty_tag_qids)} questions have empty/TBD tags after batch --quarantining")
             for qid in empty_tag_qids:
                 quarantine_question(
                     self.session_id, qid, self.stage_name,
@@ -1576,6 +1714,40 @@ class LatexTagStage(BasePipelineStage):
         }
         with open(quarantine_path, "w", encoding="utf-8") as qf:
             json.dump(quarantine_data, qf, indent=2)
+
+        # GUARD: Warn if 0 results were merged --don't mark complete blindly
+        if tags_merged == 0 and latex_merged == 0:
+            self.log("error", "Download produced 0 merged results --NOT marking complete")
+            return {
+                "error": "Batch download returned 0 results to merge. "
+                         "Check batch status or retry download.",
+                "tags_merged": 0, "latex_merged": 0,
+            }
+
+        # Update ledger: download + merge complete
+        results_dir = self._get_batch_results_dir()
+        tagging_file = str(results_dir / "tagging_results.jsonl")
+        latex_file = str(results_dir / "latex_results.jsonl")
+        self.ledger_set("batch_download", {
+            "status": "completed",
+            "tagging_file": tagging_file,
+            "latex_file": latex_file,
+            "tagging_verified": self.ledger_verify_file("batch_results/tagging_results.jsonl"),
+            "latex_verified": self.ledger_verify_file("batch_results/latex_results.jsonl"),
+        })
+        self.ledger_set("merge", {
+            "status": "completed",
+            "tags_merged": tags_merged,
+            "latex_merged": latex_merged,
+            "mathml_converted": mathml_converted,
+            "quarantined": quarantined_count,
+        })
+        self.save_checkpoint("completed", {
+            "tags_merged": tags_merged,
+            "latex_merged": latex_merged,
+            "mathml_converted": mathml_converted,
+            "quarantined": quarantined_count,
+        })
 
         return {
             "tags_merged": tags_merged,

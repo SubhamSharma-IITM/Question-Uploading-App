@@ -122,8 +122,35 @@ All downloadable CSVs are prefixed with the sanitized session name:
 ### CSV View Link
 Stage 10 CSVs use the uploaded MongoDB OID (24-digit hex) for View Link after successful upload. FAILED/QUARANTINED rows keep meta QID. Stage 9 CSVs use meta QID (pre-upload).
 
-### Session Persistence
-All state survives server restart — SQLite checkpoints, disk files, batch IDs. Polling resumes automatically on page load via `DOMContentLoaded` handler.
+### Session Persistence & Ledger System
+All state survives server restart -- SQLite checkpoints, disk files, batch IDs. Polling resumes automatically on page load via `DOMContentLoaded` handler.
+
+**Ledger sub-steps** are stored in the SQLite checkpoint `data` JSON column under `sub_steps`. Each stage writes ledger entries AFTER operations succeed. On resume, the code reads the ledger, verifies local files exist, polls external APIs if needed, and continues from the last confirmed state.
+
+### CRITICAL: Windows cp1252 Encoding Rules
+1. **ALL file opens** for JSON/JSONL with potential Unicode content MUST use `encoding="utf-8"`. Omitting this on Windows defaults to cp1252, which silently crashes on Unicode chars (arrows, em-dashes, math symbols). The `except Exception: pass` pattern then hides the failure.
+2. **ALL `self.log()` messages** MUST use ASCII-only characters. No em-dashes (`--`), no arrows (`->`), no checkmarks. Use `--` instead of `--`, `->` instead of arrows. The log chain (insert_log -> SSE -> console) can crash on cp1252 if non-ASCII chars are present.
+3. **After `git pull`**: Always clear `__pycache__` before restarting the server. Stale `.pyc` bytecode files will ignore source changes. Run: `find app -name "__pycache__" -exec rm -rf {} +` then restart uvicorn.
+
+### Deployment on New Machine (After git pull)
+```bash
+# MANDATORY: Clear bytecode cache before first run
+find app -name "__pycache__" -exec rm -rf {} +
+# Then start server
+python -m uvicorn app.main:app --reload --port 8000
+```
+The `--reload` flag watches source files, but stale `.pyc` from a previous run can override source changes. Always clear cache after pull.
+
+### Stage 9 QA Pass Validation
+- Ledger files (`quality_check/ledgers/qa_pass*_.json`) are the source of truth for pass completion
+- Validation checks: file exists AND size > 10 bytes AND content is a non-empty JSON array
+- `poll_passes()` reads ledger with `encoding="utf-8"` first; falls back to status file + API polling only if ledger is invalid
+- Empty completion guard: download functions reject 0-result batches and do NOT mark as completed
+- For Vertex AI: GCS files are cleaned after download, so re-download is impossible -- must re-submit if data is lost
+- For OpenAI: `output_file_id` is preserved in status file, allowing re-download anytime
+
+### OpenAI Batch Size Limit
+OpenAI Batch API rejects files > 200MB. For large sessions (300+ questions with images), batch JSONL files can exceed this. Batch splitting with proper merge-on-download is required (see Stage 7 and Stage 9 implementations).
 
 ## Future Work (Pending)
 - **Image-based question embeddings**: ~6K DB questions are image-only (OCR text via MathPIX exists but not embedded). Need to generate text embeddings from OCR output and add to FAISS index for cross-duplicate matching against image-based DB entries.

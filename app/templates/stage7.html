@@ -742,49 +742,124 @@ document.getElementById('preview-subject')?.addEventListener('change', () => {
 });
 
 // Restore state from checkpoint when revisiting
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // First check if stage is already fully completed via checkpoint
     const cp = _checkpoints.find(c => c.stage === 'stage7_batch');
-    if (cp) {
+    if (cp && cp.status === 'completed') {
         const d = cp.data || {};
         document.getElementById('actions-card').style.display = 'block';
-
-        if (cp.status === 'completed') {
-            if (d.skipped) {
-                const card = document.getElementById('results-card');
-                card.style.display = 'block';
-                document.getElementById('results-content').innerHTML =
-                    '<div class="alert alert-info">Batch processing was skipped.</div>';
-            } else {
-                // Mark all 5 steps complete
-                for (let i = 1; i <= 5; i++) markStepComplete(i);
-                // Disable all pipeline buttons
-                ['convert-btn', 'build-btn', 'submit-btn', 'poll-btn', 'download-btn'].forEach(id => {
-                    const el = document.getElementById(id);
-                    if (el) { el.disabled = true; }
-                });
-                document.getElementById('stop-btn').style.display = 'none';
-                document.getElementById('bg-btn').disabled = true;
-                const card = document.getElementById('results-card');
-                card.style.display = 'block';
-                document.getElementById('results-content').innerHTML = `
-                    <div class="stat-grid">
-                        <div class="stat-box"><div class="stat-value">${d.tags_merged || 0}</div><div class="stat-label">Tags Merged</div></div>
-                        <div class="stat-box"><div class="stat-value">${d.latex_merged || 0}</div><div class="stat-label">LaTeX Merged</div></div>
-                        <div class="stat-box"><div class="stat-value">${d.mathml_converted || 0}</div><div class="stat-label">MathML</div></div>
-                    </div>
-                `;
-            }
-        } else if (cp.status === 'background' || d.background) {
-            // Batch was left running in background — show poll option
-            appendLog('info', 'Batch is running in background. Use Poll to check status.');
-            document.getElementById('poll-btn').disabled = false;
-            document.getElementById('stop-btn').style.display = 'inline-flex';
+        if (d.skipped) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Batch processing was skipped.</div>';
+        } else {
+            for (let i = 1; i <= 5; i++) markStepComplete(i);
+            ['convert-btn', 'build-btn', 'submit-btn', 'poll-btn', 'download-btn'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.disabled = true;
+            });
+            document.getElementById('stop-btn').style.display = 'none';
             document.getElementById('bg-btn').disabled = true;
-            document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
-            // Mark completed steps from checkpoint data
-            if (d.convert_done) markStepComplete(1);
-            if (d.build_done) markStepComplete(2);
-            if (d.submit_done) markStepComplete(3);
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.tags_merged || 0}</div><div class="stat-label">Tags Merged</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.latex_merged || 0}</div><div class="stat-label">LaTeX Merged</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.mathml_converted || 0}</div><div class="stat-label">MathML</div></div>
+                </div>
+            `;
+        }
+        return;
+    }
+
+    // Not completed — call resume-state to determine where we left off
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/resume-state');
+        if (!r.success) return;
+
+        const state = r.data;
+        document.getElementById('actions-card').style.display = 'block';
+        appendLog('info', `Resume: ${state.message}`);
+
+        // Set button states based on resume_from
+        const allBtns = ['convert-btn', 'build-btn', 'submit-btn', 'poll-btn', 'download-btn'];
+        allBtns.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
+
+        switch (state.action) {
+            case 'scan':
+                // Nothing done — start fresh
+                document.getElementById('convert-btn').disabled = false;
+                break;
+            case 'build':
+                // MathML done, need to build batch
+                markStepComplete(1);
+                document.getElementById('build-btn').disabled = false;
+                break;
+            case 'merge_direct':
+                // All MathML converted locally — no batch needed
+                markStepComplete(1);
+                appendLog('success', 'All MathML converted locally — no OpenAI batch needed');
+                document.getElementById('download-btn').disabled = false;
+                document.getElementById('download-btn').textContent = 'Merge Tags Only';
+                break;
+            case 'submit':
+                // Batch built, need to submit
+                markStepComplete(1);
+                markStepComplete(2);
+                document.getElementById('submit-btn').disabled = false;
+                break;
+            case 'poll':
+                // Batch submitted — need to poll
+                markStepComplete(1);
+                markStepComplete(2);
+                markStepComplete(3);
+                document.getElementById('poll-btn').disabled = false;
+                document.getElementById('stop-btn').style.display = 'inline-flex';
+                document.getElementById('bg-btn').disabled = true;
+                document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
+                // Auto-poll to check if already complete
+                appendLog('info', 'Checking batch status...');
+                pollBatch();
+                break;
+            case 'download':
+                // Batch complete — need to download + merge
+                markStepComplete(1);
+                markStepComplete(2);
+                markStepComplete(3);
+                markStepComplete(4);
+                document.getElementById('download-btn').disabled = false;
+                appendLog('success', 'Batches complete — click Download to merge results');
+                break;
+            case 'merge':
+                // Downloaded but merge not done
+                markStepComplete(1);
+                markStepComplete(2);
+                markStepComplete(3);
+                markStepComplete(4);
+                document.getElementById('download-btn').disabled = false;
+                document.getElementById('download-btn').textContent = 'Merge Results';
+                break;
+            case 'advance':
+                // All done
+                for (let i = 1; i <= 5; i++) markStepComplete(i);
+                { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
+                break;
+        }
+    } catch (e) {
+        // Fallback: use old checkpoint-based logic
+        if (cp) {
+            const d = cp.data || {};
+            document.getElementById('actions-card').style.display = 'block';
+            if (cp.status === 'background' || (d && d.background)) {
+                appendLog('info', 'Batch is running in background. Use Poll to check status.');
+                document.getElementById('poll-btn').disabled = false;
+                document.getElementById('stop-btn').style.display = 'inline-flex';
+            }
         }
     }
 });

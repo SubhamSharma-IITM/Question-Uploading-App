@@ -26,6 +26,25 @@ def _get_session_or_404(session_id: str):
     return session, None
 
 
+@router.get("/resume-state")
+async def get_resume_state(session_id: str):
+    """Get the resume state for Stage 7 — determines which sub-step to continue from.
+
+    Called on page load to set button states correctly.
+    Returns: {resume_from, action, message, batch_ids?}
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage7_latex_tag import LatexTagStage
+    stage = LatexTagStage(session_id, session_dir)
+    result = stage.get_resume_state()
+    return APIResponse(data=result)
+
+
 @router.get("/scan")
 async def scan_batch(session_id: str):
     """Scan metadata and report what batches would be built."""

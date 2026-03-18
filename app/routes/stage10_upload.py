@@ -1,8 +1,9 @@
-"""Stage 10: Upload to DB — routes for scan, dry-run, upload, CSV download."""
+"""Stage 10: Upload to DB -- routes for scan, upload, CSV/ZIP download, absorb."""
 
 import asyncio
 import io
 import re
+import zipfile
 from pathlib import Path
 
 
@@ -187,3 +188,54 @@ async def download_csv(session_id: str, error_level: int = 0):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={_safe_csv_name(session)}_upload_log{suffix}.csv"},
     )
+
+
+@router.get("/download-stats-zip")
+async def download_stats_zip(session_id: str):
+    """Download all Stage 10 stats as a single ZIP (upload logs + pipeline stats)."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+    safe = _safe_csv_name(session)
+
+    from app.pipeline.stage10_upload import UploadStage
+    stage = UploadStage(session_id, session_dir)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Upload log (all)
+        csv_all = stage.export_csv(error_level=None)
+        if csv_all:
+            zf.writestr(f"{safe}_upload_log.csv", csv_all)
+        # Error=1 CSV
+        csv_e1 = stage.export_csv(error_level=1)
+        if csv_e1:
+            zf.writestr(f"{safe}_upload_log_error1.csv", csv_e1)
+        # Error=2 CSV
+        csv_e2 = stage.export_csv(error_level=2)
+        if csv_e2:
+            zf.writestr(f"{safe}_upload_log_error2.csv", csv_e2)
+        # Pipeline stats
+        stats_csv = stage.generate_pipeline_stats_csv()
+        if stats_csv:
+            zf.writestr(f"{safe}_pipeline_stats.csv", stats_csv)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={safe}_all_stats.zip"},
+    )
+
+
+@router.post("/complete")
+async def mark_session_complete(session_id: str):
+    """Mark session as globally complete (current_stage='completed')."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    update_session(session_id, current_stage="completed")
+    return APIResponse(data={"status": "completed"})

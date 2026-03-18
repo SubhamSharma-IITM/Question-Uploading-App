@@ -39,6 +39,21 @@ def _get_session_or_404(session_id: str):
     return session, None
 
 
+@router.get("/resume-state")
+async def get_resume_state(session_id: str):
+    """Get resume state for Stage 9 — determines which sub-step to continue from."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage9_quality import QualityVerifierStage
+    stage = QualityVerifierStage(session_id, session_dir)
+    result = stage.get_resume_state()
+    return APIResponse(data=result)
+
+
 @router.get("/scan")
 async def scan_qa(session_id: str):
     """Scan metadata and determine QA requirements."""
@@ -264,6 +279,37 @@ async def download_qa_csv(session_id: str, category: str = "3of3"):
     return StreamingResponse(
         io.BytesIO(csv_content.encode("utf-8")),
         media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/csv-zip")
+async def download_qa_csv_zip(session_id: str):
+    """Download all QA CSVs as a single ZIP file (3of3 + 2of3 + all)."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    session_dir = Path(settings.sessions_dir) / session_id
+
+    from app.pipeline.stage9_quality import QualityVerifierStage
+    stage = QualityVerifierStage(session_id, session_dir)
+
+    import re as _re
+    safe_name = _re.sub(r'[^\w\-]', '_', session.get("name", session_id[:8]))
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for cat in ("3of3", "2of3", "all"):
+            csv_content = stage.export_csv(category=cat)
+            if csv_content:
+                zf.writestr(f"{safe_name}_qa_{cat}.csv", csv_content)
+
+    buf.seek(0)
+    filename = f"{safe_name}_qa_stats.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 

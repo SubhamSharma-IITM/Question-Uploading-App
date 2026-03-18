@@ -52,13 +52,32 @@
                     {% for s in sessions %}
                     <tr>
                         <td>
+                            {% if s.current_stage == 'completed' %}
+                            <span style="color: var(--success); margin-right: 4px;" title="Pipeline Complete">&#x2713;</span>
+                            {% endif %}
                             <a href="/session/{{ s.id }}" class="session-link">{{ s.name }}</a>
-                            <span class="text-muted">{{ s.id }}</span>
+                            <span class="text-muted" style="font-size: 11px;">{{ s.id[:8] }}</span>
                         </td>
                         <td>
+                            {% if s.current_stage == 'completed' %}
+                            <span class="stage-chip completed" style="color: var(--success); font-weight: 600;">Complete</span>
+                            {% else %}
                             <span class="stage-chip {{ s.current_stage }}">{{ s.current_stage }}</span>
+                            {% endif %}
                         </td>
-                        <td>{{ s.get('stats', {}).get('total', 0) if s.get('stats') else '—' }}</td>
+                        <td>
+                            {% if s.get('stats') %}
+                                {% set total = s.stats.get('total', 0) %}
+                                {% set uploaded = s.get('uploaded_count', 0) %}
+                                {% if uploaded > 0 %}
+                                <span style="color: var(--success); font-weight: 600;">{{ uploaded }}</span><span style="color: var(--text-muted);">/{{ total }}</span>
+                                {% else %}
+                                {{ total }}
+                                {% endif %}
+                            {% else %}
+                            --
+                            {% endif %}
+                        </td>
                         <td>{{ s.created_at[:10] }}</td>
                         <td>
                             <a href="/session/{{ s.id }}" class="btn btn-sm">Open</a>

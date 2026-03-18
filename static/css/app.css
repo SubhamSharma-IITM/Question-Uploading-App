@@ -201,8 +201,8 @@ a:hover { color: var(--accent-hover); }
     gap: 16px;
     flex: 1;
     min-height: 0;
-    /* allow content to grow beyond viewport — parent .content scrolls */
-    align-items: start;
+    /* align-items: stretch so log-pane grid cell spans full height for sticky to work */
+    align-items: stretch;
 }
 
 .stage-controls {
@@ -218,7 +218,7 @@ a:hover { color: var(--accent-hover); }
     border-radius: var(--radius);
     display: flex;
     flex-direction: column;
-    height: fit-content;
+    height: calc(100vh - var(--topbar-h) - 80px);
     max-height: calc(100vh - var(--topbar-h) - 80px);
     position: sticky;
     top: 20px;
@@ -684,7 +684,7 @@ a:hover { color: var(--accent-hover); }
 }
 
 /* ── Scrollbar ── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 5px; }
+::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 5px; min-height: 40px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }

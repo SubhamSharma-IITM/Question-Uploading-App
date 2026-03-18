@@ -154,6 +154,7 @@ async function loadSessionConfig() {
         const r = await apiGet('/api/sessions/{{ session.id }}/stage2/config');
         if (r.success && r.data) {
             const cfg = r.data;
+            window._sessionConfig = cfg;  // Store for PYQ year params
             // Load test_code if available and field is empty
             if (cfg.test_code && !document.getElementById('test-code').value) {
                 document.getElementById('test-code').value = cfg.test_code;
@@ -193,12 +194,21 @@ async function convertMetadata() {
         encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
         '&tagged_by=' + encodeURIComponent(taggedBy);
 
-    // Add PYQ params if checked
+    // Add PYQ params if checked (including year range from session config)
     const isPYQ = document.getElementById('is-pyq').checked;
     if (isPYQ) {
         url += '&is_pyq=true';
         url += '&prev_exam=' + encodeURIComponent(document.getElementById('prev-exam').value);
-        appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value);
+        // Pass year range from loaded session config
+        if (window._sessionConfig) {
+            const yf = window._sessionConfig.pyq_year_from;
+            const yt = window._sessionConfig.pyq_year_to;
+            if (yf) url += '&pyq_year_from=' + yf;
+            if (yt) url += '&pyq_year_to=' + yt;
+            appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value + ' (' + (yf||'?') + '-' + (yt||'?') + ')');
+        } else {
+            appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value);
+        }
     }
 
     try {

@@ -1,4 +1,4 @@
-"""Stage 9: Quality Verifier — pipeline adapter.
+"""Stage 9: Quality Verifier --pipeline adapter.
 
 3-model independent voting system:
   Pass 1: Gemini 3 Flash (via Gemini API)
@@ -112,7 +112,7 @@ def _collect_images_with_placeholders(html_text: str, prefix: str) -> tuple:
 
 # Models used in each pass
 # Pass 1 "api" is resolved at runtime: Vertex AI when credentials exist, else AI Studio.
-# This avoids the AI Studio free-tier 429 problem entirely — Vertex AI has proper paid quota.
+# This avoids the AI Studio free-tier 429 problem entirely --Vertex AI has proper paid quota.
 PASS_MODELS = {
     "pass1": {"name": "Gemini Flash", "model_id": "gemini-3-flash-preview", "api": "gemini"},
     "pass2": {"name": "GPT-5-mini", "model_id": "gpt-5-mini", "api": "openai"},
@@ -129,7 +129,7 @@ QUESTION_EDIT_URL = {
 }
 QUESTION_VIEW_URL = "https://www.acadza.com/question/view-question/"
 
-# ─── The INSPECTOR Prompt (v2 — military-grade, forked from production) ──────
+# ─── The INSPECTOR Prompt (v2 --military-grade, forked from production) ──────
 # Token budget (per request):
 #   System prompt (base):       ~2,800 tokens
 #   Concept tree (per subject): ~9,000-12,000 tokens
@@ -141,7 +141,7 @@ QUESTION_VIEW_URL = "https://www.acadza.com/question/view-question/"
 
 INSPECTOR_SYSTEM_PROMPT = """
 ================================================================================
-SYSTEM ROLE: THE INSPECTOR — INDEPENDENT FORENSIC AUDITOR (PCMB EDITION v2)
+SYSTEM ROLE: THE INSPECTOR --INDEPENDENT FORENSIC AUDITOR (PCMB EDITION v2)
 ================================================================================
 
 You are a deterministic, zero-tolerance Quality Assurance engine for high-stakes
@@ -155,7 +155,7 @@ PRIME DIRECTIVE: Find every REAL error. Never flag a non-error.
 - Zero false positives: if you cannot PROVE a rule is violated, output has_error=false.
 
 ================================================================================
-SECTION 0: MATCH-TYPE GATE (EXECUTE FIRST — BEFORE ALL OTHER CHECKS)
+SECTION 0: MATCH-TYPE GATE (EXECUTE FIRST --BEFORE ALL OTHER CHECKS)
 ================================================================================
 
 BEFORE any other inspection, scan the question text for match-type content.
@@ -186,14 +186,14 @@ SECTION 1: ACCEPT DATA STRUCTURE AS-IS
 ================================================================================
 
 The question metadata structure is CORRECT by design. Do NOT flag these as errors:
-- Options embedded in question text as (A), (B), (C), (D) — this is the INTENDED format
-- Image placeholders like [ImageQ1], [ImageS1] — these are NORMAL
-- S3/CDN URLs or inline base64 image references — NORMAL
-- <h3> wrapping tags — NORMAL
-- HTML entities (&amp;, &lt;, etc.) — NORMAL
-- <br/> or <br /> tags between options — NORMAL formatting
-- Thin spaces, non-breaking spaces, Unicode math symbols — cosmetic, NOT errors
-- Empty string vs null in non-required fields — NOT an error
+- Options embedded in question text as (A), (B), (C), (D) --this is the INTENDED format
+- Image placeholders like [ImageQ1], [ImageS1] --these are NORMAL
+- S3/CDN URLs or inline base64 image references --NORMAL
+- <h3> wrapping tags --NORMAL
+- HTML entities (&amp;, &lt;, etc.) --NORMAL
+- <br/> or <br /> tags between options --NORMAL formatting
+- Thin spaces, non-breaking spaces, Unicode math symbols --cosmetic, NOT errors
+- Empty string vs null in non-required fields --NOT an error
 
 Your job: verify CONTENT QUALITY against the rules below. Not structure. Not style.
 
@@ -243,7 +243,7 @@ VALIDATION RULES:
     → flag {field:"answer", type:"invalid_option", detail:"Range answer not allowed for integerQuestion"}
   - If question text contains (A), (B), (C), (D) option labels, it is likely mistyped as
     integerQuestion → flag {field:"question", type:"wrong_question_type",
-    detail:"integerQuestion contains MCQ/SCQ options — likely wrong questionType"}
+    detail:"integerQuestion contains MCQ/SCQ options --likely wrong questionType"}
 
 ─── passageQuestion (Passage/Comprehension) ───
 REQUIRED FIELDS:
@@ -252,7 +252,7 @@ REQUIRED FIELDS:
   solution: Non-empty.
 
 VALIDATION RULES:
-  - question/answer/solution are flat fields (NOT nested arrays) — this is by design.
+  - question/answer/solution are flat fields (NOT nested arrays) --this is by design.
   - All three fields must be non-empty. Flag missing_answer/missing_solution if empty.
 
 ─── subjective ───
@@ -285,7 +285,7 @@ NEET (source: D6C):
 Flag wrong_question_type ONLY if the type is invalid for the exam source.
 
 ================================================================================
-SECTION 4: IMAGE VALIDATION (MULTIMODAL — YOU RECEIVE ATTACHED IMAGES)
+SECTION 4: IMAGE VALIDATION (MULTIMODAL --YOU RECEIVE ATTACHED IMAGES)
 ================================================================================
 
 Images from the question and solution HTML have been:
@@ -316,16 +316,16 @@ FLAG THESE:
 SMILES / CHEMICAL STRUCTURE ERRORS:
   - If text still contains raw `<smiles>...</smiles>` tags (not rendered to image),
     flag: {field:"question", type:"broken_chemical_structure",
-    detail:"Unrendered <smiles> tag — chemical structure not converted to image"}
+    detail:"Unrendered <smiles> tag --chemical structure not converted to image"}
   - If a chemical structure image appears blank, distorted, or shows an error
     placeholder → {field:"question", type:"broken_chemical_structure",
     detail:"Chemical structure image is blank/corrupted"}
 
 DO NOT FLAG:
-  - Questions that are purely text/math with no figure references — no image needed.
-  - Valid image placeholders with corresponding valid attached images — this is NORMAL.
-  - Solution images that show worked derivations — NORMAL.
-  - Chemical structure images, circuit diagrams, geometry figures — NORMAL content.
+  - Questions that are purely text/math with no figure references --no image needed.
+  - Valid image placeholders with corresponding valid attached images --this is NORMAL.
+  - Solution images that show worked derivations --NORMAL.
+  - Chemical structure images, circuit diagrams, geometry figures --NORMAL content.
 
 ================================================================================
 SECTION 5: LATEX / MATHML VALIDATION
@@ -346,7 +346,7 @@ Flag if you find ANY of these patterns in question or solution text:
   - \\alpha, \\beta, \\gamma etc. as standalone tokens outside <math> tags
 
 Exception: LaTeX-like tokens INSIDE <math>...</math> MathML are NOT errors (some
-MathML generators use \\mathrm inside <mi> elements — this is valid).
+MathML generators use \\mathrm inside <mi> elements --this is valid).
 
 ─── LaTeX Artifacts (flag: latex_artifacts) ───
 Flag ONLY these specific patterns:
@@ -372,20 +372,20 @@ Do NOT flag:
     tags. MathML entities corrupted into garbage text.
 
 ─── Mathematical Logic Errors ───
-  - math_logic_error: The mathematical CONTENT is logically wrong — inequality reversed,
+  - math_logic_error: The mathematical CONTENT is logically wrong --inequality reversed,
     incorrect formula application, wrong substitution, derivation step contradicts itself,
     bounds applied incorrectly, sign error in calculation, missing negative sign.
     Use this for errors in the MATHEMATICS itself, NOT in the MathML tag structure.
-    Example: Solution says "since x²>x, we get e^{x²} < e^{x}" — the inequality direction
+    Example: Solution says "since x²>x, we get e^{x²} < e^{x}" --the inequality direction
     is reversed. This is math_logic_error, NOT malformed_mathml.
-    Example: "∫₀¹ f(t)dt ≤ ∫₀¹ t dt = 1" when upper bound should be different — math_logic_error.
+    Example: "∫₀¹ f(t)dt ≤ ∫₀¹ t dt = 1" when upper bound should be different --math_logic_error.
 
   Do NOT flag:
   - Valid HTML/XML numeric character references like &#x00063; (= 'c'), &#x003B1; (= 'α'),
     &#x0221A; (= '√'), etc. These are valid Unicode code points and render correctly
     in browsers and CKEditor. They are NOT malformed MathML or encoding errors.
   - Plain text (letters, commas, simple expressions) wrapped in MathML <math><mi>...</mi></math>.
-    This is unnecessary but harmless — it renders identically to plain text. Not an error.
+    This is unnecessary but harmless --it renders identically to plain text. Not an error.
   - Mathematical approaches you disagree with but that are logically valid.
 
 ================================================================================
@@ -411,14 +411,14 @@ SECTION 6B: CLEANER ARTIFACTS (flag: cleaner_artifact)
 Flag when OCR/extraction artifacts survive the cleaning pipeline. These are
 formatting residues that should have been stripped before reaching QA.
 
-QUESTION FIELD — flag if the question text starts with or contains:
+QUESTION FIELD --flag if the question text starts with or contains:
   - Question number prefixes: "Q. 1", "Q1 ", "Ques. 3)", "Question 4:"
   - Bare number-dot prefixes: "93. " at the very start (number + dot + space)
   - Parenthesized question numbers: "(1) " at start when NOT an options list
   - Section headers: \\section*{Q. N}, \\section*{Chemistry Section 1}, etc.
   - Coaching institute boilerplate: "Sri Chaitanya IIT Academy"
 
-SOLUTION FIELD — flag if the solution text starts with or contains:
+SOLUTION FIELD --flag if the solution text starts with or contains:
   - Solution prefixes: "Sol 1.", "Sol 2. Answer: C", "Soln. 3"
   - Answer leak lines: "Answer: C" or "Correct Answer: D" as a standalone line
   - Question prefixes in solutions: "Q. 1" at start of solution text
@@ -429,6 +429,13 @@ Do NOT flag:
   - Bold text like **CONCEPT HINT** (these are intentionally preserved)
   - Numbers that are part of the actual content (stoichiometric "2H₂O", "100 K")
   - Option labels "(A)", "(B)", "(1)", "(2)" that are part of an options list
+
+ANSWER LEAK IN QUESTION (flag: cleaner_artifact):
+  - If the QUESTION text ends with an answer line like "Ans. (7)", "Ans (200)",
+    "Answer: B", or "Answer: (3)", this is a source document artifact.
+    The answer value should ONLY appear in the answer field, not in the question text.
+    Flag: {field:"question", type:"cleaner_artifact",
+    detail:"Answer leaked into question text: '<quote the Ans/Answer pattern found>'"}
 
 ================================================================================
 SECTION 7: ANSWER VALIDATION
@@ -441,16 +448,16 @@ SECTION 7: ANSWER VALIDATION
     Flag ONLY when the solution explicitly arrives at a different answer than what is recorded.
     Do NOT flag if solution is ambiguous or if you cannot verify the physics/chemistry/math.
 
-  IMPORTANT — Number-Letter Mapping:
+  IMPORTANT --Number-Letter Mapping:
     Source solutions often use (1)/(2)/(3)/(4) numbering instead of (A)/(B)/(C)/(D).
     The standard mapping is: (1)=A, (2)=B, (3)=C, (4)=D.
     If the answer field is "B" and the solution says "Answer: (2)", this is CORRECT.
     If the answer field is "D" and the solution says "Answer: (4)", this is CORRECT.
-    Do NOT flag these as wrong_answer — they are equivalent notations.
+    Do NOT flag these as wrong_answer --they are equivalent notations.
 
     NOTE: The pipeline automatically converts "Answer : (1)" to "Answer : (A)" etc.
     in solution text. If you see mixed notation (some converted, some not), this is
-    expected — do NOT flag it as an error. Both formats are equivalent.
+    expected --do NOT flag it as an error. Both formats are equivalent.
 
 ================================================================================
 SECTION 8: CONCEPT TREE TAG VALIDATION
@@ -468,7 +475,7 @@ VALIDATION RULES:
   1. Verify chapter EXISTS in the concept tree under the given subject.
   2. Verify concept EXISTS under that chapter.
   3. Verify subConcept EXISTS under that concept.
-  4. Verify the tag is RELEVANT — the question's actual content should relate to the tagged
+  4. Verify the tag is RELEVANT --the question's actual content should relate to the tagged
      concept. A kinematics question tagged under "Thermodynamics" is wrong_tagging even if
      the tag path exists in the tree.
 
@@ -507,7 +514,7 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 
 | FIELD    | ERROR TYPE             | WHEN TO FLAG                                        |
 |----------|------------------------|-----------------------------------------------------|
-| question | match_format_content   | ANY match-type content (Section 0 — gate check)     |
+| question | match_format_content   | ANY match-type content (Section 0 --gate check)     |
 | question | missing_options        | SCQ/MCQ missing one or more of (A),(B),(C),(D)      |
 | question | malformed_mathml       | MathML TAGS structurally broken → wrong visual render |
 | question | math_logic_error       | Mathematical logic wrong (inequality, formula, sign)  |
@@ -524,9 +531,9 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 | question | content_mismatch       | Content differs from source MMD ground truth         |
 | solution | missing_solution       | Solution field empty/null/whitespace-only            |
 | solution | partial_solution       | Solution truncated mid-derivation or incomplete      |
-| solution | malformed_mathml       | Same as question — broken MathML TAGS in solution    |
+| solution | malformed_mathml       | Same as question --broken MathML TAGS in solution    |
 | solution | math_logic_error       | Math logic error in solution derivation/reasoning     |
-| solution | mathml_parsing_error   | Same as question — unclosed tags in solution         |
+| solution | mathml_parsing_error   | Same as question --unclosed tags in solution         |
 | solution | latex_not_converted    | Raw LaTeX syntax in solution                         |
 | solution | latex_artifacts        | Orphaned LaTeX fragments in solution                 |
 | solution | cleaner_artifact       | Sol/Answer prefixes or section headers in solution   |
@@ -541,26 +548,26 @@ SECTION 11: DECISION SAFETY CHECKS (MANDATORY PRE-OUTPUT VERIFICATION)
 
 Before producing your JSON output, run these checks IN ORDER:
 
-CHECK 1 — MATCH GATE: Did you detect match-type content?
+CHECK 1 --MATCH GATE: Did you detect match-type content?
   YES → Output match_format_content error ONLY. Skip all other checks.
   NO  → Continue.
 
-CHECK 2 — FALSE POSITIVE FILTER: For EACH error you are about to report:
+CHECK 2 --FALSE POSITIVE FILTER: For EACH error you are about to report:
   a) Can you quote the EXACT text/tag/token that violates the rule? If NO → drop it.
   b) Does the error map to EXACTLY ONE row in the audit table above? If NO → drop it.
   c) Is this a formatting/cosmetic issue? If YES → drop it.
   d) Did you note "correct" or "no issue" for this field earlier in your analysis?
      If YES → drop it (contradicts your own finding).
 
-CHECK 3 — UNCERTAINTY DEFAULT: If you are not >95% confident an error is real,
+CHECK 3 --UNCERTAINTY DEFAULT: If you are not >95% confident an error is real,
   do NOT include it. Err on the side of has_error=false.
 
-CHECK 4 — CLEAN QUESTION CONFIRMATION: If after all checks you have zero errors,
+CHECK 4 --CLEAN QUESTION CONFIRMATION: If after all checks you have zero errors,
   you MUST output has_error=false with an empty errors array. Do NOT invent errors
   to justify calling something flagged. Clean questions are the EXPECTED majority.
 
 ================================================================================
-SECTION 12: OUTPUT FORMAT (STRICT JSON — NO MARKDOWN, NO COMMENTARY)
+SECTION 12: OUTPUT FORMAT (STRICT JSON --NO MARKDOWN, NO COMMENTARY)
 ================================================================================
 
 Return ONLY valid JSON. No explanation text. No markdown code blocks. No preamble.
@@ -591,21 +598,21 @@ RULES FOR "detail" FIELD:
 SECTION 13: CALIBRATION EXAMPLES
 ================================================================================
 
-EXAMPLE 1 — CLEAN SCQ (has_error = false):
+EXAMPLE 1 --CLEAN SCQ (has_error = false):
   Input: SCQ, Physics, 4 options present, answer="B", solution derives v=gt=10*2=20 m/s
          which matches option (B), MathML well-formed, no LaTeX residue.
   Output: {"qid":"EX1","has_error":false,"errors":[]}
   Why: All fields valid, solution supports answer, no rule violations.
 
-EXAMPLE 2 — MISSING OPTION + PARTIAL SOLUTION:
+EXAMPLE 2 --MISSING OPTION + PARTIAL SOLUTION:
   Input: SCQ, Chemistry, options (A)(B)(C) present but NO (D), solution ends
          "Therefore the equilibrium constant K = ..." (truncated), MathML clean.
   Output: {"qid":"EX2","has_error":true,"errors":[
-    {"field":"question","type":"missing_options","detail":"Option (D) missing from SCQ — only (A),(B),(C) found"},
+    {"field":"question","type":"missing_options","detail":"Option (D) missing from SCQ --only (A),(B),(C) found"},
     {"field":"solution","type":"partial_solution","detail":"Solution truncated mid-derivation at 'K = ...'"}
   ]}
 
-EXAMPLE 3 — MATCH TYPE (IMMEDIATE REJECTION):
+EXAMPLE 3 --MATCH TYPE (IMMEDIATE REJECTION):
   Input: questionType="scq", question text contains "Match List-I with List-II"
          followed by a mapping table.
   Output: {"qid":"EX3","has_error":true,"errors":[
@@ -613,7 +620,7 @@ EXAMPLE 3 — MATCH TYPE (IMMEDIATE REJECTION):
   ]}
   Why: Match gate triggered. No other checks performed.
 
-EXAMPLE 4 — RAW LATEX + WRONG ANSWER:
+EXAMPLE 4 --RAW LATEX + WRONG ANSWER:
   Input: integerQuestion, Physics, question contains "\\frac{mv^2}{r}" outside any
          <math> tag. Solution derives answer=42 but answer field says "35".
   Output: {"qid":"EX4","has_error":true,"errors":[
@@ -621,26 +628,26 @@ EXAMPLE 4 — RAW LATEX + WRONG ANSWER:
     {"field":"answer","type":"wrong_answer","detail":"Solution concludes 42 but answer field is 35"}
   ]}
 
-EXAMPLE 5 — INTEGER WITH RANGE ANSWER:
+EXAMPLE 5 --INTEGER WITH RANGE ANSWER:
   Input: integerQuestion, answer="2 to 5", solution present and complete.
   Output: {"qid":"EX5","has_error":true,"errors":[
-    {"field":"answer","type":"invalid_option","detail":"Range answer '2 to 5' not allowed for integerQuestion — must be single numeric value"}
+    {"field":"answer","type":"invalid_option","detail":"Range answer '2 to 5' not allowed for integerQuestion --must be single numeric value"}
   ]}
 
-EXAMPLE 6 — MISSING IMAGE:
+EXAMPLE 6 --MISSING IMAGE:
   Input: SCQ, Physics, question says "A particle moves along the path shown in the
          figure below" but no [ImageQ1] placeholder and no image attached.
   Output: {"qid":"EX6","has_error":true,"errors":[
     {"field":"question","type":"missing_image","detail":"Question references 'shown in the figure below' but no image is present or attached"}
   ]}
 
-EXAMPLE 7 — COMPLEX BUT CORRECT MATHML (DO NOT FLAG):
+EXAMPLE 7 --COMPLEX BUT CORRECT MATHML (DO NOT FLAG):
   Input: SCQ, Math, question contains deeply nested MathML with <mfrac><mrow><msup>...
          that correctly renders a triple-nested fraction. Looks complex but renders right.
   Output: {"qid":"EX7","has_error":false,"errors":[]}
   Why: Complex MathML is NOT malformed if it renders the correct expression.
 
-EXAMPLE 8 — WRONG TAGGING:
+EXAMPLE 8 --WRONG TAGGING:
   Input: Physics question about projectile motion, but tags say
          chapter="Thermodynamics", concept="Carnot Cycle".
   Output: {"qid":"EX8","has_error":true,"errors":[
@@ -768,6 +775,181 @@ class QualityVerifierStage(BasePipelineStage):
         entries = self._load_all_metadata(filter_quarantine=False)
         return {e.get("qid", ""): e for e in entries if e.get("qid")}
 
+    def _validate_pass_completion(self, pass_key: str) -> Dict[str, Any]:
+        """Validate whether a pass is truly completed with real data.
+
+        Checks BOTH the ledger file content AND the results file.
+        Returns: {valid, ledger_ok, results_ok, batch_id, api,
+                  can_redownload, must_resubmit, status_data}
+        """
+        pass_info = PASS_MODELS[pass_key]
+        qa_dir = self._get_qa_dir()
+        ledger_dir = self._get_ledger_dir()
+
+        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+        results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+        status_path = qa_dir / f"{pass_key}_status.json"
+
+        result = {
+            "valid": False, "ledger_ok": False, "results_ok": False,
+            "batch_id": None, "api": None, "output_file_id": None,
+            "gcs_output": None, "can_redownload": False, "must_resubmit": False,
+            "status_data": {},
+        }
+
+        # Load status file for batch_id / api info
+        if status_path.exists():
+            try:
+                sd = json.loads(status_path.read_text())
+                result["status_data"] = sd
+                result["batch_id"] = sd.get("batch_id")
+                result["api"] = sd.get("api")
+                result["output_file_id"] = sd.get("output_file_id")
+                result["gcs_output"] = sd.get("gcs_output")
+            except Exception:
+                pass
+
+        # Validate ledger: must be a JSON array with actual entries
+        if ledger_path.exists() and ledger_path.stat().st_size > 10:
+            try:
+                ledger_data = json.loads(ledger_path.read_text(encoding="utf-8"))
+                if isinstance(ledger_data, list) and len(ledger_data) > 0:
+                    result["ledger_ok"] = True
+            except Exception:
+                pass
+
+        # Validate results file: must exist and be non-empty
+        if results_path.exists() and results_path.stat().st_size > 0:
+            result["results_ok"] = True
+
+        # Both valid = truly completed
+        result["valid"] = result["ledger_ok"] and result["results_ok"]
+
+        # Determine recovery path if invalid
+        if not result["valid"] and result["batch_id"]:
+            api = result["api"] or ""
+            if api == "vertex":
+                # Vertex cleans up GCS after download --can't re-download
+                result["must_resubmit"] = True
+                result["can_redownload"] = False
+            elif api in ("openai", ""):
+                # OpenAI keeps output_file_id --can re-download
+                result["can_redownload"] = bool(result["output_file_id"])
+                result["must_resubmit"] = not result["can_redownload"]
+
+        return result
+
+    def _cleanup_stale_pass_files(self, pass_key: str) -> None:
+        """Remove stale/empty ledger and results files for a pass before re-download."""
+        pass_info = PASS_MODELS[pass_key]
+        qa_dir = self._get_qa_dir()
+        ledger_dir = self._get_ledger_dir()
+
+        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+        results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+
+        for p in [ledger_path, results_path]:
+            if p.exists() and p.stat().st_size < 10:
+                p.unlink()
+                self.log("info", f"Removed stale file: {p.name}")
+
+    def get_resume_state(self) -> Dict[str, Any]:
+        """Determine resume point for Stage 9 by checking ledger + local files.
+
+        Returns: {resume_from, action, message, per_pass: {pass1: {...}, ...}}
+        Called on page load / Refresh to set button states.
+        """
+        steps = self.ledger_get_all()
+
+        # Check if merge is done
+        merge = steps.get("merge_votes", {})
+        if merge.get("status") == "completed":
+            return {"resume_from": "merge_votes", "action": "mark_complete",
+                    "message": "Votes merged --ready to mark pipeline complete"}
+
+        # Check each pass with real validation
+        per_pass = {}
+        for pk, pi in PASS_MODELS.items():
+            v = self._validate_pass_completion(pk)
+
+            if v["valid"]:
+                per_pass[pk] = {"status": "completed", "ledger_verified": True,
+                                "results_verified": True}
+            elif v["must_resubmit"]:
+                per_pass[pk] = {"status": "must_resubmit", "batch_id": v["batch_id"],
+                                "api": v["api"],
+                                "reason": "Ledger/results empty --source data cleaned, re-submit needed"}
+            elif v["can_redownload"]:
+                per_pass[pk] = {"status": "needs_redownload", "batch_id": v["batch_id"],
+                                "api": v["api"], "output_file_id": v["output_file_id"],
+                                "reason": "Results file empty --re-download from API"}
+            elif v["results_ok"] and not v["ledger_ok"]:
+                per_pass[pk] = {"status": "downloaded_no_ledger", "results_verified": True}
+            else:
+                # Check status file for running/submitted state
+                sd = v["status_data"]
+                if sd:
+                    file_status = sd.get("status", "unknown")
+                    per_pass[pk] = {"status": file_status,
+                                    "batch_id": v["batch_id"], "api": v["api"]}
+                else:
+                    per_pass[pk] = {"status": "not_started"}
+
+        # Determine overall action
+        completed_count = sum(1 for p in per_pass.values() if p["status"] == "completed")
+        resubmit_passes = [pk for pk, p in per_pass.items() if p["status"] == "must_resubmit"]
+        redownload_passes = [pk for pk, p in per_pass.items() if p["status"] == "needs_redownload"]
+        # Terminal = completed, stopped, failed, not_started, or broken (must_resubmit/needs_redownload)
+        all_terminal = all(p["status"] in ("completed", "stopped", "failed", "not_started",
+                                            "must_resubmit", "needs_redownload")
+                           for p in per_pass.values())
+
+        if completed_count == 3:
+            return {"resume_from": "all_passes_done", "action": "merge_votes",
+                    "per_pass": per_pass, "message": "All 3 passes complete --ready to merge votes"}
+
+        # If some passes need recovery, report that prominently
+        if resubmit_passes or redownload_passes:
+            recovery_msgs = []
+            if resubmit_passes:
+                recovery_msgs.append(f"re-submit: {', '.join(resubmit_passes)}")
+            if redownload_passes:
+                recovery_msgs.append(f"re-download: {', '.join(redownload_passes)}")
+            action = "recover"
+            # If 2+ passes are valid and broken ones can be recovered, allow partial merge too
+            if completed_count >= 2:
+                action = "recover_or_merge"
+            return {"resume_from": "recovery_needed", "action": action,
+                    "per_pass": per_pass, "completed": completed_count,
+                    "message": f"{completed_count}/3 passes valid --recovery needed: {'; '.join(recovery_msgs)}"}
+
+        if completed_count >= 2 and all_terminal:
+            return {"resume_from": "partial_done", "action": "merge_votes",
+                    "per_pass": per_pass,
+                    "message": f"{completed_count}/3 passes complete --can merge with partial results"}
+
+        running = [pk for pk, p in per_pass.items()
+                   if p["status"] in ("submitted", "batch_submitted", "running", "polling",
+                                      "in_progress", "validating", "finalizing")]
+        if running:
+            return {"resume_from": "passes_running", "action": "poll",
+                    "per_pass": per_pass,
+                    "message": f"Passes running: {', '.join(running)} --polling for progress"}
+
+        # Check if build was done
+        build = steps.get("build", {})
+        if build.get("status") == "completed":
+            not_started = [pk for pk, p in per_pass.items()
+                           if p["status"] in ("not_started", "must_resubmit")]
+            if not_started:
+                return {"resume_from": "build_done", "action": "submit",
+                        "per_pass": per_pass,
+                        "message": f"Batches built --submit needed for: {', '.join(not_started)}"}
+
+        return {"resume_from": "idle", "action": "scan",
+                "per_pass": per_pass,
+                "message": "No previous progress --start from scan"}
+
     def scan(self) -> Dict[str, Any]:
         """Scan metadata and determine if QA is needed."""
         entries = self._load_all_metadata()
@@ -844,7 +1026,7 @@ class QualityVerifierStage(BasePipelineStage):
                         "qid": qid,
                         "subject": entry.get("subject", ""),
                         "questionType": qtype,
-                        # Full question/solution — no premature truncation.
+                        # Full question/solution --no premature truncation.
                         # Truncation happens in _build_user_content after image extraction.
                         "question": (qdata.get("question", "") or ""),
                         "answer": qdata.get("answer", ""),
@@ -860,6 +1042,12 @@ class QualityVerifierStage(BasePipelineStage):
             batch_counts[pass_key] = count
             self.log("info", f"Built {pass_key} batch: {count} requests ({pass_info['name']})")
 
+        self.ledger_set("build", {
+            "status": "completed",
+            "pass1_requests": batch_counts.get("pass1", 0),
+            "pass2_requests": batch_counts.get("pass2", 0),
+            "pass3_requests": batch_counts.get("pass3", 0),
+        })
         self.save_checkpoint("qa_batch_built", batch_counts)
         return {
             "qa_needed": True,
@@ -938,7 +1126,7 @@ class QualityVerifierStage(BasePipelineStage):
                     prompt += f"""
 
 ================================================================================
-CONCEPT TREE REFERENCE (for tag validation — Section 8)
+CONCEPT TREE REFERENCE (for tag validation --Section 8)
 ================================================================================
 
 Structure: {{exam: {{subject: {{chapter: {{concept: [subConcepts]}}}}}}}}
@@ -947,7 +1135,7 @@ Use this to verify tags exist and are relevant.
 {ct_json}
 """
         except Exception:
-            pass  # Concept tree is optional — do not fail QA if unavailable
+            pass  # Concept tree is optional --do not fail QA if unavailable
 
         # ── Inject MMD ground truth (full file, no truncation) ────────────
         try:
@@ -968,7 +1156,7 @@ Use this to verify tags exist and are relevant.
                     prompt += f"""
 
 ================================================================================
-MMD GROUND TRUTH (for content verification — Section 9)
+MMD GROUND TRUTH (for content verification --Section 9)
 ================================================================================
 
 Below is the original OCR'd source content. Use it to verify question content
@@ -978,7 +1166,7 @@ numeric values, and answer keys.
 {combined_mmd}
 """
         except Exception:
-            pass  # MMD is optional — do not fail QA if unavailable
+            pass  # MMD is optional --do not fail QA if unavailable
 
         # ── Inject extra user context ───────────────────────────────────────
         if extra_context:
@@ -1011,10 +1199,10 @@ ADDITIONAL CONTEXT FROM USER
         concept = req.get("concept", "")
         sub_concept = req.get("subConcept", "")
 
-        # Extract images — replace <img> tags with placeholders, collect base64 attachments
+        # Extract images --replace <img> tags with placeholders, collect base64 attachments
         q_text, q_attachments = _collect_images_with_placeholders(question, "ImageQ")
         s_text, s_attachments = _collect_images_with_placeholders(solution, "ImageS")
-        # No truncation — all models have 128K-1M context, full content is essential for QA
+        # No truncation --all models have 128K-1M context, full content is essential for QA
         all_attachments = q_attachments + s_attachments
 
         # Build tag block (only if tags exist)
@@ -1088,22 +1276,42 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         if not batch_path.exists():
             return {"error": f"Batch file not found for {pass_key} -- run Build QA Batch first"}
 
-        ledger_dir = self._get_ledger_dir()
-        ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
-        if ledger_path.exists():
+        # Validate pass completion --don't trust file existence alone
+        v = self._validate_pass_completion(pass_key)
+        if v["valid"]:
+            ledger_dir = self._get_ledger_dir()
+            ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
             self.log("info", f"{pass_key} already completed -- results in ledger")
             return {"status": "already_completed", "pass": pass_key, "ledger": str(ledger_path)}
+
+        # If previous attempt left empty/broken files, clean them up before re-submit
+        if v["batch_id"] and (not v["ledger_ok"] or not v["results_ok"]):
+            self.log("warn", f"{pass_key} previous attempt left incomplete data --cleaning up for re-submit")
+            ledger_dir = self._get_ledger_dir()
+            ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
+            results_path = self._get_qa_dir() / f"{pass_key}_batch_results.jsonl"
+            status_path = self._get_qa_dir() / f"{pass_key}_status.json"
+            for p in [ledger_path, results_path, status_path]:
+                if p.exists():
+                    p.unlink()
+                    self.log("info", f"Removed stale file: {p.name}")
 
         # All passes now use Batch API
         if pass_info["api"] == "openai":
             try:
                 result = self._submit_openai_batch(pass_key)
+                if not result.get("error"):
+                    self.ledger_set(pass_key, {
+                        "status": "submitted",
+                        "api": "openai",
+                        "batch_id": result.get("batch_id"),
+                    })
                 return result
             except Exception as e:
                 self.log("error", f"{pass_key} OpenAI batch submission failed: {e}")
                 return {"error": f"Batch submission failed: {e}"}
         elif pass_info["api"] == "gemini":
-            # Vertex AI only — no AI Studio fallback (unreliable downloads)
+            # Vertex AI only --no AI Studio fallback (unreliable downloads)
             self.log("info", f"{pass_key} submitting via Vertex AI (paid quota)")
             try:
                 self._ensure_vertex_credentials()
@@ -1113,6 +1321,12 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                         f"Set VERTEX_AI_CREDENTIALS in .env to the service account JSON path."}
             try:
                 result = self._submit_vertex_batch(pass_key)
+                if not result.get("error"):
+                    self.ledger_set(pass_key, {
+                        "status": "submitted",
+                        "api": "vertex",
+                        "batch_id": result.get("batch_id"),
+                    })
                 return result
             except Exception as e:
                 self.log("error", f"{pass_key} Vertex AI batch failed: {e}")
@@ -1138,8 +1352,25 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 status_data = json.load(f)
 
             if status_data.get("status") == "completed":
-                results[pk] = {"status": "already_completed"}
-                continue
+                # Cross-check: are results actually valid?
+                v = self._validate_pass_completion(pk)
+                if v["valid"]:
+                    results[pk] = {"status": "already_completed"}
+                    continue
+                elif v["can_redownload"]:
+                    # Results empty but can re-download from API
+                    self.log("warn", f"{pk} status=completed but results invalid --forcing re-download")
+                    # Reset status to batch_complete so download proceeds
+                    status_data["status"] = "batch_complete"
+                    with open(status_path, "w") as f:
+                        json.dump(status_data, f)
+                    # Clean up stale ledger/results files
+                    self._cleanup_stale_pass_files(pk)
+                else:
+                    # Vertex AI --GCS cleaned, can't re-download, must re-submit
+                    results[pk] = {"status": "must_resubmit",
+                                   "message": f"{pk} has empty results and source data was cleaned --re-submit needed"}
+                    continue
 
             if status_data.get("status") != "batch_complete":
                 results[pk] = {"status": status_data.get("status", "unknown"),
@@ -1224,8 +1455,8 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
     def _submit_openai_batch(self, pass_key: str) -> Dict[str, Any]:
         """Submit an OpenAI Batch API job for a QA pass.
 
-        Builds API-ready JSONL from the internal batch file, uploads to OpenAI,
-        creates the batch job, and saves the batch_id for polling.
+        Builds API-ready JSONL, splits if > 190MB, uploads each chunk,
+        creates batch jobs, and saves all batch IDs for polling.
         """
         pass_info = PASS_MODELS[pass_key]
         model = pass_info["model_id"]
@@ -1262,43 +1493,84 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             requests_list, system_prompt, model, pass_key
         )
 
-        # Upload to OpenAI
-        self.log("info", f"Uploading {pass_key} batch file to OpenAI...")
-        with open(batch_jsonl_path, "rb") as f:
-            file_obj = client.files.create(file=f, purpose="batch")
-        self.log("info", f"File uploaded: {file_obj.id}")
+        # Check file size and split if needed
+        file_size = batch_jsonl_path.stat().st_size
+        chunk_paths = self.split_jsonl_by_size(batch_jsonl_path)
+        is_split = len(chunk_paths) > 1
 
-        # Create batch job
-        batch = client.batches.create(
-            input_file_id=file_obj.id,
-            endpoint="/v1/chat/completions",
-            completion_window="24h",
-            metadata={"session_id": self.session_id, "pass": pass_key, "type": "qa"},
+        if is_split:
+            self.log("info", f"{pass_key} batch is {file_size // (1024*1024)}MB -- split into {len(chunk_paths)} chunks")
+
+        # Upload and submit each chunk
+        chunk_batches = []
+        for idx, chunk_path in enumerate(chunk_paths):
+            chunk_label = f"{pass_key}" if not is_split else f"{pass_key} chunk {idx+1}/{len(chunk_paths)}"
+            self.log("info", f"Uploading {chunk_label} ({chunk_path.stat().st_size // (1024*1024)}MB)...")
+
+            with open(chunk_path, "rb") as f:
+                file_obj = client.files.create(file=f, purpose="batch")
+            self.log("info", f"File uploaded: {file_obj.id}")
+
+            batch = client.batches.create(
+                input_file_id=file_obj.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={"session_id": self.session_id, "pass": pass_key,
+                          "type": "qa", "chunk": str(idx)},
+            )
+            chunk_batches.append({
+                "batch_id": batch.id,
+                "file_id": file_obj.id,
+                "chunk_file": chunk_path.name,
+            })
+            self.log("success", f"{chunk_label} submitted: {batch.id}")
+
+        # Count total lines across all chunks
+        total_lines = sum(
+            sum(1 for l in open(cp, "r", encoding="utf-8") if l.strip())
+            for cp in chunk_paths
         )
 
         # Save batch status
         status_path = qa_dir / f"{pass_key}_status.json"
+        status_data = {
+            "status": "batch_submitted",
+            "total": len(requests_list),
+            "processed": 0,
+            "approved": 0,
+            "rejected": 0,
+            "api": "openai",
+            "split": is_split,
+            "chunks": chunk_batches,
+        }
+        # For non-split, keep backward-compatible flat fields
+        if not is_split:
+            status_data["batch_id"] = chunk_batches[0]["batch_id"]
+            status_data["file_id"] = chunk_batches[0]["file_id"]
+        else:
+            # Primary batch_id = first chunk (for legacy code that reads batch_id)
+            status_data["batch_id"] = chunk_batches[0]["batch_id"]
         with open(status_path, "w") as f:
-            json.dump({
-                "status": "batch_submitted",
-                "batch_id": batch.id,
-                "file_id": file_obj.id,
-                "total": len(requests_list),
-                "processed": 0,
-                "approved": 0,
-                "rejected": 0,
-            }, f)
+            json.dump(status_data, f, indent=2)
 
-        self.log("success", f"{pass_key} batch submitted to OpenAI: {batch.id} ({len(requests_list)} requests)")
+        primary_batch_id = chunk_batches[0]["batch_id"]
+        self.log("success", f"{pass_key} batch submitted to OpenAI: {primary_batch_id} "
+                 f"({len(requests_list)} requests, {len(chunk_batches)} chunk(s))")
         return {
             "status": "batch_submitted",
             "pass": pass_key,
-            "batch_id": batch.id,
+            "batch_id": primary_batch_id,
             "total": len(requests_list),
+            "split": is_split,
+            "chunk_count": len(chunk_batches),
         }
 
     def _poll_openai_batch(self, pass_key: str) -> Dict[str, Any]:
-        """Poll OpenAI Batch API status for a QA pass."""
+        """Poll OpenAI Batch API status for a QA pass.
+
+        Handles both single-batch and split-batch (multiple chunks).
+        For split batches, polls ALL chunks and aggregates progress.
+        """
         qa_dir = self._get_qa_dir()
         status_path = qa_dir / f"{pass_key}_status.json"
 
@@ -1308,10 +1580,6 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         with open(status_path, "r") as f:
             status_data = json.load(f)
 
-        batch_id = status_data.get("batch_id")
-        if not batch_id:
-            return status_data
-
         # If already completed/stopped, return cached status
         if status_data.get("status") in ("completed", "stopped", "failed"):
             return status_data
@@ -1320,6 +1588,73 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
 
+        is_split = status_data.get("split", False)
+        chunks = status_data.get("chunks", [])
+
+        # For non-split or legacy (no chunks list), poll single batch
+        if not is_split or not chunks:
+            batch_id = status_data.get("batch_id")
+            if not batch_id:
+                return status_data
+            return self._poll_single_openai_batch(client, pass_key, batch_id, status_path, status_data)
+
+        # Split batch: poll each chunk, aggregate
+        try:
+            total_all = 0
+            processed_all = 0
+            all_complete = True
+            any_failed = False
+            output_file_ids = []
+
+            for chunk in chunks:
+                bid = chunk.get("batch_id")
+                if not bid:
+                    continue
+                batch = client.batches.retrieve(bid)
+                rc = batch.request_counts
+                total_all += rc.total if rc else 0
+                processed_all += (rc.completed + rc.failed) if rc else 0
+
+                if batch.status == "completed" and batch.output_file_id:
+                    chunk["status"] = "batch_complete"
+                    chunk["output_file_id"] = batch.output_file_id
+                    output_file_ids.append(batch.output_file_id)
+                elif batch.status == "failed":
+                    chunk["status"] = "failed"
+                    any_failed = True
+                    all_complete = False
+                else:
+                    chunk["status"] = batch.status
+                    all_complete = False
+
+            overall_status = "batch_complete" if all_complete else ("failed" if any_failed else "in_progress")
+
+            result = {
+                "status": overall_status,
+                "batch_id": chunks[0]["batch_id"],
+                "total": status_data.get("total", total_all),
+                "processed": processed_all,
+                "approved": status_data.get("approved", 0),
+                "rejected": status_data.get("rejected", 0),
+                "split": True,
+                "chunks": chunks,
+                "api": "openai",
+            }
+            if all_complete:
+                result["output_file_ids"] = output_file_ids
+
+            # Update status file
+            with open(status_path, "w") as f:
+                json.dump(result, f, indent=2)
+
+            return result
+        except Exception as e:
+            self.log("error", f"{pass_key} split batch poll error: {e}")
+            return {**status_data, "error": str(e)}
+
+    def _poll_single_openai_batch(self, client, pass_key: str, batch_id: str,
+                                   status_path: Path, status_data: Dict) -> Dict:
+        """Poll a single (non-split) OpenAI batch."""
         try:
             batch = client.batches.retrieve(batch_id)
             total = batch.request_counts.total if batch.request_counts else 0
@@ -1335,6 +1670,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 "failed": failed_count,
                 "approved": status_data.get("approved", 0),
                 "rejected": status_data.get("rejected", 0),
+                "api": "openai",
             }
 
             if batch.status == "completed" and batch.output_file_id:
@@ -1345,7 +1681,6 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 error_detail = str(batch.errors) if batch.errors else "Batch failed (no error details)"
                 result["error"] = error_detail
                 self.log("error", f"{pass_key} OPENAI BATCH FAILED: {error_detail}")
-                self.log("warning", f"{pass_key} failed — {failed_count} questions will be treated as abstentions in QA voting")
 
             # Update status file
             with open(status_path, "w") as f:
@@ -1369,20 +1704,39 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         with open(status_path, "r") as f:
             status_data = json.load(f)
 
-        output_file_id = status_data.get("output_file_id")
-        if not output_file_id:
-            return {"error": f"No output file for {pass_key} -- batch may not be complete"}
-
         from app.config import settings
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
 
-        # Download results
-        self.log("info", f"Downloading {pass_key} batch results from OpenAI...")
-        content = client.files.content(output_file_id)
-        results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
-        results_path.write_bytes(content.content)
-        self.log("info", f"Downloaded {pass_key} results: {results_path.name}")
+        # Handle split batches: download all chunks and merge into one results file
+        is_split = status_data.get("split", False)
+        chunks = status_data.get("chunks", [])
+
+        if is_split and chunks:
+            output_file_ids = [c.get("output_file_id") for c in chunks if c.get("output_file_id")]
+            if not output_file_ids:
+                return {"error": f"No output files for {pass_key} split batch -- poll first"}
+            self.log("info", f"Downloading {pass_key} split batch results ({len(output_file_ids)} chunks)...")
+            results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+            with open(results_path, "wb") as out_f:
+                for idx, ofid in enumerate(output_file_ids):
+                    self.log("info", f"Downloading chunk {idx+1}/{len(output_file_ids)}: {ofid}")
+                    content = client.files.content(ofid)
+                    out_f.write(content.content)
+                    if not content.content.endswith(b"\n"):
+                        out_f.write(b"\n")
+            self.log("info", f"Merged {len(output_file_ids)} chunks into {results_path.name}")
+        else:
+            output_file_id = status_data.get("output_file_id")
+            if not output_file_id:
+                return {"error": f"No output file for {pass_key} -- batch may not be complete"}
+
+            # Download results (single batch)
+            self.log("info", f"Downloading {pass_key} batch results from OpenAI...")
+            content = client.files.content(output_file_id)
+            results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
+            results_path.write_bytes(content.content)
+            self.log("info", f"Downloaded {pass_key} results: {results_path.name}")
 
         # Parse results into ledger format
         ledger = []
@@ -1445,6 +1799,11 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     "errors": result_data.get("errors", []),
                 })
 
+        # GUARD: Reject empty results --do NOT mark complete
+        if len(ledger) == 0:
+            self.log("error", f"{pass_key} OpenAI batch returned 0 parseable results --NOT marking complete")
+            return {"error": f"{pass_key}: 0 results parsed from batch output --retry download or check batch."}
+
         # Save ledger
         ledger_dir = self._get_ledger_dir()
         ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
@@ -1463,6 +1822,8 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 "processed": len(ledger),
                 "approved": approved,
                 "rejected": rejected,
+                "output_file_id": status_data.get("output_file_id"),
+                "split": status_data.get("split", False),
             }, f)
 
         if errors_list:
@@ -1660,7 +2021,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
     def _build_vertex_batch_jsonl(self, requests_list: List[Dict], system_prompt: str,
                                    model: str, pass_key: str) -> Tuple[Path, Dict[str, str]]:
-        """Build Vertex AI Batch JSONL — no 'key' field, track QIDs by line number.
+        """Build Vertex AI Batch JSONL --no 'key' field, track QIDs by line number.
 
         Returns (jsonl_path, qid_line_map) where qid_line_map = {line_idx: qid}.
         """
@@ -1897,6 +2258,12 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
         self.log("info", f"Downloaded {len(all_lines)} results from Vertex AI for {pass_key}")
 
+        # GUARD: Reject empty results --do NOT mark complete or cleanup GCS
+        if len(all_lines) == 0:
+            self.log("error", f"{pass_key} Vertex AI returned 0 result lines --NOT marking complete, preserving GCS data")
+            return {"error": f"{pass_key}: Vertex AI batch returned 0 results. "
+                    f"GCS output path: {gcs_output} --check manually or retry download."}
+
         # Save raw results locally (same pattern as OpenAI: pass1_batch_results.jsonl)
         results_path = qa_dir / f"{pass_key}_batch_results.jsonl"
         with open(results_path, "w", encoding="utf-8") as f:
@@ -1969,10 +2336,10 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
         self.log("success", f"{pass_key} Vertex AI results: {approved} approved, {rejected} rejected, {len(errors_list)} errors")
 
-        # Verify ledger was actually written before cleaning up cloud files
-        if not ledger_path.exists():
-            self.log("error", f"{pass_key} CRITICAL: ledger file not found after write — skipping GCS cleanup")
-            return {"error": f"Ledger verification failed for {pass_key}"}
+        # Verify ledger was actually written with real data before cleaning up cloud files
+        if not ledger_path.exists() or len(ledger) == 0:
+            self.log("error", f"{pass_key} CRITICAL: ledger empty or missing after write --skipping GCS cleanup")
+            return {"error": f"Ledger verification failed for {pass_key} --0 entries parsed. GCS data preserved."}
 
         # ── GCS cleanup: delete input + output files to avoid storage cost ──
         # ONLY after ledger is verified on disk
@@ -1998,7 +2365,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         """Delete input JSONL + output folder from GCS after results are downloaded.
 
         Called after successful download to avoid accumulating stale files and storage cost.
-        GCS charges $0.02/GB/month — small but adds up over many sessions.
+        GCS charges $0.02/GB/month --small but adds up over many sessions.
         """
         from app.config import settings
         cleaned = 0
@@ -2091,7 +2458,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 elif hasattr(batch_job, 'metadata') and batch_job.metadata:
                     error_detail = f"Gemini batch failed: {batch_job.metadata}"
                 result["error"] = error_detail
-                # Log prominently — 429/quota failures were going silently
+                # Log prominently --429/quota failures were going silently
                 self.log("error", f"{pass_key} BATCH FAILED: {error_detail}")
                 self.log("warning", f"{pass_key} failed questions will be treated as abstentions in QA voting (not penalized)")
                 if "429" in str(error_detail) or "RESOURCE_EXHAUSTED" in str(error_detail):
@@ -2108,7 +2475,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             # Detect quota errors specifically
             if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
                 self.log("warning", f"{pass_key} hit quota limit (429 RESOURCE_EXHAUSTED). "
-                         "Vertex AI batch API has separate quota — consider as fallback.")
+                         "Vertex AI batch API has separate quota --consider as fallback.")
             return {**status_data, "error": error_str}
 
     def _download_gemini_batch_results(self, pass_key: str) -> Dict[str, Any]:
@@ -2189,6 +2556,11 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             except json.JSONDecodeError:
                 errors_list.append(f"Unparseable line: {line[:100]}")
 
+        # GUARD: Reject empty results
+        if len(ledger) == 0:
+            self.log("error", f"{pass_key} Gemini batch returned 0 parseable results --NOT marking complete")
+            return {"error": f"{pass_key}: 0 results parsed from Gemini batch output."}
+
         # Save ledger
         ledger_dir = self._get_ledger_dir()
         ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
@@ -2234,7 +2606,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         for i, req in enumerate(requests_list):
             # Check stop flag before each question
             if self._is_stopped():
-                self.log("warning", f"{pass_key}: Stop requested — halting after {len(ledger)} questions")
+                self.log("warning", f"{pass_key}: Stop requested --halting after {len(ledger)} questions")
                 break
 
             qid = req.get("qid", "?")
@@ -2246,10 +2618,10 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 user_parts.append(img)
 
             try:
-                # GPT-5-mini defaults reasoning ON (medium) — thinking tokens consume
+                # GPT-5-mini defaults reasoning ON (medium) --thinking tokens consume
                 # from max_completion_tokens budget. Use "low" effort for structured QA
                 # (checklist-based, not open-ended) + 8192 tokens to accommodate reasoning.
-                # GPT-5.1 defaults reasoning OFF — 8192 is safe headroom.
+                # GPT-5.1 defaults reasoning OFF --8192 is safe headroom.
                 create_kwargs = {
                     "model": model,
                     "messages": [
@@ -2269,7 +2641,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 
                 # Truncation detection: if finish_reason is "length", output was cut off
                 if choice.finish_reason == "length":
-                    self.log("warning", f"{pass_key} truncated output for {qid} — treating as API error, will not count as rejection")
+                    self.log("warning", f"{pass_key} truncated output for {qid} --treating as API error, will not count as rejection")
                     ledger.append({
                         "qid": qid, "pass": pass_key, "model": model,
                         "has_error": True,
@@ -2339,7 +2711,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         for i, req in enumerate(requests_list):
             # Check stop flag before each question
             if self._is_stopped():
-                self.log("warning", f"{pass_key}: Stop requested — halting after {len(ledger)} questions")
+                self.log("warning", f"{pass_key}: Stop requested --halting after {len(ledger)} questions")
                 break
 
             qid = req.get("qid", "?")
@@ -2356,7 +2728,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     parts.append(types.Part.from_bytes(data=raw_bytes, mime_type=mime_type))
 
             try:
-                # Gemini 3 Flash defaults thinking ON at HIGH — thinking tokens consume
+                # Gemini 3 Flash defaults thinking ON at HIGH --thinking tokens consume
                 # from max_output_tokens. Use LOW thinking for structured QA checklist
                 # + 8192 tokens to accommodate thinking + output.
                 response = client.models.generate_content(
@@ -2556,12 +2928,12 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 "error_breakdown": None,
             }
 
-            # If ledger exists, this pass is done — read from ledger
-            if ledger_path.exists():
+            # If ledger exists AND has real content, this pass is done
+            if ledger_path.exists() and ledger_path.stat().st_size > 10:
                 try:
-                    with open(ledger_path, "r") as f:
+                    with open(ledger_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    if isinstance(data, list):
+                    if isinstance(data, list) and len(data) > 0:
                         pass_status["results"] = len(data)
                         approved = sum(1 for e in data if not e.get("has_error") and not e.get("errors"))
                         pass_status["approved"] = approved
@@ -2574,19 +2946,20 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                                 error_counts[etype] = error_counts.get(etype, 0) + 1
                         pass_status["error_breakdown"] = error_counts
                         pass_status["status"] = "completed"
+                        statuses[pass_key] = pass_status
+                        continue
                 except Exception:
                     pass
-                statuses[pass_key] = pass_status
-                continue
+                # Ledger file exists but is empty/invalid - fall through to status file check
 
-            # No ledger exists — check if status file falsely claims "completed"
+            # No ledger exists --check if status file falsely claims "completed"
             # This happens when old Gemini AI Studio download failed silently
             if status_path.exists():
                 try:
                     with open(status_path, "r") as f:
                         sd_check = json.load(f)
                     if sd_check.get("status") == "completed":
-                        self.log("warning", f"{pass_key} status says completed but no ledger — resetting to allow resubmit")
+                        self.log("warning", f"{pass_key} status says completed but no ledger --resetting to allow resubmit")
                         sd_check["status"] = "not_started"
                         with open(status_path, "w") as f:
                             json.dump(sd_check, f)
@@ -2605,9 +2978,9 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                         if api_type in ("vertex", "gemini"):
                             # All Gemini passes use Vertex AI (gemini = legacy status files)
                             batch_result = self._poll_vertex_batch(pass_key)
-                            # Legacy "gemini" batch_ids are invalid for Vertex AI — detect and reset
+                            # Legacy "gemini" batch_ids are invalid for Vertex AI --detect and reset
                             if batch_result.get("error") and api_type == "gemini":
-                                self.log("warning", f"{pass_key} legacy Gemini AI Studio batch — resetting to allow resubmit via Vertex AI")
+                                self.log("warning", f"{pass_key} legacy Gemini AI Studio batch --resetting to allow resubmit via Vertex AI")
                                 sd["status"] = "not_started"
                                 with open(status_path, "w") as f:
                                     json.dump(sd, f)
@@ -2648,7 +3021,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                                 self.log("warning", f"Auto-download exception for {pass_key}: {e}")
                                 pass_status["status"] = "batch_complete"
                     else:
-                        # Completed/failed/stopped — use cached status
+                        # Completed/failed/stopped --use cached status
                         pass_status["status"] = sd.get("status", "not_started")
                         pass_status["total"] = sd.get("total", 0)
                         pass_status["results"] = sd.get("processed", 0)
@@ -2665,12 +3038,18 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         # batch_complete means results ready but not yet downloaded into ledger
         any_batch_ready = any(s["status"] == "batch_complete" for s in statuses.values())
 
-        # Ledger-based can_vote: count available ledgers on disk
+        # Ledger-based can_vote: count ledgers with REAL content (not empty [])
         ledger_dir = self._get_ledger_dir()
-        ledger_count = sum(
-            1 for pk, pi in PASS_MODELS.items()
-            if (ledger_dir / f"qa_{pk}_{pi['name'].lower().replace(' ', '_')}.json").exists()
-        )
+        ledger_count = 0
+        for pk, pi in PASS_MODELS.items():
+            lp = ledger_dir / f"qa_{pk}_{pi['name'].lower().replace(' ', '_')}.json"
+            if lp.exists() and lp.stat().st_size > 10:
+                try:
+                    ld = json.loads(lp.read_text(encoding="utf-8"))
+                    if isinstance(ld, list) and len(ld) > 0:
+                        ledger_count += 1
+                except Exception:
+                    pass
         all_ledgers_exist = ledger_count == len(PASS_MODELS)
 
         # can_vote conditions (any of these):
@@ -2703,14 +3082,16 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         """
         ledger_dir = self._get_ledger_dir()
 
-        # Load all available ledgers
+        # Load all available ledgers (only those with real entries)
         all_ledgers: Dict[str, List[Dict]] = {}
         for pass_key, pass_info in PASS_MODELS.items():
             ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
-            if ledger_path.exists():
+            if ledger_path.exists() and ledger_path.stat().st_size > 10:
                 try:
                     with open(ledger_path, "r", encoding="utf-8") as f:
-                        all_ledgers[pass_key] = json.load(f)
+                        data = json.load(f)
+                    if isinstance(data, list) and len(data) > 0:
+                        all_ledgers[pass_key] = data
                 except Exception:
                     continue
 
@@ -2772,16 +3153,18 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 else:
                     level = 4
             elif vote_count == 2:
+                # Only 2 models voted (1 had API_ERROR) -- max is error=2 (review)
                 if clean_count == 2:
-                    level = 1
+                    level = 2  # 2/2 clean but incomplete quorum -- review
                 elif clean_count == 1:
-                    level = 2
+                    level = 3  # 1/2 clean -- quarantine
                 else:
-                    level = 4
+                    level = 4  # 0/2 clean -- quarantine
             elif vote_count == 1:
-                level = 1 if clean_count == 1 else 4
+                # Only 1 model voted -- review at best
+                level = 2 if clean_count == 1 else 4
             else:
-                # All passes were API errors — don't penalize, mark for re-run
+                # All passes were API errors --don't penalize, mark for re-run
                 level = 2  # safe default: review, not quarantine
 
             error_levels[level] += 1
@@ -2878,6 +3261,13 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                  f"3/3={error_levels[1]}, 2/3={error_levels[2]}, "
                  f"1/3={error_levels[3]} (rejected), 0/3={error_levels[4]} (rejected)")
 
+        self.ledger_set("merge_votes", {
+            "status": "completed",
+            "error_1": error_levels[1],
+            "error_2": error_levels[2],
+            "error_3": error_levels[3],
+            "error_4": error_levels[4],
+        })
         self.save_checkpoint("votes_merged", {
             "total": len(per_qid),
             "error_1": error_levels[1],
@@ -3051,7 +3441,7 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
     def _generate_comprehensive_csv(self, qids: List[str], per_qid: Dict,
                                      qid_levels: Dict, entry_index: Dict,
                                      filename: str) -> Path:
-        """Generate comprehensive CSV for ALL questions — every QID with full error detail."""
+        """Generate comprehensive CSV for ALL questions --every QID with full error detail."""
         csv_dir = self._get_csv_dir()
         csv_path = csv_dir / f"{filename}.csv"
 
@@ -3175,12 +3565,12 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         return {**scan, **passes}
 
     def skip(self) -> Dict[str, Any]:
-        """Skip QA verification — sets error=2 on all metadata entries.
+        """Skip QA verification --sets error=2 on all metadata entries.
 
         All questions will be uploaded with error=Yes (error=2) since no QA
         verification was performed. This is the manual bypass path.
         """
-        self.log("info", "Quality verification skipped — setting error=2 on all metadata entries")
+        self.log("info", "Quality verification skipped --setting error=2 on all metadata entries")
 
         # Set error=2 on all metadata_v2 entries
         meta_dir = self._get_metadata_dir()

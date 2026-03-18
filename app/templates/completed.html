@@ -70,34 +70,21 @@
                 </div>
                 <div class="btn-group">
                     <button class="btn" onclick="scanUpload()" id="scan-upload-btn">Scan Ready</button>
-                    <button class="btn" onclick="dryRunUpload()" id="dryrun-upload-btn" disabled>Dry Run (CSV Only)</button>
                     <button class="btn btn-primary" onclick="uploadToDB()" id="upload-db-btn" disabled>Upload to DB</button>
-                    <button class="btn" onclick="downloadUploadCSV(0)" id="csv-btn" disabled>Download CSV (All)</button>
-                    <button class="btn" onclick="downloadUploadCSV(1)" id="csv-btn-e1" disabled>CSV Error=1</button>
-                    <button class="btn" onclick="downloadUploadCSV(2)" id="csv-btn-e2" disabled>CSV Error=2</button>
-                    <button class="btn" onclick="downloadPipelineStats()" id="stats-btn">Download Pipeline Stats</button>
+                    <button class="btn" onclick="downloadAllStats()" id="stats-zip-btn" disabled>Download All Stats (ZIP)</button>
                 </div>
                 <div id="upload-result" style="margin-top: 12px; display: none;"></div>
-
-                <!-- DB Absorption (post-upload) -->
-                <div id="absorb-section" style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
-                    <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
-                        <strong>Local DB Absorption:</strong> Absorb uploaded questions into local JSONL DB + update FAISS embeddings cache for future duplicate checks.
-                    </div>
-                    <button class="btn btn-primary" onclick="absorbToDB()" id="absorb-btn">Absorb to Local DB + FAISS</button>
-                    <div id="absorb-result" style="margin-top: 8px; display: none;"></div>
-                </div>
+                <div id="absorb-result" style="margin-top: 8px; display: none;"></div>
             </div>
         </div>
 
-        <!-- Actions -->
-        <div class="card">
-            <div class="card-header"><h2>Other Actions</h2></div>
+        <!-- Actions (visible after upload + absorption complete) -->
+        <div class="card" id="post-upload-actions" style="display: none;">
+            <div class="card-header"><h2>Actions</h2></div>
             <div class="card-body">
                 <div class="btn-group">
-                    <a href="/" class="btn">Back to Dashboard</a>
+                    <button class="btn btn-primary" onclick="backToDashboard()" id="dashboard-btn">Back to Dashboard</button>
                     <button class="btn" onclick="loadSummary()">Refresh Summary</button>
-                    <button class="btn" onclick="downloadReadyFiles()" id="download-btn">Download Ready Files (ZIP)</button>
                 </div>
             </div>
         </div>
@@ -112,7 +99,7 @@
         <div class="log-body" id="log-body">
             <div class="log-entry success">
                 <span class="log-level">[OK]</span>
-                <span class="log-msg">Pipeline complete — all 10 stages finished</span>
+                <span class="log-msg">Pipeline complete -- all 10 stages finished</span>
             </div>
         </div>
     </div>
@@ -373,12 +360,12 @@ async function scanUpload() {
         const d = r.data;
         document.getElementById('upload-scan-info').innerHTML = `
             <strong>${d.upload_ready || 0}</strong> questions ready for upload
-            (${d.quarantined_count || 0} quarantined, ${d.error_3_4_count || 0} error >= 3)
+            (${d.quarantined_count || 0} quarantined, ${d.error_3_4_count || 0} rejected by QA)
             across ${d.files_count || 0} files.
+            <span style="font-size:11px; color:var(--text-muted);">Error=1: ${d.error_breakdown?.[1] || 0} | Error=2: ${d.error_breakdown?.[2] || 0}</span>
         `;
-        document.getElementById('dryrun-upload-btn').disabled = false;
         document.getElementById('upload-db-btn').disabled = false;
-        appendLog('success', `Scan: ${d.upload_ready} ready, ${d.total_questions} total`);
+        appendLog('success', `Scan: ${d.upload_ready} ready, ${d.total_questions} total, ${d.quarantined_count} quarantined`);
     } catch (e) {
         appendLog('error', 'Scan error: ' + e.message);
     }
@@ -415,7 +402,7 @@ async function dryRunUpload() {
 }
 
 async function uploadToDB() {
-    if (!confirm('Upload all ready questions to Acadza DB? This cannot be undone.')) return;
+    if (!confirm('Upload all ready questions to Acadza DB?\nThis will also absorb entries into local DB + FAISS.')) return;
 
     const btn = document.getElementById('upload-db-btn');
     btn.disabled = true;
@@ -427,7 +414,6 @@ async function uploadToDB() {
         if (r.success) {
             const d = r.data;
             appendLog('success', `Upload complete: ${d.posted} posted, ${d.failed} failed, ${d.skipped} skipped`);
-            enableCSVButtons();
             document.getElementById('upload-result').style.display = 'block';
             document.getElementById('upload-result').innerHTML = `
                 <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
@@ -436,10 +422,31 @@ async function uploadToDB() {
                     <div class="summary-stat-box"><div class="sv">${d.skipped || 0}</div><div class="sl">Skipped</div></div>
                 </div>
             `;
-            btn.textContent = 'Uploaded \u2713';
-            document.getElementById('dryrun-upload-btn').disabled = true;
-            // Show absorb section after successful upload
-            document.getElementById('absorb-section').style.display = 'block';
+            btn.textContent = 'Uploaded';
+            document.getElementById('stats-zip-btn').disabled = false;
+
+            // Auto-trigger local DB absorption
+            appendLog('info', 'Auto-absorbing into local DB + FAISS index...');
+            try {
+                const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
+                if (ar.success) {
+                    const ad = ar.data;
+                    appendLog('success', `Absorbed ${ad.absorbed} entries to local DB, ${ad.embedded} vectors to FAISS`);
+                    document.getElementById('absorb-result').style.display = 'block';
+                    document.getElementById('absorb-result').innerHTML = `
+                        <div style="font-size:12px; color:var(--success); margin-top:6px;">
+                            Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
+                        </div>
+                    `;
+                } else {
+                    appendLog('warning', 'DB absorption failed: ' + (ar.error?.message || 'unknown'));
+                }
+            } catch (ae) {
+                appendLog('warning', 'DB absorption error: ' + ae.message);
+            }
+
+            // Show post-upload actions
+            document.getElementById('post-upload-actions').style.display = 'block';
         } else {
             appendLog('error', r.error?.message || 'Upload failed');
             btn.disabled = false;
@@ -452,128 +459,39 @@ async function uploadToDB() {
     }
 }
 
-function enableCSVButtons() {
-    document.getElementById('csv-btn').disabled = false;
-    document.getElementById('csv-btn-e1').disabled = false;
-    document.getElementById('csv-btn-e2').disabled = false;
-}
-
-async function downloadUploadCSV(errorLevel) {
-    const label = errorLevel > 0 ? `error=${errorLevel}` : 'all';
-    appendLog('info', `Downloading upload CSV (${label})...`);
-    try {
-        let url = `/api/sessions/{{ session.id }}/stage10/download-csv`;
-        if (errorLevel > 0) url += `?error_level=${errorLevel}`;
-        const response = await fetch(url);
-        if (!response.ok) { appendLog('error', 'CSV not found'); return; }
-
-        const blob = await response.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        const suffix = errorLevel > 0 ? `_error${errorLevel}` : '';
-        a.download = `${_sessionName}_upload_log${suffix}.csv`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-        appendLog('success', `CSV download started (${label})`);
-    } catch (e) {
-        appendLog('error', 'CSV download error: ' + e.message);
-    }
-}
-
-async function downloadPipelineStats() {
-    const btn = document.getElementById('stats-btn');
+async function downloadAllStats() {
+    const btn = document.getElementById('stats-zip-btn');
     btn.disabled = true;
-    btn.textContent = 'Generating...';
-    appendLog('info', 'Downloading pipeline stats CSV...');
+    btn.textContent = 'Preparing ZIP...';
+    appendLog('info', 'Preparing stats ZIP (upload logs + pipeline stats)...');
+
     try {
-        const url = `/api/sessions/{{ session.id }}/stage10/download-stats`;
+        const url = `/api/sessions/{{ session.id }}/stage10/download-stats-zip`;
         const response = await fetch(url);
-        if (!response.ok) { appendLog('error', 'Stats CSV not found'); btn.disabled = false; btn.textContent = 'Download Pipeline Stats'; return; }
+        if (!response.ok) { appendLog('error', 'Stats ZIP not available'); btn.disabled = false; btn.textContent = 'Download All Stats (ZIP)'; return; }
 
         const blob = await response.blob();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `${_sessionName}_pipeline_stats.csv`;
+        a.download = `${_sessionName}_all_stats.zip`;
         a.click();
         URL.revokeObjectURL(a.href);
-        appendLog('success', 'Pipeline stats download started');
+        appendLog('success', 'Stats ZIP download started');
     } catch (e) {
-        appendLog('error', 'Stats download error: ' + e.message);
+        appendLog('error', 'Stats ZIP error: ' + e.message);
     }
     btn.disabled = false;
-    btn.textContent = 'Download Pipeline Stats';
+    btn.textContent = 'Download All Stats (ZIP)';
 }
 
-async function downloadReadyFiles() {
-    const btn = document.getElementById('download-btn');
-    btn.disabled = true;
-    btn.textContent = 'Preparing...';
-    appendLog('info', 'Preparing download...');
-
+async function backToDashboard() {
+    appendLog('info', 'Marking session complete...');
     try {
-        const url = '/api/sessions/{{ session.id }}/stage9/download-ready';
-        const response = await fetch(url);
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err?.error?.message || 'Download failed');
-        }
-
-        const blob = await response.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        // Extract filename from Content-Disposition header
-        const cd = response.headers.get('Content-Disposition') || '';
-        const match = cd.match(/filename=(.+)/);
-        a.download = match ? match[1] : 'ready_files.zip';
-        a.click();
-        URL.revokeObjectURL(a.href);
-
-        appendLog('success', 'Download started');
+        await apiPost('/api/sessions/{{ session.id }}/stage10/complete');
     } catch (e) {
-        appendLog('error', 'Download error: ' + e.message);
+        // Already complete or error -- proceed anyway
     }
-
-    btn.disabled = false;
-    btn.textContent = 'Download Ready Files';
-}
-
-async function absorbToDB() {
-    if (!confirm('Absorb uploaded questions into local JSONL DB and update FAISS embeddings cache?\n\nThis appends new entries to the reference DB and adds their vectors to the global index for future duplicate checks.')) return;
-
-    const btn = document.getElementById('absorb-btn');
-    btn.disabled = true;
-    btn.textContent = 'Absorbing...';
-    appendLog('info', 'Absorbing uploaded entries into local DB + FAISS index...');
-
-    try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
-        if (r.success) {
-            const d = r.data;
-            appendLog('success', `Absorbed ${d.absorbed} entries to local DB, ${d.embedded} vectors added to FAISS`);
-            document.getElementById('absorb-result').style.display = 'block';
-            document.getElementById('absorb-result').innerHTML = `
-                <div class="summary-stat-grid" style="grid-template-columns: repeat(2, 1fr);">
-                    <div class="summary-stat-box highlight-green">
-                        <div class="sv">${d.absorbed || 0}</div>
-                        <div class="sl">Absorbed to DB</div>
-                    </div>
-                    <div class="summary-stat-box highlight-green">
-                        <div class="sv">${d.embedded || 0}</div>
-                        <div class="sl">FAISS Vectors Added</div>
-                    </div>
-                </div>
-            `;
-            btn.textContent = 'Absorbed \u2713';
-        } else {
-            appendLog('error', r.error?.message || 'Absorption failed');
-            btn.disabled = false;
-            btn.textContent = 'Absorb to Local DB + FAISS';
-        }
-    } catch (e) {
-        appendLog('error', 'Absorb error: ' + e.message);
-        btn.disabled = false;
-        btn.textContent = 'Absorb to Local DB + FAISS';
-    }
+    window.location.href = '/';
 }
 </script>
 {% endblock %}

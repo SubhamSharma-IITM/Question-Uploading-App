@@ -109,9 +109,19 @@ app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", 
 # ── Dashboard page ──
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """Main dashboard — list sessions, create new."""
-    from app.db import list_sessions
+    """Main dashboard -- list sessions, create new."""
+    from app.db import list_sessions, get_session_stats, get_checkpoint
     sessions = list_sessions()
+    for s in sessions:
+        s["stats"] = get_session_stats(s["id"])
+        cp = get_checkpoint(s["id"], "stage10_upload")
+        if cp and isinstance(cp.get("data"), str):
+            import json as _json
+            try:
+                cp["data"] = _json.loads(cp["data"])
+            except Exception:
+                cp["data"] = {}
+        s["uploaded_count"] = (cp.get("data") or {}).get("posted", 0) if cp else 0
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "sessions": sessions,
@@ -156,15 +166,8 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
             "accessible": is_stage_accessible(current_stage, s),
         })
 
-    # Add "Complete" item when pipeline is done
-    if current_stage == "completed":
-        sidebar_stages.append({
-            "key": "completed",
-            "label": "10. Complete",
-            "short": "Done",
-            "status": "completed",
-            "accessible": True,
-        })
+    # When pipeline is completed, stage10_upload is already in the list
+    # with status "completed" -- no need to add a duplicate entry
 
     checkpoints = get_all_checkpoints(session_id)
     stats = get_session_stats(session_id)

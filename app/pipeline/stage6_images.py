@@ -364,8 +364,17 @@ class ImageCDNStage(BasePipelineStage):
 
     # ── Path resolution ──
 
+    # Image extensions to try when exact match fails (pipeline converts to PNG)
+    _IMG_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
     def _resolve_local_path(self, img_src: str, images_map: Dict[str, str]) -> Optional[Path]:
-        """Resolve ./images/X.jpg -> actual file.  Checks cleaned/ then original/."""
+        """Resolve ./images/X.jpg -> actual file. Checks cleaned/ then original/.
+
+        Pipeline Stage 5 converts images to PNG during watermark removal,
+        so cleaned/ has .png while metadata references .jpg. This method
+        tries the exact filename first, then tries alternate extensions
+        (prioritizing .png since that's what Stage 5 outputs).
+        """
         bare = img_src
         if bare.startswith("./images/"):
             bare = bare[len("./images/"):]
@@ -374,19 +383,31 @@ class ImageCDNStage(BasePipelineStage):
 
         # Determine actual filename via images_map if present
         actual_name = images_map.get(bare, bare) if images_map else bare
+        stem = Path(actual_name).stem
 
-        # Try images_cleaned first, then images_original
+        # Try images_cleaned first (preferred: watermark-free), then images_original
         for img_dir in (self._images_cleaned_dir(), self._images_original_dir()):
+            # Exact match
             candidate = img_dir / actual_name
             if candidate.exists():
                 return candidate
+            # Extension-agnostic: try .png first (Stage 5 output), then others
+            for ext in self._IMG_EXTENSIONS:
+                candidate = img_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    return candidate
 
         # Also try bare name without map
         if images_map and bare != actual_name:
+            bare_stem = Path(bare).stem
             for img_dir in (self._images_cleaned_dir(), self._images_original_dir()):
                 candidate = img_dir / bare
                 if candidate.exists():
                     return candidate
+                for ext in self._IMG_EXTENSIONS:
+                    candidate = img_dir / f"{bare_stem}{ext}"
+                    if candidate.exists():
+                        return candidate
 
         return None
 

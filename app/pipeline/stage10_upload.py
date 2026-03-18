@@ -239,13 +239,16 @@ class UploadStage(BasePipelineStage):
                         upload_map[qid] = uploaded_id
                         base = QUESTION_EDIT_URL.get(qtype_key, "")
                         link = f"{base}{uploaded_id}" if base else "N/A"
-                        # Override view_link with uploaded OID (24-digit hex)
                         view_link = f"{QUESTION_VIEW_URL}{uploaded_id}"
                         status = uploaded_id
+                        # Stream progress to frontend
+                        if total_posted % 5 == 0 or total_posted <= 3:
+                            self.log("info", f"Uploaded {total_posted}/{total - len(quarantined)}: {qid} -> {uploaded_id[:12]}...")
                     else:
                         failed += 1
                         total_failed += 1
                         status = "FAILED"
+                        self.log("warning", f"FAILED to upload {qid}")
 
                 # Build row with QA ledger columns
                 row = {

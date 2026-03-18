@@ -320,6 +320,7 @@ EXTRACTION RULES:
    Never return "Unknown". If no header is nearby, infer from the question content.
 2. Find question START line and END line (inclusive, before the next question starts or solution begins).
    CRITICAL: Each question must have UNIQUE start/end lines. Two different questions MUST NOT overlap or share line ranges.
+   IMPORTANT: The question END line must NOT include answer lines like "Ans. (7)" or "Answer: B". If the answer appears on the same line or next line after the question, the question END should be the line BEFORE the answer. The answer value goes in "answer_key" only.
 3. If a solution exists for this question, return its START line and END line. If no solution, return solution as null.
 4. Extract the correct answer ONLY if explicitly present in the document (near question, in an answer key, or marked). Return as A/B/C/D for MCQ or numeric string for numerical.
    - If options are labeled 1/2/3/4, map: 1->A, 2->B, 3->C, 4->D
@@ -329,6 +330,7 @@ EXTRACTION RULES:
    - Under "SINGLE CORRECT ANSWER TYPE" or with 4 options, single correct -> "scq"
    - Under "NUMERICAL VALUE TYPE" -> "integerQuestion"
    - Multiple correct options -> "mcq"
+   - Passage/comprehension with sub-questions -> "passageQuestion" (NOT "subjective" or "comprehension")
 6. Do NOT skip questions. Return every question you encounter after the start line until you reach the requested count.
 7. ACCURACY: Each JSON entry must correspond to EXACTLY ONE question. Do NOT combine multiple questions into one entry.
    If Q116 ends at line 500 and Q117 starts at line 501, they must be SEPARATE entries with distinct line ranges.

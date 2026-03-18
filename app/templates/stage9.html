@@ -79,19 +79,19 @@
                                 <span class="qa-pass-indicator" id="pass1-indicator"></span>
                                 <span>Pass 1: Gemini Flash</span>
                                 <span class="qa-pass-progress" id="pass1-progress"></span>
-                                <button class="btn btn-sm" onclick="submitPass('pass1')" id="pass1-btn" disabled>Submit</button>
+                                <span class="qa-pass-status-text" id="pass1-status-text" style="font-size:11px; color:var(--text-muted);"></span>
                             </div>
                             <div class="qa-pass-row">
                                 <span class="qa-pass-indicator" id="pass2-indicator"></span>
                                 <span>Pass 2: GPT-5-mini</span>
                                 <span class="qa-pass-progress" id="pass2-progress"></span>
-                                <button class="btn btn-sm" onclick="submitPass('pass2')" id="pass2-btn" disabled>Submit</button>
+                                <span class="qa-pass-status-text" id="pass2-status-text" style="font-size:11px; color:var(--text-muted);"></span>
                             </div>
                             <div class="qa-pass-row">
                                 <span class="qa-pass-indicator" id="pass3-indicator"></span>
                                 <span>Pass 3: GPT-5.1</span>
                                 <span class="qa-pass-progress" id="pass3-progress"></span>
-                                <button class="btn btn-sm" onclick="submitPass('pass3')" id="pass3-btn" disabled>Submit</button>
+                                <span class="qa-pass-status-text" id="pass3-status-text" style="font-size:11px; color:var(--text-muted);"></span>
                             </div>
                         </div>
                         <div style="margin-top: 8px; display: flex; gap: 8px;">
@@ -127,7 +127,8 @@
                 <div id="results-content"></div>
                 <div id="csv-buttons" style="margin-top: 10px; display: none;">
                     <a class="btn btn-sm" id="csv-3of3-link" style="margin-right: 6px;">Download 3/3 CSV</a>
-                    <a class="btn btn-sm" id="csv-2of3-link">Download 2/3 CSV</a>
+                    <a class="btn btn-sm" id="csv-2of3-link" style="margin-right: 6px;">Download 2/3 CSV</a>
+                    <a class="btn btn-sm btn-primary" href="/api/sessions/{{ session.id }}/stage9/csv-zip">Download All Stats (ZIP)</a>
                 </div>
             </div>
         </div>
@@ -330,10 +331,6 @@ function setQARunning(running) {
     // Only DISABLE submit-all when running — never re-enable (only build enables it)
     if (running) {
         document.getElementById('submit-all-btn').disabled = true;
-        ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.disabled = true;
-        });
     }
     // Freeze inputs during processing
     const inputs = ['qa-extra-context', 'strict-mode', 'check-latex'];
@@ -470,12 +467,9 @@ async function buildQA() {
                 `;
                 appendLog('success', `Built ${d.total_requests} total QA requests across 3 passes`);
 
-                // Enable submit buttons
+                // Enable Submit All
                 _batchesBuilt = true;
                 _submittedPasses.clear();
-                document.getElementById('pass1-btn').disabled = false;
-                document.getElementById('pass2-btn').disabled = false;
-                document.getElementById('pass3-btn').disabled = false;
                 updateSubmitAllState();
                 btn.textContent = 'Built \u2713';
                 document.getElementById('skip-btn').disabled = true;
@@ -489,18 +483,12 @@ async function buildQA() {
     btn.textContent = 'Build Batches';
 }
 
-async function submitPass(passKey) {
-    // Guard: already submitted or currently running
-    if (_submittedPasses.has(passKey)) return;
-
-    const btn = document.getElementById(passKey + '-btn');
+async function submitSinglePass(passKey) {
+    // Internal: submit one pass, update indicator + status text
     const indicator = document.getElementById(passKey + '-indicator');
-    btn.disabled = true;
-    btn.textContent = 'Running...';
-    indicator.className = 'qa-pass-indicator running';
-    appendLog('info', `Submitting ${passKey} (background)...`);
-
-    setQARunning(true);
+    const statusText = document.getElementById(passKey + '-status-text');
+    if (indicator) indicator.className = 'qa-pass-indicator running';
+    if (statusText) statusText.textContent = 'Submitting...';
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + passKey);
@@ -508,32 +496,29 @@ async function submitPass(passKey) {
             const d = r.data;
             if (d.error) {
                 appendLog('error', `${passKey}: ${d.error}`);
-                indicator.className = 'qa-pass-indicator failed';
-                btn.disabled = false;
-                btn.textContent = 'Submit';
-                checkIfAllDone();
-            } else if (d.status === 'already_completed' || d.status === 'already_running') {
+                if (indicator) indicator.className = 'qa-pass-indicator failed';
+                if (statusText) statusText.textContent = 'Failed';
+                return false;
+            } else if (d.status === 'already_completed') {
                 _submittedPasses.add(passKey);
-                appendLog('info', `${passKey}: ${d.message || d.status}`);
-                if (d.status === 'already_completed') {
-                    indicator.className = 'qa-pass-indicator complete';
-                    btn.textContent = 'Done \u2713';
-                }
-                updateSubmitAllState();
+                if (indicator) indicator.className = 'qa-pass-indicator complete';
+                if (statusText) statusText.textContent = 'Done ✓';
+                appendLog('info', `${passKey}: already completed`);
+                return true;
             } else {
                 _submittedPasses.add(passKey);
-                appendLog('info', `${passKey}: Started in background`);
-                updateSubmitAllState();
-                startAutoPoll();
+                if (statusText) statusText.textContent = 'Running...';
+                appendLog('info', `${passKey}: started in background`);
+                return true;
             }
         }
     } catch (e) {
         appendLog('error', `${passKey} error: ${e.message}`);
-        indicator.className = 'qa-pass-indicator failed';
-        btn.disabled = false;
-        btn.textContent = 'Submit';
-        checkIfAllDone();
+        if (indicator) indicator.className = 'qa-pass-indicator failed';
+        if (statusText) statusText.textContent = 'Error';
+        return false;
     }
+    return false;
 }
 
 async function submitAll() {
@@ -554,38 +539,9 @@ async function submitAll() {
     appendLog('info', `Submitting ${passesToSubmit.length} pass(es) concurrently...`);
     setQARunning(true);
 
-    // Set indicators for passes being submitted
-    passesToSubmit.forEach(pk => {
-        document.getElementById(pk + '-btn').disabled = true;
-        document.getElementById(pk + '-btn').textContent = 'Running...';
-        document.getElementById(pk + '-indicator').className = 'qa-pass-indicator running';
-    });
-
     try {
-        // Submit each unsubmitted pass in parallel via individual endpoints
-        const results = await Promise.allSettled(passesToSubmit.map(async (pk) => {
-            const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + pk);
-            if (r.success) {
-                const d = r.data;
-                if (d.error) {
-                    appendLog('error', `${pk}: ${d.error}`);
-                    document.getElementById(pk + '-indicator').className = 'qa-pass-indicator failed';
-                    document.getElementById(pk + '-btn').textContent = 'Submit';
-                    document.getElementById(pk + '-btn').disabled = false;
-                } else {
-                    _submittedPasses.add(pk);
-                    if (d.status === 'already_completed') {
-                        document.getElementById(pk + '-indicator').className = 'qa-pass-indicator complete';
-                        document.getElementById(pk + '-btn').textContent = 'Done \u2713';
-                        appendLog('info', `${pk}: already completed`);
-                    } else {
-                        appendLog('info', `${pk}: started in background`);
-                    }
-                }
-            }
-            return r;
-        }));
-
+        // Submit each unsubmitted pass in parallel
+        await Promise.allSettled(passesToSubmit.map(pk => submitSinglePass(pk)));
         appendLog('info', 'All passes launched — auto-polling for progress...');
         startAutoPoll();
     } catch (e) {
@@ -640,37 +596,38 @@ async function pollPasses(silent) {
                     <td style="color: var(--error); font-weight: 600;">${info.rejected || 0}</td>
                 </tr>`;
 
-                // Update indicators + progress text
+                // Update indicators + progress text + status text
                 const indicator = document.getElementById(pk + '-indicator');
                 if (indicator) {
                     indicator.className = 'qa-pass-indicator ' +
                         (info.status === 'completed' ? 'complete' :
-                         info.status === 'running' ? 'running' :
-                         info.status === 'stopped' ? 'stopped' : '');
+                         info.status === 'running' || info.status === 'batch_submitted' || info.status === 'in_progress' || info.status === 'validating' || info.status === 'finalizing' ? 'running' :
+                         info.status === 'stopped' ? 'stopped' :
+                         info.status === 'failed' ? 'failed' : '');
                 }
 
                 const progressEl = document.getElementById(pk + '-progress');
-                if (progressEl && info.total > 0) {
-                    progressEl.textContent = `${info.results}/${info.total}`;
+                if (progressEl) {
+                    progressEl.textContent = info.total > 0 ? `${info.results}/${info.total}` : '';
                 }
 
-                // Update submit button text and state
-                const btn = document.getElementById(pk + '-btn');
-                if (btn) {
+                const statusText = document.getElementById(pk + '-status-text');
+                if (statusText) {
                     if (info.status === 'completed') {
-                        btn.textContent = 'Done \u2713';
-                        btn.disabled = true;
-                    } else if (info.status === 'stopped' || info.status === 'not_started' || info.status === 'failed') {
-                        // Allow resubmission for stopped/failed/not_started passes
-                        btn.textContent = info.status === 'stopped' ? 'Resubmit' :
-                                          info.status === 'failed' ? 'Retry' : 'Submit';
-                        btn.disabled = false;
-                        _submittedPasses.delete(pk);  // Allow resubmission
-                    } else if (info.status === 'running' || info.status === 'batch_submitted'
-                               || info.status === 'in_progress' || info.status === 'validating'
-                               || info.status === 'finalizing') {
-                        btn.textContent = 'Running...';
-                        btn.disabled = true;
+                        statusText.textContent = `Done ✓ (${info.approved}/${info.total} approved)`;
+                        statusText.style.color = 'var(--success)';
+                    } else if (info.status === 'running' || info.status === 'batch_submitted' || info.status === 'in_progress' || info.status === 'validating' || info.status === 'finalizing') {
+                        statusText.textContent = 'Running...';
+                        statusText.style.color = 'var(--warning)';
+                    } else if (info.status === 'stopped' || info.status === 'failed') {
+                        statusText.textContent = info.status === 'stopped' ? 'Stopped' : 'Failed';
+                        statusText.style.color = 'var(--error)';
+                        _submittedPasses.delete(pk);  // Allow resubmission via Submit All
+                    } else if (info.status === 'batch_complete') {
+                        statusText.textContent = 'Downloading...';
+                        statusText.style.color = 'var(--warning)';
+                    } else {
+                        statusText.textContent = '';
                     }
                 }
             }
@@ -928,27 +885,24 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
             document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
         }
-        // Disable all pass buttons
-        ['pass1-btn', 'pass2-btn', 'pass3-btn'].forEach(id => {
-            document.getElementById(id).disabled = true;
-            document.getElementById(id).textContent = 'Done \u2713';
-        });
+        // Mark all pass indicators as complete
         ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {
-            document.getElementById(id).className = 'qa-pass-indicator complete';
+            const el = document.getElementById(id);
+            if (el) el.className = 'qa-pass-indicator complete';
+        });
+        ['pass1-status-text', 'pass2-status-text', 'pass3-status-text'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) { el.textContent = 'Done ✓'; el.style.color = 'var(--success)'; }
         });
     } else {
-        // Check if any passes are currently running (page reload mid-process)
+        // Page reload mid-process or returning to incomplete stage:
+        // Show pipeline card and poll to detect current state
+        document.getElementById('pipeline-card').style.display = 'block';
+        _batchesBuilt = true;  // Assume batches built if we're at this stage
         pollPasses(false).then(() => {
-            // After initial poll, check if any passes are actively running
-            // If so, restart auto-polling for live progress updates
-            const statusCard = document.getElementById('status-card');
-            if (statusCard && statusCard.style.display !== 'none') {
-                // Poll returned data — check if auto-poll needed
-                // _qaRunning is set by pollPasses if any pass is running
-                if (_qaRunning) {
-                    startAutoPoll();
-                    appendLog('info', 'Resumed auto-polling for active batch processes');
-                }
+            if (_qaRunning) {
+                startAutoPoll();
+                appendLog('info', 'Resumed auto-polling for active batch processes');
             }
         });
     }

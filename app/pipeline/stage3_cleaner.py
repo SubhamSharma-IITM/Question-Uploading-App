@@ -204,7 +204,12 @@ def _strip_solution_number(text: str) -> str:
         r'^\(\d+\)\s*(?:Answer|Ans)\s*:\s*\(?[A-Da-d0-9]+\)?\s*(?:\n|$)',
         '', text, flags=re.IGNORECASE,
     )
-    # Case 3b: Starts with (number) with 2+ digits — e.g., "(54) Answer"
+    # Case 3b: "(N) Sol." or "(N)<br/>Sol." at start of solution -- common PYQ artifact
+    text = re.sub(
+        r'^\(\d+\)\s*(?:<br\s*/?>)?\s*(?:Sol|Soln)\.?\s*',
+        '', text, flags=re.IGNORECASE,
+    )
+    # Case 3c: Starts with (number) with 2+ digits -- e.g., "(54) Answer"
     text = re.sub(r'^\(\d{2,}\)\s*', '', text)
     # Case 4: Starts with bare number (also handle full-width dot ．)
     text = re.sub(r'^\d+\)\s*', '', text)
@@ -488,6 +493,15 @@ def _clean_text(text: str, is_solution: bool = False) -> str:
     # Step 6: Clean up redundant <br/> at start/end
     cleaned = re.sub(r'^(<br/?>)+', '', cleaned)
     cleaned = re.sub(r'(<br/?>)+$', '', cleaned)
+
+    # Step 7: Strip trailing answer leak from question text (PYQ artifact)
+    # Patterns: "Ans. (7)", "Ans (200)", "Answer: 3" at end of text
+    # Must handle trailing HTML tags like </h3>
+    if not is_solution:
+        cleaned = re.sub(
+            r'\s*(?:<br\s*/?>)*\s*Ans\.?\s*[\(\[]\s*\d+\s*[\)\]]\s*(?:</\w+>)*\s*$',
+            '', cleaned, flags=re.IGNORECASE,
+        )
 
     return cleaned.strip()
 
