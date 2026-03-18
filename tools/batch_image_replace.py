@@ -32,7 +32,7 @@ SESSIONS = {
     "35e7d78e": {"uploaded": True, "year": 2026},
     "56589a45": {"uploaded": True, "year": 2026},
     "09477d7d": {"uploaded": True, "year": 2025},
-    "73d46401": {"uploaded": False, "year": 2026},
+    "73d46401": {"uploaded": True, "year": 2026},
     "95e55c16": {"uploaded": False, "year": 0},  # not PYQ, skip year
 }
 

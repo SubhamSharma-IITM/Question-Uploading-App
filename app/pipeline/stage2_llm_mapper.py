@@ -698,6 +698,8 @@ def _process_item(
         "solution_content": s_content,
         "line_start": q_start,
         "line_end": q_end,
+        "sol_line_start": s_start if s_content else None,
+        "sol_line_end": s_end if s_content else None,
     }
 
 

@@ -104,9 +104,11 @@ def _collect_images_with_placeholders(html_text: str, prefix: str) -> tuple:
     for src in idx_map:
         data_uri = _fetch_as_data_uri(src)
         if data_uri:
-            # "detail": "low" = 85 tokens per image (OpenAI). Gemini ignores this field.
-            # Sufficient for checking presence/completeness, avoids 1000+ token high-detail cost.
-            attachments.append({"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}})
+            # "detail": "auto" lets the model decide resolution for proper reading.
+            # "low" (85 tokens) was too coarse for chemical structures and small text.
+            # "high" adds ~170-700 tokens per image -- negligible vs prompt cost.
+            # Gemini ignores this field (always full resolution).
+            attachments.append({"type": "image_url", "image_url": {"url": data_uri, "detail": "auto"}})
 
     return new_html, attachments
 
@@ -1026,15 +1028,13 @@ class QualityVerifierStage(BasePipelineStage):
                         "qid": qid,
                         "subject": entry.get("subject", ""),
                         "questionType": qtype,
-                        # Full question/solution --no premature truncation.
-                        # Truncation happens in _build_user_content after image extraction.
                         "question": (qdata.get("question", "") or ""),
                         "answer": qdata.get("answer", ""),
                         "solution": (qdata.get("solution", "") or ""),
-                        # Tags for concept tree validation
                         "chapter": entry.get("chapter", ""),
                         "concept": entry.get("concept", ""),
                         "subConcept": entry.get("subConcept", ""),
+                        "tag_sub_concepts": entry.get("tagSubConcept", []),
                         "model": pass_info["model_id"],
                     }
                     f.write(json.dumps(request) + "\n")
@@ -1059,12 +1059,10 @@ class QualityVerifierStage(BasePipelineStage):
         }
 
     def _build_qa_system_prompt(self) -> str:
-        """Build the full INSPECTOR system prompt with concept tree + MMD ground truth.
+        """Build the INSPECTOR system prompt (base rules + extra context only).
 
-        Injection points:
-          - Concept tree: filtered to the session's subject(s), appended after main prompt
-          - MMD ground truth: loaded from mathpix_output, full content (no truncation)
-          - Extra context: user-provided additional instructions
+        Concept tree and MMD context are now injected per-question in the user
+        message via _build_user_content() for token optimization (~92% savings).
         """
         qa_dir = self._get_qa_dir()
         config_path = qa_dir / "qa_config.json"
@@ -1079,96 +1077,6 @@ class QualityVerifierStage(BasePipelineStage):
 
         prompt = INSPECTOR_SYSTEM_PROMPT
 
-        # ── Inject concept tree (filtered by session subjects) ──────────────
-        try:
-            from app.config import settings
-            ct_path = Path(settings.concept_tree_path)
-            if ct_path.exists():
-                with open(ct_path, "r", encoding="utf-8") as f:
-                    full_tree = json.load(f)
-
-                # Determine which subjects are in this session
-                entries = self._load_all_metadata(filter_quarantine=True)
-                session_subjects = set()
-                for e in entries:
-                    subj = e.get("subject", "")
-                    if subj:
-                        session_subjects.add(subj)
-
-                # Filter concept tree to relevant subjects only
-                # Tree structure: {exam: {subject: {chapter: {concept: [subConcepts]}}}}
-                # Subject mapping: "Biology" → include both "Botany" and "Zoology"
-                #                  "Chemistry" → include "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry"
-                SUBJECT_EXPANSION = {
-                    "biology": {"botany", "zoology", "biology"},
-                    "chemistry": {"chemistry", "organic chemistry", "inorganic chemistry", "physical chemistry"},
-                    "mathematics": {"mathematics", "math"},
-                    "math": {"mathematics", "math"},
-                }
-                filtered_tree = {}
-                session_subjects_lower = {s.lower() for s in session_subjects}
-                # Expand session subjects (e.g., Biology → Botany + Zoology)
-                expanded_lower = set()
-                for sl in session_subjects_lower:
-                    expanded_lower.update(SUBJECT_EXPANSION.get(sl, {sl}))
-
-                for exam_key, subjects in full_tree.items():
-                    if not isinstance(subjects, dict):
-                        continue
-                    for subj_key, chapters in subjects.items():
-                        if subj_key in session_subjects or subj_key.lower() in expanded_lower:
-                            if exam_key not in filtered_tree:
-                                filtered_tree[exam_key] = {}
-                            filtered_tree[exam_key][subj_key] = chapters
-
-                if filtered_tree:
-                    ct_json = json.dumps(filtered_tree, indent=1, ensure_ascii=False)
-                    prompt += f"""
-
-================================================================================
-CONCEPT TREE REFERENCE (for tag validation --Section 8)
-================================================================================
-
-Structure: {{exam: {{subject: {{chapter: {{concept: [subConcepts]}}}}}}}}
-Use this to verify tags exist and are relevant.
-
-{ct_json}
-"""
-        except Exception:
-            pass  # Concept tree is optional --do not fail QA if unavailable
-
-        # ── Inject MMD ground truth (full file, no truncation) ────────────
-        try:
-            mmd_dir = self.session_dir / "mathpix_output"
-            if mmd_dir.exists():
-                mmd_content_parts = []
-                for f in sorted(mmd_dir.iterdir()):
-                    if f.suffix == ".mmd" and f.is_file():
-                        try:
-                            text = f.read_text(encoding="utf-8")
-                            if text.strip():
-                                mmd_content_parts.append(f"--- {f.name} ---\n{text}")
-                        except Exception:
-                            continue
-
-                if mmd_content_parts:
-                    combined_mmd = "\n\n".join(mmd_content_parts)
-                    prompt += f"""
-
-================================================================================
-MMD GROUND TRUTH (for content verification --Section 9)
-================================================================================
-
-Below is the original OCR'd source content. Use it to verify question content
-has not been corrupted during processing. Focus on mathematical expressions,
-numeric values, and answer keys.
-
-{combined_mmd}
-"""
-        except Exception:
-            pass  # MMD is optional --do not fail QA if unavailable
-
-        # ── Inject extra user context ───────────────────────────────────────
         if extra_context:
             prompt += f"""
 
@@ -1181,8 +1089,140 @@ ADDITIONAL CONTEXT FROM USER
 
         return prompt
 
-    def _build_user_content(self, req: Dict) -> tuple:
+    def _load_mmd_lines(self) -> List[str]:
+        """Load MMD source lines for per-question context extraction."""
+        mmd_dir = self.session_dir / "mathpix_output"
+        if not mmd_dir.exists():
+            return []
+        for f in sorted(mmd_dir.iterdir()):
+            if f.suffix == ".mmd" and f.is_file():
+                try:
+                    return f.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    continue
+        return []
+
+    def _load_mapper_data(self) -> Dict[str, Dict]:
+        """Load Stage 2 mapper output indexed by QID (for line references)."""
+        mapped_dir = self.session_dir / "mapped_output"
+        if not mapped_dir.exists():
+            return {}
+        result = {}
+        for f in sorted(mapped_dir.glob("*_mapped.json")):
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    for entry in json.load(fh):
+                        qid = entry.get("qid", "")
+                        if qid:
+                            result[qid] = entry
+            except Exception:
+                continue
+        return result
+
+    def _load_concept_tree(self) -> Dict:
+        """Load the full concept tree."""
+        try:
+            from app.config import settings
+            ct_path = Path(settings.concept_tree_path)
+            if ct_path.exists():
+                with open(ct_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def _extract_per_q_mmd(self, mmd_lines: List[str], mapper_entry: Dict,
+                            padding: int = 7) -> str:
+        """Extract relevant MMD lines for one question with labeled padding."""
+        if not mmd_lines or not mapper_entry:
+            return ""
+        q_start = mapper_entry.get("line_start", 0)
+        q_end = mapper_entry.get("line_end", 0)
+        s_start = mapper_entry.get("sol_line_start")
+        s_end = mapper_entry.get("sol_line_end")
+        total = len(mmd_lines)
+
+        parts = []
+        # Question block
+        qs = max(0, q_start - padding)
+        qe = min(total, q_end + padding + 1)
+        parts.append(f"--- SOURCE: Question region (lines {qs+1}-{qe}) ---")
+        parts.append(f"--- Actual question: lines {q_start+1}-{q_end+1}. Extra lines are padding. ---")
+        for i in range(qs, qe):
+            parts.append(f"L{i+1}: {mmd_lines[i]}")
+
+        # Solution block (if separate from question padding)
+        if s_start is not None and s_end is not None:
+            try:
+                s_start_i, s_end_i = int(s_start), int(s_end)
+                if s_start_i > q_end + padding:
+                    ss = max(0, s_start_i - padding)
+                    se = min(total, s_end_i + padding + 1)
+                    parts.append(f"\n--- SOURCE: Solution region (lines {ss+1}-{se}) ---")
+                    parts.append(f"--- Actual solution: lines {s_start_i+1}-{s_end_i+1}. ---")
+                    for i in range(ss, se):
+                        parts.append(f"L{i+1}: {mmd_lines[i]}")
+            except (ValueError, TypeError):
+                pass
+        elif s_start is None:
+            # No solution line refs -- heuristic: search 30 lines after question
+            for i in range(q_end + 1, min(total, q_end + 35)):
+                if re.match(r'^Sol\.?\s|^Solution', mmd_lines[i], re.IGNORECASE):
+                    ss = max(0, i - 2)
+                    se = min(total, i + 25)
+                    parts.append(f"\n--- SOURCE: Solution region (heuristic, lines {ss+1}-{se}) ---")
+                    for j in range(ss, se):
+                        parts.append(f"L{j+1}: {mmd_lines[j]}")
+                    break
+
+        return "\n".join(parts)
+
+    def _extract_chapter_tree(self, concept_tree: Dict, tag_sub_concepts: List[Dict]) -> str:
+        """Extract chapter-scoped concept tree from question tags."""
+        if not concept_tree or not tag_sub_concepts:
+            return ""
+        chapters = set()
+        subjects = set()
+        for t in tag_sub_concepts:
+            ch = t.get("chapter", "")
+            subj = t.get("subject", "")
+            if ch:
+                chapters.add(ch)
+            if subj:
+                subjects.add(subj)
+
+        if not chapters:
+            return ""
+
+        filtered = {}
+        for exam, exam_subjects in concept_tree.items():
+            if not isinstance(exam_subjects, dict):
+                continue
+            for subj, subj_chapters in exam_subjects.items():
+                if not isinstance(subj_chapters, dict):
+                    continue
+                if subj not in subjects:
+                    continue
+                for ch, concepts in subj_chapters.items():
+                    if ch in chapters:
+                        if exam not in filtered:
+                            filtered[exam] = {}
+                        if subj not in filtered[exam]:
+                            filtered[exam][subj] = {}
+                        filtered[exam][subj][ch] = concepts
+
+        if not filtered:
+            return ""
+        return json.dumps(filtered, indent=1, ensure_ascii=False)
+
+
+    def _build_user_content(self, req: Dict, mapper_entry: Dict = None,
+                            mmd_lines: List[str] = None,
+                            concept_tree: Dict = None) -> tuple:
         """Build per-question user content with full metadata + tags + images.
+
+        Includes per-question MMD context and chapter-scoped concept tree
+        (moved from system prompt for token optimization).
 
         Returns (text_content: str, image_attachments: list[dict])
         Image attachments are base64 data URI dicts for multimodal API calls.
@@ -1246,7 +1286,29 @@ ANSWER: {answer}
 
 SOLUTION HTML:
 {s_text}
-{image_note}
+{image_note}"""
+
+        # Per-question concept tree (chapter-scoped)
+        tags = req.get("tag_sub_concepts", [])
+        if concept_tree and tags:
+            ch_tree_str = self._extract_chapter_tree(concept_tree, tags)
+            if ch_tree_str:
+                text += f"""
+
+CONCEPT TREE (chapter-scoped for tag validation):
+{ch_tree_str}"""
+
+        # Per-question MMD source context
+        if mmd_lines and mapper_entry:
+            mmd_ctx = self._extract_per_q_mmd(mmd_lines, mapper_entry)
+            if mmd_ctx:
+                text += f"""
+
+SOURCE DOCUMENT CONTEXT (verify content integrity against original):
+{mmd_ctx}"""
+
+        text += """
+
 ================================================================================
 EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
 ================================================================================"""
@@ -1412,15 +1474,30 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         """Build API-ready JSONL for OpenAI Batch API.
 
         Each line is a complete chat completion request with multimodal content.
+        Per-question MMD context and chapter-scoped concept tree injected in user message.
         """
         qa_dir = self._get_qa_dir()
         batch_path = qa_dir / f"{pass_key}_openai_batch.jsonl"
+
+        # Load per-Q context data once
+        mmd_lines = self._load_mmd_lines()
+        mapper_data = self._load_mapper_data()
+        concept_tree = self._load_concept_tree()
+
+        if mmd_lines:
+            self.log("info", f"Loaded MMD ({len(mmd_lines)} lines) for per-question context")
+        if mapper_data:
+            self.log("info", f"Loaded mapper data ({len(mapper_data)} entries) for line references")
 
         count = 0
         with open(batch_path, "w", encoding="utf-8") as f:
             for req in requests_list:
                 qid = req.get("qid", "?")
-                text_content, image_attachments = self._build_user_content(req)
+                mapper_entry = mapper_data.get(qid)
+                text_content, image_attachments = self._build_user_content(
+                    req, mapper_entry=mapper_entry,
+                    mmd_lines=mmd_lines, concept_tree=concept_tree,
+                )
 
                 # Build multimodal user content parts
                 user_parts = [{"type": "text", "text": text_content}]
@@ -1870,11 +1947,20 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         qa_dir = self._get_qa_dir()
         batch_path = qa_dir / f"{pass_key}_gemini_batch.jsonl"
 
+        # Load per-Q context data once
+        mmd_lines = self._load_mmd_lines()
+        mapper_data = self._load_mapper_data()
+        concept_tree = self._load_concept_tree()
+
         count = 0
         with open(batch_path, "w", encoding="utf-8") as f:
             for req in requests_list:
                 qid = req.get("qid", "?")
-                text_content, image_attachments = self._build_user_content(req)
+                mapper_entry = mapper_data.get(qid)
+                text_content, image_attachments = self._build_user_content(
+                    req, mapper_entry=mapper_entry,
+                    mmd_lines=mmd_lines, concept_tree=concept_tree,
+                )
 
                 # Build content parts: text + inline images
                 user_parts = [{"text": text_content}]

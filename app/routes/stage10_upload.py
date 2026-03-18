@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import re
 import zipfile
 from pathlib import Path
@@ -221,6 +222,14 @@ async def download_stats_zip(session_id: str):
         stats_csv = stage.generate_pipeline_stats_csv()
         if stats_csv:
             zf.writestr(f"{safe}_pipeline_stats.csv", stats_csv)
+
+        # Cost report (actual token usage from batch results)
+        try:
+            from app.pipeline.cost_tracker import generate_cost_report
+            cost_report = generate_cost_report(str(session_dir))
+            zf.writestr(f"{safe}_cost_report.json", json.dumps(cost_report, indent=2))
+        except Exception:
+            pass  # Cost report is optional
 
     buf.seek(0)
     return StreamingResponse(
