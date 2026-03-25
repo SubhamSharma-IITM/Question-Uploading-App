@@ -601,38 +601,42 @@ class UploadStage(BasePipelineStage):
         return len(new_ids)
 
     def _post_question(self, req_lib, entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-        """Post a single question to the Acadza API.
+        """Post a single question to the Acadza API with JWT auth.
 
-        Forked verbatim from post_processor_uploader.py:post_question_to_api()
+        Uses authenticated_request for automatic 401 retry with token refresh.
+        Forked from post_processor_uploader.py:post_question_to_api()
         """
-        headers = {"Content-Type": "application/json"}
+        from app.pipeline.auth import authenticated_request
+
         qid = entry.get("qid")
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                payload = dict(entry)
-                if "error" not in payload:
-                    payload["error"] = 2
+        try:
+            payload = dict(entry)
+            if "error" not in payload:
+                payload["error"] = 2
 
-                resp = req_lib.post(QUESTION_API_URL, json=payload, headers=headers, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = authenticated_request(
+                "post",
+                QUESTION_API_URL,
+                logger=self.log,
+                max_retries=MAX_RETRIES,
+                retry_delay=RETRY_DELAY,
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                if data.get("isSuccessful"):
-                    uploaded_id = (data.get("question") or {}).get("_id", "")
-                    return True, uploaded_id
+            if data.get("isSuccessful"):
+                uploaded_id = (data.get("question") or {}).get("_id", "")
+                return True, uploaded_id
 
-                self.log("error", f"API error for {qid}: {data.get('message', 'unknown')}")
-                return False, None
+            self.log("error", f"API error for {qid}: {data.get('message', 'unknown')}")
+            return False, None
 
-            except Exception as e:
-                self.log("error", f"Post failed for {qid} (attempt {attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-                else:
-                    return False, None
-
-        return False, None
+        except Exception as e:
+            self.log("error", f"Post failed for {qid}: {e}")
+            return False, None
 
     def _load_qa_ledger(self) -> Dict[str, Dict]:
         """Load QA ledger data per QID — model-wise verdicts + error descriptions.

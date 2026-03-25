@@ -32,6 +32,7 @@ Pillow>=10.0.0
 numpy>=1.24.0
 opencv-python>=4.8.0
 cairosvg>=2.7.0
+pycairo>=1.26.0
 
 # Cloud Storage (for Vertex AI batch I/O)
 google-cloud-storage>=2.14.0
@@ -39,6 +40,7 @@ google-cloud-storage>=2.14.0
 # Vector Search (for duplicate checking)
 faiss-cpu>=1.9.0
 
-# Optional: SMILES chemistry rendering (Stage 5) — install separately if needed
-# rdkit  (install via: pip install rdkit or conda install -c conda-forge rdkit)
+# SMILES Chemistry Rendering (Stage 5)
+rdkit>=2024.3.0
+
 # lxml is pulled in by beautifulsoup4 automatically

@@ -94,16 +94,21 @@ def _guess_mime(path: str) -> str:
     }.get(ext, "application/octet-stream")
 
 
-def upload_single_image(local_path: str, timeout: int = 60) -> Tuple[bool, Optional[str], Optional[str]]:
+def upload_single_image(local_path: str, timeout: int = 60, logger=None) -> Tuple[bool, Optional[str], Optional[str]]:
     """Upload one image to Acadza CDN.  Returns (success, cdn_url, error)."""
     if not os.path.exists(local_path):
         return False, None, f"File not found: {local_path}"
 
+    from app.pipeline.auth import authenticated_request
+
     basename = os.path.basename(local_path)
     mime = _guess_mime(local_path)
     with open(local_path, "rb") as f:
-        resp = http_requests.post(
+        resp = authenticated_request(
+            "post",
             IMAGE_UPLOAD_API,
+            logger=logger,
+            max_retries=1,  # outer retry handles retries
             files={"image": (basename, f, mime)},
             timeout=timeout,
         )
@@ -115,12 +120,12 @@ def upload_single_image(local_path: str, timeout: int = 60) -> Tuple[bool, Optio
     return False, None, f"No URL in response: {data}"
 
 
-def upload_with_retry(local_path: str) -> Tuple[bool, Optional[str], Optional[str]]:
-    """Upload with exponential backoff retry."""
+def upload_with_retry(local_path: str, logger=None) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Upload with exponential backoff retry and auth handling."""
     last_err = None
     for attempt in range(MAX_RETRIES):
         try:
-            success, url, err = upload_single_image(local_path)
+            success, url, err = upload_single_image(local_path, logger=logger)
             if success:
                 return True, url, None
             last_err = err
@@ -550,7 +555,7 @@ class ImageCDNStage(BasePipelineStage):
     # ── Credential check ──
 
     def check_credentials(self) -> Dict[str, Any]:
-        """Check if the CDN API endpoint is reachable and dependencies installed."""
+        """Check if the CDN API endpoint is reachable, auth works, and deps installed."""
         issues = []
         if not HAS_REQUESTS:
             issues.append("requests library not installed (pip install requests)")
@@ -561,6 +566,17 @@ class ImageCDNStage(BasePipelineStage):
             return {
                 "configured": False,
                 "message": "Missing dependencies: " + "; ".join(issues),
+            }
+
+        # Verify JWT auth works
+        try:
+            from app.pipeline.auth import ensure_valid_token
+            ensure_valid_token(logger=self.log)
+            auth_ok = True
+        except Exception as e:
+            return {
+                "configured": False,
+                "message": f"Auth failed: {e}",
             }
 
         # Quick connectivity test to the API
@@ -579,7 +595,7 @@ class ImageCDNStage(BasePipelineStage):
         return {
             "configured": True,
             "endpoint": IMAGE_UPLOAD_API,
-            "message": "CDN API endpoint reachable, dependencies OK",
+            "message": "Auth OK, CDN API endpoint reachable, dependencies OK",
         }
 
     # ── Upload (Phase 3 + 4 combined) ──
@@ -712,7 +728,7 @@ class ImageCDNStage(BasePipelineStage):
                 continue
 
             # Upload with retry
-            success, url, err = upload_with_retry(local_path)
+            success, url, err = upload_with_retry(local_path, logger=self.log)
 
             if success:
                 cdn_cache[img_src] = {
@@ -807,7 +823,7 @@ class ImageCDNStage(BasePipelineStage):
                         w, h = dw, dh
 
                 # Upload
-                success, url, err = upload_with_retry(upload_path)
+                success, url, err = upload_with_retry(upload_path, logger=self.log)
                 if success:
                     cdn_cache[uri] = {
                         "cdn_url": url,

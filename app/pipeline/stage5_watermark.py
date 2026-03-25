@@ -68,6 +68,97 @@ _CLAHE_GRID = (16, 16)      # CLAHE tile grid size
 _SHARPEN_STRENGTH = 8       # unsharp mask centre weight
 _GAMMA = 1.3                # gamma correction (>1 = whiter whites, blacker blacks)
 
+# Post-sharpen watermark detection parameters (connected component blob filter)
+# Catches watermark remnants that survive the initial red HSV removal pass.
+_WM_DARK_THRESH = 220       # pixels below this intensity are WM candidates
+_WM_DILATE = 4              # expand detected WM mask edges
+_WM_THICKNESS_FRAC = 0.03   # min thickness as fraction of image min dimension
+_WM_AREA_FRAC = 0.002       # min area as fraction of total image area
+_WM_FILL_DENSITY = 0.25     # min fill ratio (area / bounding box) for WM blobs
+_WM_MAX_ASPECT = 5.0        # reject blobs with aspect ratio above this (thin lines = content)
+
+# Red mask blob filter parameters (prevents removing legitimate red content)
+_RED_MIN_THICKNESS = 20     # min blob min-side in pixels
+_RED_MIN_AREA = 800         # min blob area in pixels
+_RED_FILL_DENSITY = 0.40    # min fill ratio (0-1) for red blobs
+
+
+def _filter_thick_blobs(
+    mask: np.ndarray,
+    min_thickness: int,
+    min_area: int,
+    fill_density: float,
+) -> np.ndarray:
+    """Filter a binary mask to keep only thick, dense blobs.
+
+    Removes small spots and thin lines that might be actual content
+    (arrows, circles, annotations) rather than watermark text.
+
+    Uses connected component analysis to evaluate each blob's geometry.
+    """
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
+    filtered = np.zeros_like(mask)
+    for i in range(1, num_labels):
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        min_side = min(w, h)
+        density = area / (w * h + 1e-5)
+        if min_side >= min_thickness and density >= fill_density and area >= min_area:
+            filtered[labels == i] = 255
+    return filtered
+
+
+def _remove_post_sharpen_watermark(sharp: np.ndarray) -> np.ndarray:
+    """Second-pass watermark removal after sharpening.
+
+    Detects remaining watermark blobs that survived the initial red HSV
+    removal pass. Uses connected component analysis on dark pixels to find
+    thick, dense blobs (watermark text patterns) and sets them to white.
+
+    This catches grey/faded watermarks that aren't red-colored and thus
+    aren't caught by the HSV-based pre-processing step.
+    """
+    h, w = sharp.shape
+    img_area = h * w
+    min_thickness = max(5, int(min(h, w) * _WM_THICKNESS_FRAC))
+    min_area = max(100, int(img_area * _WM_AREA_FRAC))
+
+    # Find dark pixels (potential watermark content)
+    dark_mask = cv2.inRange(sharp, 0, _WM_DARK_THRESH)
+
+    # Analyze each connected component
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        dark_mask, connectivity=8
+    )
+    thick_mask = np.zeros_like(dark_mask)
+    for i in range(1, num_labels):
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        min_side = min(bw, bh)
+        fill_density = area / (bw * bh + 1e-5)
+        aspect_ratio = max(bw, bh) / (min_side + 1e-5)
+        if (
+            min_side >= min_thickness
+            and area >= min_area
+            and fill_density >= _WM_FILL_DENSITY
+            and aspect_ratio <= _WM_MAX_ASPECT
+        ):
+            thick_mask[labels == i] = 255
+
+    # Dilate to cover anti-aliased edges
+    wm_mask = cv2.dilate(
+        thick_mask, np.ones((3, 3), np.uint8), iterations=_WM_DILATE
+    )
+
+    # Set watermark pixels to white
+    result = sharp.copy()
+    result[wm_mask == 255] = 255
+    return result
+
 
 def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.ndarray]]:
     """Detect and remove red watermark pixels via inpainting.
@@ -105,6 +196,17 @@ def _remove_red_watermark(img_path: str) -> Tuple[Optional[str], Optional[np.nda
         # Dilate mask to catch anti-aliased edge pixels around red text
         kernel = np.ones((3, 3), np.uint8)
         mask_red = cv2.dilate(mask_red, kernel, iterations=_RED_DILATE_ITER)
+
+        # Filter red mask: keep only thick, dense blobs (watermark text).
+        # Rejects thin red lines and small spots that might be actual
+        # diagram content (arrows, circles, annotations).
+        mask_red = _filter_thick_blobs(
+            mask_red, _RED_MIN_THICKNESS, _RED_MIN_AREA, _RED_FILL_DENSITY
+        )
+
+        # Re-check after filtering — might have removed everything
+        if np.count_nonzero(mask_red) < 10:
+            return None, None
 
         # Inpaint: fill masked area using surrounding pixels (TELEA algorithm)
         # This is far superior to white-fill — preserves background texture
@@ -233,6 +335,11 @@ def _remove_watermark_cv2(img_path: str) -> Optional[bytes]:
         [0, -1, 0],
     ], dtype=np.float32)
     sharp = cv2.filter2D(enhanced, -1, sharpen_kernel)
+
+    # Step 6b: Post-sharpen watermark detection — catches grey/faded watermarks
+    # that survived the initial red HSV removal. Uses connected component
+    # analysis to find thick, dense blobs and sets them to white.
+    sharp = _remove_post_sharpen_watermark(sharp)
 
     # Step 7: Gamma correction — final push. Whites become whiter, blacks blacker.
     lut = np.array([
