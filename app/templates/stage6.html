@@ -215,7 +215,8 @@ async function uploadImages() {
                 document.getElementById('results-content').innerHTML =
                     '<div class="alert alert-info">' + escapeHtml(d.message) + '</div>';
                 appendLog('info', d.message);
-                document.getElementById('advance-btn').disabled = false;
+                const ab1 = document.getElementById('advance-btn');
+                if (ab1) ab1.disabled = false;
             } else {
                 // Show stats grid
                 document.getElementById('results-content').innerHTML = `
@@ -273,7 +274,8 @@ async function uploadImages() {
                     }
                 }
 
-                document.getElementById('advance-btn').disabled = false;
+                const ab2 = document.getElementById('advance-btn');
+                if (ab2) ab2.disabled = false;
                 btn.textContent = 'Uploaded ✓';
                 appendLog('success', `Upload complete: ${d.uploaded} uploaded, ${d.cached} cached, ${d.replaced} refs replaced in ${d.files_modified} files`);
             }
@@ -300,7 +302,8 @@ async function skipImages() {
             card.style.display = 'block';
             document.getElementById('results-content').innerHTML =
                 '<div class="alert alert-info">Image CDN upload skipped. Images will use local references.</div>';
-            document.getElementById('advance-btn').disabled = false;
+            const advBtn = document.getElementById('advance-btn');
+            if (advBtn) advBtn.disabled = false;
             document.getElementById('upload-btn').disabled = true;
             document.getElementById('skip-btn').disabled = true;
             document.getElementById('skip-btn').textContent = 'Skipped \u2713';
