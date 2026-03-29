@@ -89,7 +89,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         session_data = verify_session(session_token)
 
         if not session_data:
-            # API requests get 401, page requests get redirect
+            # Fallback: if display cookie exists, restore session (survives --reload)
+            display = request.cookies.get("acadza_display", "")
+            if display and "|" in display:
+                parts = display.split("|", 1)
+                session_data = {"name": parts[0], "role": parts[1], "phone": "", "uid": "restored"}
+                # Re-create server session so verify works on next request
+                new_token = create_session("", "restored")
+                from app.firebase_auth import _sessions
+                if new_token in _sessions:
+                    _sessions[new_token]["name"] = parts[0]
+                    _sessions[new_token]["role"] = parts[1]
+                # Set user state before call_next so templates can access it
+                request.state.user = session_data
+                response = await call_next(request)
+                response.set_cookie(SESSION_COOKIE_NAME, new_token, max_age=7*24*3600, httponly=True, samesite="lax")
+                return response
+
+            # No valid session at all
             if path.startswith("/api/"):
                 return JSONResponse(status_code=401, content={"success": False, "error": "Not authenticated"})
             return RedirectResponse(url="/login", status_code=302)
@@ -194,6 +211,13 @@ async def auth_verify(request: Request):
         value=session_token,
         max_age=7 * 24 * 3600,
         httponly=True,
+    )
+    # Display cookie (readable by JS/templates for personalization)
+    response.set_cookie(
+        key="acadza_display",
+        value=f"{user_detail['name']}|{user_detail['role']}",
+        max_age=7 * 24 * 3600,
+        httponly=False,
         samesite="lax",
     )
     return response
@@ -207,6 +231,7 @@ async def auth_logout(request: Request):
         delete_auth_session(session_token)
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie(SESSION_COOKIE_NAME)
+    response.delete_cookie("acadza_display")
     return response
 
 

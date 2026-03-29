@@ -19,35 +19,72 @@
             position: relative;
         }
 
-        /* Background gear — emerging from right, ~30% cropped, clearly a gear */
+        /* Background gear — emerging from right, ~30% cropped */
         .bg-gear {
             position: fixed;
             right: -20%;
             top: 50%;
-            transform: translateY(-50%);
+            transform: translateY(-50%) rotate(0deg);
             width: 110vh;
             height: 110vh;
             opacity: 0.09;
             pointer-events: none;
             z-index: 0;
+            animation: gearArrive 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+        /* Gear exit — triggered by JS adding .gear-exit class */
+        .bg-gear.gear-exit {
+            animation: gearLeave 1s cubic-bezier(0.55, 0, 1, 0.45) forwards;
         }
 
-        /* Hide reCAPTCHA badge completely */
+        @keyframes gearArrive {
+            0% {
+                transform: translateY(-50%) rotate(-90deg);
+                right: -60%;
+                opacity: 0;
+            }
+            40% { opacity: 0.05; }
+            100% {
+                transform: translateY(-50%) rotate(0deg);
+                right: -20%;
+                opacity: 0.09;
+            }
+        }
+        @keyframes gearLeave {
+            0% {
+                transform: translateY(-50%) rotate(0deg);
+                right: -20%;
+                opacity: 0.09;
+            }
+            100% {
+                transform: translateY(-50%) rotate(90deg);
+                right: -70%;
+                opacity: 0;
+            }
+        }
+
+        /* reCAPTCHA — keep badge in bottom-right, challenge below the card */
         .grecaptcha-badge {
-            visibility: hidden !important;
-            opacity: 0 !important;
-            width: 0 !important;
-            height: 0 !important;
-            overflow: hidden !important;
+            z-index: 50 !important;
+        }
+        /* Push CAPTCHA challenge iframe behind the glass card */
+        iframe[src*="recaptcha"][role="presentation"] {
+            z-index: 0 !important;
+        }
+        div[style*="visibility: visible"] > div > iframe[title*="recaptcha"] {
+            z-index: 9999 !important;
             position: fixed !important;
-            left: -9999px !important;
+            top: auto !important;
+            bottom: 20px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
         }
 
         .login-wrap {
             position: relative;
             z-index: 1;
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
             padding: 24px;
         }
 
@@ -57,14 +94,14 @@
             height: 38px;
         }
 
-        /* Glass card — gear silhouette bleeds through with frosted blur */
+        /* Glass card */
         .card {
             background: rgba(20, 24, 42, 0.4);
             backdrop-filter: blur(14px) saturate(1.4);
             -webkit-backdrop-filter: blur(14px) saturate(1.4);
             border: 1px solid rgba(79, 125, 249, 0.12);
             border-radius: 16px;
-            padding: 40px 32px;
+            padding: 44px 36px;
             box-shadow:
                 0 8px 32px rgba(0, 0, 0, 0.5),
                 0 0 0 1px rgba(255,255,255,0.05) inset,
@@ -72,31 +109,33 @@
         }
 
         .card h2 {
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 24px;
+            font-weight: 700;
             text-align: center;
-            margin-bottom: 4px;
-            letter-spacing: -0.3px;
+            margin-bottom: 6px;
+            letter-spacing: -0.4px;
+            color: #f0f2fa;
         }
 
         .card .sub {
-            font-size: 13px;
-            color: #5c6280;
+            font-size: 14px;
+            color: #6b7194;
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 32px;
+            font-weight: 400;
         }
 
         label {
             display: block;
-            font-size: 11px;
-            font-weight: 600;
-            color: #7a80a0;
+            font-size: 12px;
+            font-weight: 700;
+            color: #8890b0;
             margin-bottom: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
+            letter-spacing: 1px;
         }
 
-        .field { margin-bottom: 22px; }
+        .field { margin-bottom: 24px; }
 
         .phone-row {
             display: flex;
@@ -105,12 +144,13 @@
 
         input {
             width: 100%;
-            padding: 11px 14px;
+            padding: 12px 16px;
             background: rgba(26, 29, 42, 0.8);
-            border: 1px solid rgba(45, 49, 72, 0.6);
+            border: 1.5px solid rgba(45, 49, 72, 0.7);
             border-radius: 8px;
             color: #e4e6ef;
-            font-size: 15px;
+            font-size: 16px;
+            font-weight: 500;
             outline: none;
             transition: border-color 0.2s, box-shadow 0.2s;
         }
@@ -121,29 +161,30 @@
         input::placeholder { color: #3d4268; }
 
         .cc {
-            width: 64px;
+            width: 68px;
             flex-shrink: 0;
             text-align: center;
-            color: #7a80a0;
+            color: #8890b0;
+            font-weight: 600;
             background: rgba(20, 22, 34, 0.9);
         }
 
         /* OTP boxes */
         .otp-boxes {
             display: flex;
-            gap: 8px;
+            gap: 10px;
             justify-content: center;
         }
         .otp-box {
-            width: 46px;
-            height: 52px;
+            width: 48px;
+            height: 56px;
             text-align: center;
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 22px;
+            font-weight: 700;
             padding: 0;
             border-radius: 10px;
             background: rgba(26, 29, 42, 0.8);
-            border: 1.5px solid rgba(45, 49, 72, 0.6);
+            border: 1.5px solid rgba(45, 49, 72, 0.7);
             color: #e4e6ef;
             caret-color: #4f7df9;
             transition: border-color 0.2s, box-shadow 0.2s;
@@ -159,28 +200,28 @@
 
         .btn {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             background: #4f7df9;
             color: #fff;
             border: none;
             border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 15px;
+            font-weight: 700;
             cursor: pointer;
             transition: all 0.2s;
             position: relative;
             overflow: hidden;
+            letter-spacing: 0.2px;
         }
         .btn:hover { background: #3d6be6; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,125,249,0.3); }
         .btn:active { transform: translateY(0); }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
 
-        /* Loading spinner inside button */
         .btn .spinner {
             display: none;
-            width: 18px;
-            height: 18px;
-            border: 2px solid rgba(255,255,255,0.3);
+            width: 20px;
+            height: 20px;
+            border: 2.5px solid rgba(255,255,255,0.3);
             border-top-color: #fff;
             border-radius: 50%;
             animation: spin 0.6s linear infinite;
@@ -192,9 +233,10 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         .msg {
-            padding: 10px 14px;
+            padding: 12px 16px;
             border-radius: 8px;
             font-size: 13px;
+            font-weight: 500;
             margin-bottom: 16px;
             display: none;
         }
@@ -210,42 +252,64 @@
         .link-row {
             text-align: center;
             margin-top: 16px;
-            font-size: 12px;
+            font-size: 13px;
             color: #5c6280;
         }
-        .link-row a { color: #4f7df9; cursor: pointer; text-decoration: none; transition: color 0.15s; }
+        .link-row a { color: #4f7df9; cursor: pointer; text-decoration: none; transition: color 0.15s; font-weight: 500; }
         .link-row a:hover { color: #8badff; }
 
         #recaptcha-container { display: flex; justify-content: center; margin-bottom: 12px; }
 
-        /* Toast */
+        /* Toast — prominent, centered top */
         .toast {
             position: fixed;
-            top: 24px;
-            right: 24px;
-            background: rgba(18, 20, 32, 0.92);
-            backdrop-filter: blur(16px);
-            border: 1px solid rgba(79, 125, 249, 0.2);
-            border-radius: 12px;
-            padding: 16px 24px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            top: 32px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-120px);
+            background: linear-gradient(135deg, rgba(20, 24, 42, 0.95), rgba(30, 36, 58, 0.95));
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(79, 125, 249, 0.25);
+            border-radius: 14px;
+            padding: 22px 32px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset;
             z-index: 100;
-            transform: translateX(120%);
-            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            max-width: 340px;
+            transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
+            opacity: 0;
+            min-width: 300px;
+            text-align: center;
         }
-        .toast.show { transform: translateX(0); }
-        .toast h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: #e4e6ef; }
-        .toast p { font-size: 13px; color: #9096b0; line-height: 1.4; }
-        .toast .toast-accent { color: #4f7df9; font-weight: 500; }
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast h3 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #f0f2fa;
+            letter-spacing: -0.3px;
+        }
+        .toast p {
+            font-size: 14px;
+            color: #8badff;
+            line-height: 1.4;
+            font-weight: 500;
+            font-style: italic;
+        }
+        .toast::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #4f7df9, transparent);
+            border-radius: 14px 14px 0 0;
+        }
 
         /* Footer branding */
         .login-footer {
             text-align: center;
-            margin-top: 24px;
-            font-size: 11px;
-            color: #2d3148;
-            letter-spacing: 0.5px;
+            margin-top: 28px;
+            font-size: 10px;
+            font-weight: 600;
+            color: #1e2130;
+            letter-spacing: 2px;
         }
 
         /* Subtle ambient glow */
@@ -264,7 +328,7 @@
 </head>
 <body>
     <!-- Background gear logo -->
-    <img src="/static/img/acadza-gear-white.svg" alt="" class="bg-gear">
+    <img src="/static/img/acadza-gear-white.svg" alt="" class="bg-gear" id="bg-gear">
 
     <!-- Toast notification -->
     <div id="toast" class="toast">
@@ -276,7 +340,7 @@
         <img src="/static/img/acadza-logo-white.svg" alt="Acadza" class="logo">
 
         <div class="card">
-            <h2>Welcome back</h2>
+            <h2 id="welcome-heading">Welcome back</h2>
             <p class="sub">Sign in with your phone number</p>
 
             <div id="msg-err" class="msg err"></div>
@@ -340,6 +404,28 @@
     };
     firebase.initializeApp(firebaseConfig);
 
+    // User registry (mirrors server-side for instant heading update)
+    const USERS = {
+        '9661172783': 'Shubham',
+        '7488290347': 'Team Member',
+    };
+
+    // ── localStorage cache for returning users ──
+    function getCachedUser() {
+        try {
+            const raw = localStorage.getItem('acadza_user');
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch(e) { return null; }
+    }
+    function setCachedUser(name, role) {
+        try {
+            localStorage.setItem('acadza_user', JSON.stringify({
+                name: name, role: role, ts: Date.now()
+            }));
+        } catch(e) {}
+    }
+
     const auth = firebase.auth();
     let confirmResult = null;
     let recaptcha = null;
@@ -351,7 +437,7 @@
     function showOk(m)  { log('OK: ' + m); const e = document.getElementById('msg-ok');  e.textContent = m; e.classList.add('vis'); document.getElementById('msg-err').classList.remove('vis'); }
     function clearMsg()  { document.getElementById('msg-err').classList.remove('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
 
-    // Motivational lines — vary by time of day
+    // Motivational lines by time of day
     const MOTIVATIONS = {
         morning: [
             "Fresh day, fresh uploads.",
@@ -404,7 +490,6 @@
         const el = document.createElement('div');
         el.id = 'recaptcha-container';
         old.parentNode.replaceChild(el, old);
-        document.querySelectorAll('iframe[src*="recaptcha"]').forEach(f => { if (!el.contains(f)) f.remove(); });
 
         recaptcha = new firebase.auth.RecaptchaVerifier(el, {
             size: 'invisible',
@@ -417,13 +502,22 @@
             document.getElementById('btn-send').disabled = false;
         }).catch((err) => {
             log('reCAPTCHA error: ' + err.message);
-            showErr('reCAPTCHA failed to load. Refresh the page.');
+            // Don't block — enable button anyway, reCAPTCHA will retry on send
+            document.getElementById('btn-send').disabled = false;
         });
     }
 
-    // ── Phone input ──
+    // ── Phone input — update heading with user name ──
     document.getElementById('phone').addEventListener('input', function() {
         this.value = this.value.replace(/\D/g, '').slice(0, 10);
+        const heading = document.getElementById('welcome-heading');
+        if (this.value.length === 10 && USERS[this.value]) {
+            heading.textContent = 'Welcome back, ' + USERS[this.value];
+        } else {
+            // Restore cached name or default
+            const cached = getCachedUser();
+            heading.textContent = cached ? 'Welcome back, ' + cached.name.split(' ')[0] : 'Welcome back';
+        }
     });
     document.getElementById('phone').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
 
@@ -435,7 +529,6 @@
             if (this.value) {
                 this.classList.add('filled');
                 if (i < 5) otpBoxes[i + 1].focus();
-                // Auto-verify when all 6 digits entered
                 if (i === 5) {
                     const otp = getOTP();
                     if (otp.length === 6) setTimeout(() => verifyOTP(), 150);
@@ -451,7 +544,6 @@
                 otpBoxes[i - 1].classList.remove('filled');
             }
         });
-        // Handle paste of full OTP
         box.addEventListener('paste', function(e) {
             e.preventDefault();
             const pasted = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
@@ -527,16 +619,27 @@
             log('Server: ' + JSON.stringify(data));
 
             if (data.success) {
-                // Show personalized greeting toast
+                // Cache user in localStorage for future visits
+                const fullName = data.user_name || '';
+                const userRole = data.user_role || '';
+                if (fullName) setCachedUser(fullName, userRole);
+
+                // Gear exits the screen
+                document.getElementById('bg-gear').classList.add('gear-exit');
+
+                // Greeting
                 const hour = new Date().getHours();
                 const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-                const name = data.user_name || 'there';
-                const firstName = name.split(' ')[0];
+                const firstName = fullName ? fullName.split(' ')[0] : (getCachedUser()?.name?.split(' ')[0] || 'there');
                 const motivation = getMotivation();
-                showToast(greeting + ', ' + firstName + '!', motivation);
 
-                // Redirect after user can read the toast
-                setTimeout(() => { window.location.href = data.redirect || '/'; }, 2500);
+                // Toast appears as gear starts leaving
+                setTimeout(() => {
+                    showToast(greeting + ', ' + firstName + '!', motivation);
+                }, 400);
+
+                // Redirect after toast is visible
+                setTimeout(() => { window.location.href = data.redirect || '/'; }, 3000);
             } else {
                 showErr(data.error || 'Verification failed');
                 setLoading(btn, false);
@@ -561,11 +664,29 @@
         document.getElementById('step-otp').classList.remove('active');
         document.getElementById('step-phone').classList.add('active');
         document.getElementById('phone').focus();
+        document.getElementById('welcome-heading').textContent = 'Welcome back';
         initRecaptcha();
     }
 
     document.addEventListener('DOMContentLoaded', () => {
         log('Page loaded, project: ' + firebaseConfig.projectId);
+
+        // Show cached user name on page load
+        const cached = getCachedUser();
+        if (cached && cached.name) {
+            const firstName = cached.name.split(' ')[0];
+            // Same day = "Welcome back, Name". New day = "Welcome, Name"
+            const cachedDate = new Date(cached.ts).toDateString();
+            const today = new Date().toDateString();
+            const heading = document.getElementById('welcome-heading');
+            if (cachedDate === today) {
+                heading.textContent = 'Welcome back, ' + firstName;
+            } else {
+                heading.textContent = 'Welcome, ' + firstName;
+            }
+            log('Cached user: ' + cached.name + ' (' + cached.role + ')');
+        }
+
         initRecaptcha();
     });
     </script>
