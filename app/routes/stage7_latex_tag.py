@@ -146,7 +146,10 @@ async def build_batch(session_id: str):
 
     from app.pipeline.stage7_latex_tag import LatexTagStage
     stage = LatexTagStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.build_batch)
+    try:
+        result = await asyncio.to_thread(stage.build_batch)
+    except Exception as e:
+        return APIResponse(success=False, error=ErrorDetail(code="BUILD_ERROR", message=str(e)))
     return APIResponse(data=result)
 
 

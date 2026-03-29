@@ -11,12 +11,14 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.db import init_db
+from app.firebase_auth import verify_session, create_session, delete_session as delete_auth_session, verify_firebase_token, get_user_info, SESSION_COOKIE_NAME
 from app.utils import _safe_print
 
 # ── Paths ──
@@ -68,6 +70,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Auth Middleware ──
+# Paths that don't require authentication
+_PUBLIC_PATHS = {"/login", "/auth/verify", "/auth/logout", "/health"}
+_PUBLIC_PREFIXES = ("/static/",)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Allow public paths
+        if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # Check session cookie
+        session_token = request.cookies.get(SESSION_COOKIE_NAME)
+        session_data = verify_session(session_token)
+
+        if not session_data:
+            # API requests get 401, page requests get redirect
+            if path.startswith("/api/"):
+                return JSONResponse(status_code=401, content={"success": False, "error": "Not authenticated"})
+            return RedirectResponse(url="/login", status_code=302)
+
+        # Attach user info to request state
+        request.state.user = session_data
+        return await call_next(request)
+
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +107,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth gate (added after CORS so CORS headers are still set on 401s)
+app.add_middleware(AuthMiddleware)
 
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -106,6 +140,76 @@ app.include_router(stage9_router, prefix="/api/sessions/{session_id}/stage9", ta
 app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", tags=["Stage 10"])
 
 
+# ── Auth pages ──
+def _firebase_ctx():
+    """Firebase config dict for login template."""
+    return {
+        "firebase_api_key": settings.firebase_api_key,
+        "firebase_auth_domain": settings.firebase_auth_domain,
+        "firebase_project_id": settings.firebase_project_id,
+        "firebase_storage_bucket": settings.firebase_storage_bucket,
+        "firebase_messaging_sender_id": settings.firebase_messaging_sender_id,
+        "firebase_app_id": settings.firebase_app_id,
+    }
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Login page with Firebase Phone Auth."""
+    # If already logged in, redirect to dashboard
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if verify_session(session_token):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, **_firebase_ctx()})
+
+
+@app.post("/auth/verify")
+async def auth_verify(request: Request):
+    """Verify Firebase ID token and create session."""
+    body = await request.json()
+    id_token = body.get("id_token", "")
+
+    if not id_token:
+        _safe_print("[AUTH] Missing id_token in request")
+        return JSONResponse(content={"success": False, "error": "Missing token"})
+
+    _safe_print(f"[AUTH] Verifying Firebase token (length={len(id_token)})...")
+    user_info = await verify_firebase_token(id_token)
+    if not user_info:
+        _safe_print("[AUTH] Token verification FAILED")
+        return JSONResponse(content={"success": False, "error": "Invalid token"})
+
+    user_detail = get_user_info(user_info["phone"])
+    _safe_print(f"[AUTH] Verified: {user_detail['name']} ({user_detail['role']}), phone={user_info['phone']}")
+    session_token = create_session(user_info["phone"], user_info["uid"])
+
+    response = JSONResponse(content={
+        "success": True,
+        "redirect": "/",
+        "user_name": user_detail["name"],
+        "user_role": user_detail["role"],
+    })
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        max_age=7 * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    """Clear session and redirect to login."""
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_token:
+        delete_auth_session(session_token)
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return response
+
+
 # ── Dashboard page ──
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
@@ -122,9 +226,13 @@ async def dashboard(request: Request):
             except Exception:
                 cp["data"] = {}
         s["uploaded_count"] = (cp.get("data") or {}).get("posted", 0) if cp else 0
+    # Get user info from auth session
+    user = getattr(request.state, "user", {})
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "sessions": sessions,
+        "user_name": user.get("name", ""),
+        "user_role": user.get("role", ""),
     })
 
 
@@ -189,6 +297,7 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
     }
     template_name = template_map.get(stage, "stage1.html")
 
+    user = getattr(request.state, "user", {})
     return templates.TemplateResponse(template_name, {
         "request": request,
         "session": session,
@@ -197,6 +306,8 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
         "sidebar_stages": sidebar_stages,
         "checkpoints": checkpoints,
         "stats": stats,
+        "user_name": user.get("name", ""),
+        "user_role": user.get("role", ""),
     })
 
 

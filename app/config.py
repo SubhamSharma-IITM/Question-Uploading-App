@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     concept_tree_path: str = str(Path(__file__).parent.parent / "data" / "acadza_concept_tree.json")
     tagging_modules_dir: str = str(Path(__file__).parent.parent / "data" / "tagging_modules")
 
+    # ── Firebase Auth ──
+    firebase_api_key: str = "AIzaSyBk24A-qnhKZKk64pdi__Jz4C8i_aCLKLc"
+    firebase_auth_domain: str = "acadza-automation-auth.firebaseapp.com"
+    firebase_project_id: str = "acadza-automation-auth"
+    firebase_storage_bucket: str = "acadza-automation-auth.firebasestorage.app"
+    firebase_messaging_sender_id: str = "398102329689"
+    firebase_app_id: str = "1:398102329689:web:b686bcb9e42941537a3448"
+
     # ── GitHub ──
     github_token: str = ""
 

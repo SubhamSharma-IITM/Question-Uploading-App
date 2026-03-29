@@ -1119,10 +1119,14 @@ class LatexTagStage(BasePipelineStage):
                 # Batch embeddings (OpenAI supports up to 2048 per call)
                 all_embeddings = []
                 batch_size = 100
-                for i in range(0, len(query_texts), batch_size):
-                    batch_texts = query_texts[i:i+batch_size]
-                    batch_embeddings = _get_embeddings(batch_texts, embed_client)
-                    all_embeddings.extend(batch_embeddings)
+                try:
+                    for i in range(0, len(query_texts), batch_size):
+                        batch_texts = query_texts[i:i+batch_size]
+                        batch_embeddings = _get_embeddings(batch_texts, embed_client)
+                        all_embeddings.extend(batch_embeddings)
+                except Exception as emb_err:
+                    self.log("error", f"OpenAI embeddings failed: {emb_err}")
+                    return {"error": f"OpenAI embeddings API error: {emb_err}. Check your OpenAI billing/quota."}
                 self.log("info", f"Embeddings computed: {len(all_embeddings)}")
 
                 # Build tagging requests with FAISS chunks
