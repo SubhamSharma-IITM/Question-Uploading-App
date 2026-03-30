@@ -1,0 +1,43 @@
+# ── Acadza Question Uploading App — Production Dockerfile ──
+# Python 3.11-slim with system deps for opencv, cairosvg, rdkit, faiss
+FROM python:3.11-slim
+
+# System dependencies:
+# - libgl1 + libglib2.0: OpenCV headless
+# - libcairo2 + libpango: cairosvg SVG->PNG
+# - libffi-dev: cffi (pycairo build)
+# - gcc g++: native extensions (faiss-cpu, numpy, etc.)
+# - curl: health check
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libcairo2 \
+    libcairo2-dev \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-0 \
+    libffi-dev \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/render/project/src
+
+# Install Python dependencies first (layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Make startup script executable
+RUN chmod +x start.sh
+
+# Render sets PORT env var (default 10000)
+ENV PORT=10000
+
+EXPOSE ${PORT}
+
+# Startup: bootstrap data to persistent disk, then run uvicorn
+CMD ["./start.sh"]

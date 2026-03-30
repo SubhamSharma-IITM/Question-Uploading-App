@@ -635,12 +635,39 @@ class UploadStage(BasePipelineStage):
             id_map.append(mongo_id)
             text_map[mongo_id] = texts[i][:500]
 
-        # Save updated index back to global cache
-        faiss.write_index(index, str(index_path))
-        metadata["id_map"] = id_map
-        metadata["text_map"] = text_map
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, ensure_ascii=False)
+        # Save updated index back to global cache (with file lock for concurrent safety)
+        lock_path = index_path.parent / ".faiss_write.lock"
+        lock_fd = open(lock_path, "w")
+        try:
+            import sys
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            self.log("warning", "FAISS index is locked by another session -- retry in 30s")
+            lock_fd.close()
+            return 0
+
+        try:
+            faiss.write_index(index, str(index_path))
+            metadata["id_map"] = id_map
+            metadata["text_map"] = text_map
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False)
+        finally:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            lock_fd.close()
 
         self.log("success", f"FAISS index updated: {index.ntotal} total vectors (added {len(new_ids)})")
         return len(new_ids)

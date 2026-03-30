@@ -30,7 +30,7 @@ beautifulsoup4>=4.12.0
 # Image Processing
 Pillow>=10.0.0
 numpy>=1.24.0
-opencv-python>=4.8.0
+opencv-python-headless>=4.8.0
 cairosvg>=2.7.0
 pycairo>=1.26.0
 
@@ -41,6 +41,7 @@ google-cloud-storage>=2.14.0
 faiss-cpu>=1.9.0
 
 # SMILES Chemistry Rendering (Stage 5)
-rdkit>=2024.3.0
+# rdkit-pypi works on Linux (pip install), rdkit on conda
+rdkit-pypi>=2024.3.0
 
 # lxml is pulled in by beautifulsoup4 automatically

@@ -2078,14 +2078,25 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         """Set GOOGLE_APPLICATION_CREDENTIALS env var for GCS and Vertex AI clients.
 
         Must be called BEFORE creating any google.cloud.storage or genai Client.
+
+        Supports two modes:
+        1. Local dev: VERTEX_AI_CREDENTIALS points to a .json file on disk
+        2. Render: VERTEX_AI_CREDENTIALS_B64 decoded to /tmp/vertex_sa.json by start.sh
         """
         import os
         from app.config import settings
+
+        # If already set (e.g. by start.sh on Render), verify and use it
+        existing = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+        if existing and os.path.exists(existing):
+            return existing
+
         creds_path = settings.vertex_ai_credentials
         if not creds_path or not os.path.exists(creds_path):
             raise RuntimeError(
                 f"Vertex AI credentials not found at '{creds_path}'. "
-                "Set VERTEX_AI_CREDENTIALS in .env to the service account JSON path."
+                "Set VERTEX_AI_CREDENTIALS in .env (local) or "
+                "VERTEX_AI_CREDENTIALS_B64 env var (Render)."
             )
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
         return creds_path
