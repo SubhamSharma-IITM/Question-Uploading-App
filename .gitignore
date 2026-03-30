@@ -39,3 +39,22 @@ desktop.ini
 # Logs
 *.log
 *.err
+
+# Local-only directories (experiments, tools, benchmarks, tests, recovery)
+experiments/
+tools/
+test_wm_output/
+_recovery_sessions/
+Upload Stats Check/
+docs/
+
+# Database files
+app.db
+*.sqlite
+*.sqlite3
+
+# Benchmark & test scripts (local dev only)
+benchmark_*.py
+benchmark_*.json
+test_*.py
+fire_test_passes.py
