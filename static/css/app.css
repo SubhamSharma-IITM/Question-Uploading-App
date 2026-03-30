@@ -2,7 +2,8 @@
    ACADZA Question Uploading App — Industrial UI Theme
    ══════════════════════════════════════════════════════════════ */
 
-:root {
+/* ── Dark Theme (default) ── */
+:root, [data-theme="dark"] {
     --bg-primary: #0f1117;
     --bg-secondary: #1a1d27;
     --bg-card: #1e2130;
@@ -22,6 +23,32 @@
     --topbar-h: 48px;
     --radius: 6px;
     --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    --glass-bg: rgba(30, 33, 48, 0.65);
+    --glass-border: rgba(79, 125, 249, 0.08);
+    --logo-filter: none;
+}
+
+/* ── Light Theme — calibrated professional white ── */
+[data-theme="light"] {
+    --bg-primary: #f4f5f7;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-input: #f0f1f4;
+    --border: #d8dbe4;
+    --border-hover: #b8bdd0;
+    --text-primary: #1a1d2e;
+    --text-secondary: #4a5068;
+    --text-muted: #8890a8;
+    --accent: #3b6ce7;
+    --accent-hover: #2d5bd4;
+    --success: #16a364;
+    --warning: #d97706;
+    --error: #dc2626;
+    --info: #2563eb;
+    --shadow: 0 1px 4px rgba(0,0,0,0.08);
+    --glass-bg: rgba(255, 255, 255, 0.85);
+    --glass-border: rgba(0, 0, 0, 0.06);
+    --logo-filter: invert(1) brightness(0.3);
 }
 
 /* ── Reset & Base ── */

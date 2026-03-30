@@ -4,13 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In - Acadza</title>
+    <script>
+    // Apply saved theme before render to prevent flash
+    (function() {
+        const t = localStorage.getItem('acadza_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+    })();
+    </script>
     <style>
+        :root, [data-theme="dark"] {
+            --login-bg: #080910;
+            --login-card-bg: rgba(20, 24, 42, 0.4);
+            --login-card-border: rgba(79, 125, 249, 0.12);
+            --login-text: #e4e6ef;
+            --login-text-sub: #6b7194;
+            --login-input-bg: rgba(255, 255, 255, 0.06);
+            --login-input-border: rgba(255, 255, 255, 0.1);
+            --login-gear-opacity: 0.09;
+        }
+        [data-theme="light"] {
+            --login-bg: #f0f2f5;
+            --login-card-bg: rgba(255, 255, 255, 0.9);
+            --login-card-border: rgba(0, 0, 0, 0.08);
+            --login-text: #1a1d2e;
+            --login-text-sub: #5a6078;
+            --login-input-bg: rgba(0, 0, 0, 0.04);
+            --login-input-border: rgba(0, 0, 0, 0.12);
+            --login-gear-opacity: 0.04;
+        }
+
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             font-family: 'Segoe UI', -apple-system, system-ui, sans-serif;
-            background: #080910;
-            color: #e4e6ef;
+            background: var(--login-bg, #080910);
+            color: var(--login-text, #e4e6ef);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -27,7 +55,7 @@
             transform: translateY(-50%) rotate(0deg);
             width: 110vh;
             height: 110vh;
-            opacity: 0.09;
+            opacity: var(--login-gear-opacity, 0.09);
             pointer-events: none;
             z-index: 0;
             animation: gearArrive 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
@@ -62,10 +90,10 @@
 
         /* Glass card */
         .card {
-            background: rgba(20, 24, 42, 0.4);
+            background: var(--login-card-bg, rgba(20, 24, 42, 0.4));
             backdrop-filter: blur(14px) saturate(1.4);
             -webkit-backdrop-filter: blur(14px) saturate(1.4);
-            border: 1px solid rgba(79, 125, 249, 0.12);
+            border: 1px solid var(--login-card-border, rgba(79, 125, 249, 0.12));
             border-radius: 16px;
             padding: 44px 36px;
             box-shadow:
@@ -80,12 +108,12 @@
             text-align: center;
             margin-bottom: 6px;
             letter-spacing: -0.4px;
-            color: #f0f2fa;
+            color: var(--login-text, #f0f2fa);
         }
 
         .card .sub {
             font-size: 14px;
-            color: #6b7194;
+            color: var(--login-text-sub, #6b7194);
             text-align: center;
             margin-bottom: 32px;
             font-weight: 400;

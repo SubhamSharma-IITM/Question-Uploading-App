@@ -179,6 +179,7 @@ class UploadStage(BasePipelineStage):
                 qid = entry.get("qid", "?")
                 qtype = (entry.get("questionType") or "").lower()
                 error_val = entry.get("error", 2)
+                subject = entry.get("subject", "Unknown")
 
                 view_link = f"{QUESTION_VIEW_URL}{qid}"
 
@@ -188,6 +189,7 @@ class UploadStage(BasePipelineStage):
                     csv_rows.append({
                         "Question META ID": qid,
                         "UploadedQuestionID": "QUARANTINED",
+                        "Subject": subject,
                         "Question Type": qtype,
                         "View Link": view_link,
                         "Question Link": "N/A",
@@ -202,6 +204,7 @@ class UploadStage(BasePipelineStage):
                     csv_rows.append({
                         "Question META ID": qid,
                         "UploadedQuestionID": f"SKIPPED_ERROR_{error_val}",
+                        "Subject": subject,
                         "Question Type": qtype,
                         "View Link": view_link,
                         "Question Link": "N/A",
@@ -254,6 +257,7 @@ class UploadStage(BasePipelineStage):
                 row = {
                     "Question META ID": qid,
                     "UploadedQuestionID": status,
+                    "Subject": subject,
                     "Question Type": qtype_key,
                     "View Link": view_link,
                     "Question Link": link,
@@ -305,14 +309,14 @@ class UploadStage(BasePipelineStage):
             if status in ("QUARANTINED", "FAILED", "DRY_RUN") or status.startswith("SKIPPED"):
                 continue
             el = row.get("Error Level", 2)
+            subj = row.get("Subject", "Unknown")
             if el == 1:
                 posted_err1 += 1
             else:
                 posted_err2 += 1
-            # Track subject (from metadata)
-            # Subject is in the entry but not in csv_rows -- use qtype as proxy
-            # Actually, let's track from all_csv_rows which doesn't have subject
-            # We'll add subject tracking in the upload loop above in a future pass
+            if subj not in subject_counts:
+                subject_counts[subj] = {1: 0, 2: 0}
+            subject_counts[subj][el] += 1
 
         self.save_checkpoint("completed", {
             "posted": total_posted,
@@ -323,21 +327,22 @@ class UploadStage(BasePipelineStage):
             "dry_run": dry_run,
         })
 
-        # Write upload_log entries for dashboard stats tracking
+        # Write upload_log entries for dashboard stats tracking (per subject)
         if not dry_run and total_posted > 0:
             try:
-                from app.db import log_upload
-                # Get the user who owns this session
-                from app.db import get_session
+                from app.db import log_upload, get_session
                 session = get_session(self.session_id)
                 user_phone = (session or {}).get("created_by", "")
                 if user_phone:
-                    # Log err1 and err2 as separate entries
-                    if posted_err1 > 0:
-                        log_upload(self.session_id, user_phone, 1, "", posted_err1)
-                    if posted_err2 > 0:
-                        log_upload(self.session_id, user_phone, 2, "", posted_err2)
-                    self.log("info", f"Dashboard stats logged: err1={posted_err1}, err2={posted_err2}")
+                    logged = 0
+                    for subj, counts in subject_counts.items():
+                        if counts[1] > 0:
+                            log_upload(self.session_id, user_phone, 1, subj, counts[1])
+                            logged += counts[1]
+                        if counts[2] > 0:
+                            log_upload(self.session_id, user_phone, 2, subj, counts[2])
+                            logged += counts[2]
+                    self.log("info", f"Dashboard stats: err1={posted_err1}, err2={posted_err2}, {len(subject_counts)} subjects, {logged} entries logged")
             except Exception as e:
                 self.log("warning", f"Failed to log upload stats: {e}")
 

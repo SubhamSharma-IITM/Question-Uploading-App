@@ -18,6 +18,10 @@
                 </div>
             </div>
             <div class="top-bar-right">
+                <!-- Theme toggle -->
+                <button onclick="toggleTheme()" title="Toggle theme" style="background:none;border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;cursor:pointer;color:var(--text-secondary);font-size:14px;line-height:1;transition:border-color 0.15s;" onmouseover="this.style.borderColor='var(--border-hover)'" onmouseout="this.style.borderColor='var(--border)'" id="theme-toggle-btn">
+                    <span id="theme-icon">&#9790;</span>
+                </button>
                 {% if session %}
                 <span class="session-badge">{{ session.name }}</span>
                 <span class="session-id">{{ session.id }}</span>
@@ -100,6 +104,30 @@
         </div>
     </div>
 
+    <!-- Theme: apply saved preference immediately to prevent flash -->
+    <script>
+    (function() {
+        const saved = localStorage.getItem('acadza_theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = saved || (prefersDark ? 'dark' : 'dark'); // default dark
+        document.documentElement.setAttribute('data-theme', theme);
+        // Update icon after DOM ready
+        document.addEventListener('DOMContentLoaded', () => {
+            const icon = document.getElementById('theme-icon');
+            if (icon) icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
+        });
+    })();
+
+    function toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('acadza_theme', next);
+        const icon = document.getElementById('theme-icon');
+        if (icon) icon.textContent = next === 'dark' ? '\u263E' : '\u2600';
+    }
+    </script>
+
     <script src="/static/js/sse_client.js"></script>
     <script src="/static/js/app.js"></script>
     {% if session %}
@@ -178,6 +206,28 @@
         });
     </script>
     {% endif %}
+
+    <!-- Heartbeat: ping server every 5 min for activity tracking -->
+    <script>
+    (function() {
+        function sendHeartbeat() {
+            const payload = {};
+            {% if session %}
+            payload.session_id = '{{ session.id }}';
+            payload.stage = '{{ view_stage | default("", true) }}';
+            {% endif %}
+            fetch('/api/heartbeat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            }).catch(() => {});
+        }
+        // Send immediately on page load, then every 5 min
+        sendHeartbeat();
+        setInterval(sendHeartbeat, 5 * 60 * 1000);
+    })();
+    </script>
+
     {% block scripts %}{% endblock %}
 </body>
 </html>
