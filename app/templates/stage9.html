@@ -372,9 +372,15 @@ async function scanQA() {
                 return;
             }
 
+            let subjectHtml = '';
+            if (d.by_subject) {
+                subjectHtml = '<div style="margin-top: 8px; font-size: 12px;">Subjects: ';
+                subjectHtml += Object.entries(d.by_subject).map(([s, c]) => '<strong>' + s + '</strong>: ' + c).join(' | ');
+                subjectHtml += '</div>';
+            }
             let tagHtml = '';
             if (d.tagged_by) {
-                tagHtml = '<div style="margin-top: 8px; font-size: 12px;">Tagged by: ';
+                tagHtml = '<div style="margin-top: 4px; font-size: 12px; color: var(--text-muted);">Tagged by: ';
                 tagHtml += Object.entries(d.tagged_by).map(([t, c]) => '<strong>' + t + '</strong>: ' + c).join(' | ');
                 tagHtml += '</div>';
             }
@@ -395,7 +401,7 @@ async function scanQA() {
                     <div class="stat-box"><div class="stat-value">${d.skip_qa}</div><div class="stat-label">Skip QA</div></div>
                     <div class="stat-box"><div class="stat-value">${d.error_types_checked || 14}</div><div class="stat-label">Error Types</div></div>
                 </div>
-                ${tagHtml}${credHtml}
+                ${subjectHtml}${tagHtml}${credHtml}
             `;
 
             if (d.qa_needed) {
@@ -740,26 +746,24 @@ async function mergeVotes() {
                 btn.textContent = 'Merge Votes';
             } else {
                 const res = d.results || {};
+                const quarantinedCount = (res.rejected_1of3 || 0) + (res.rejected_0of3 || 0);
+                const totalVoted = (res.approved_3of3 || 0) + (res.review_2of3 || 0) + quarantinedCount;
                 const card = document.getElementById('results-card');
                 card.style.display = 'block';
                 document.getElementById('results-content').innerHTML = `
-                    <div style="font-size: 13px; margin-bottom: 8px;">${d.votes_merged} questions voted across ${d.passes_used} passes</div>
+                    <div style="font-size: 13px; margin-bottom: 8px;">${totalVoted} questions verified across ${d.passes_used} passes</div>
                     <div class="vote-grid">
                         <div class="vote-box vote-clean">
                             <div class="vote-value">${res.approved_3of3 || 0}</div>
-                            <div class="vote-label">error=1 (Clean)</div>
+                            <div class="vote-label">Safe to Upload</div>
                         </div>
                         <div class="vote-box vote-review">
                             <div class="vote-value">${res.review_2of3 || 0}</div>
-                            <div class="vote-label">error=2 (Review)</div>
-                        </div>
-                        <div class="vote-box vote-manual">
-                            <div class="vote-value">${res.rejected_1of3 || 0}</div>
-                            <div class="vote-label">error=3 (Quarantine)</div>
+                            <div class="vote-label">Upload (Review)</div>
                         </div>
                         <div class="vote-box vote-fix">
-                            <div class="vote-value">${res.rejected_0of3 || 0}</div>
-                            <div class="vote-label">error=4 (Quarantine)</div>
+                            <div class="vote-value">${quarantinedCount}</div>
+                            <div class="vote-label">Quarantined</div>
                         </div>
                     </div>
                 `;
@@ -770,7 +774,6 @@ async function mergeVotes() {
                 document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
                 document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
 
-                const quarantinedCount = (res.rejected_1of3 || 0) + (res.rejected_0of3 || 0);
                 appendLog('success', `Votes merged: ${res.approved_3of3 || 0} clean, ${res.review_2of3 || 0} review, ${quarantinedCount} quarantined`);
                 // Update sidebar quarantine count
                 if (quarantinedCount > 0) {
@@ -871,12 +874,12 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (d.votes_merged || d.total) {
             const card = document.getElementById('results-card');
             card.style.display = 'block';
+            const resumeQuarantined = (d.error_3 || 0) + (d.error_4 || 0);
             document.getElementById('results-content').innerHTML = `
                 <div class="vote-grid">
-                    <div class="vote-box vote-clean"><div class="vote-value">${d.error_1 || 0}</div><div class="vote-label">Clean</div></div>
-                    <div class="vote-box vote-review"><div class="vote-value">${d.error_2 || 0}</div><div class="vote-label">Review</div></div>
-                    <div class="vote-box vote-manual"><div class="vote-value">${d.error_3 || 0}</div><div class="vote-label">Quarantine</div></div>
-                    <div class="vote-box vote-fix"><div class="vote-value">${d.error_4 || 0}</div><div class="vote-label">Quarantine</div></div>
+                    <div class="vote-box vote-clean"><div class="vote-value">${d.error_1 || 0}</div><div class="vote-label">Safe to Upload</div></div>
+                    <div class="vote-box vote-review"><div class="vote-value">${d.error_2 || 0}</div><div class="vote-label">Upload (Review)</div></div>
+                    <div class="vote-box vote-fix"><div class="vote-value">${resumeQuarantined}</div><div class="vote-label">Quarantined</div></div>
                 </div>
             `;
             // Show CSV links

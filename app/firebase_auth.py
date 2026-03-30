@@ -1,8 +1,8 @@
-"""Firebase Authentication — token verification and session management.
+"""PIN-based Authentication — phone + 6-digit PIN with rate limiting.
 
-Uses firebase-admin SDK to verify ID tokens from client-side Firebase Auth.
-Session cookies (signed, httponly) provide persistence after initial login.
-User info (name, role) stored server-side in session — no client storage needed.
+Server-side PIN verification with SHA-256 hashed storage.
+Session cookies (signed, httponly) provide persistence after login.
+3 failed attempts = 15-minute lockout per phone number.
 """
 
 import hashlib
@@ -11,21 +11,40 @@ import time
 import logging
 from typing import Optional, Dict
 
-from app.config import settings
-
 log = logging.getLogger(__name__)
 
 # ── Session cookie config ──
 SESSION_COOKIE_NAME = "acadza_session"
 SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 
-# ── User registry: phone -> {name, role} ──
-# Add team members here. Phone format: "+91XXXXXXXXXX"
+# ── Rate limiting ──
+MAX_ATTEMPTS = 3
+LOCKOUT_SECONDS = 15 * 60  # 15 minutes
+# {phone: {"count": int, "locked_until": float}}
+_rate_limits: Dict[str, dict] = {}
+
+
+def _hash_pin(pin: str) -> str:
+    """SHA-256 hash a PIN."""
+    return hashlib.sha256(pin.encode()).hexdigest()
+
+
+# ── User registry: phone -> {name, role, pin_hash} ──
+# PINs are SHA-256 hashed. To generate a hash:
+#   python -c "import hashlib; print(hashlib.sha256('123456'.encode()).hexdigest())"
 USER_REGISTRY: Dict[str, dict] = {
-    "+919661172783": {"name": "Shubham Sharma", "role": "Architect"},
-    "+917488290347": {"name": "Team Member", "role": "Developer"},
-    # Add more team members as needed:
-    # "+91XXXXXXXXXX": {"name": "Full Name", "role": "Team"},
+    "+919661172783": {
+        "name": "Shubham Sharma",
+        "role": "Architect",
+        "pin_hash": _hash_pin("143143"),
+    },
+    "+917488290347": {
+        "name": "Team Member",
+        "role": "Developer",
+        "pin_hash": _hash_pin("123456"),
+    },
+    # Add more:
+    # "+91XXXXXXXXXX": {"name": "Name", "role": "Team", "pin_hash": _hash_pin("NNNNNN")},
 }
 
 
@@ -38,14 +57,62 @@ def get_user_info(phone: str) -> dict:
     }
 
 
+def check_rate_limit(phone: str) -> Optional[int]:
+    """Check if phone is rate-limited. Returns seconds remaining or None."""
+    rl = _rate_limits.get(phone)
+    if not rl:
+        return None
+    if rl.get("locked_until", 0) > time.time():
+        return int(rl["locked_until"] - time.time())
+    # Lockout expired — reset
+    if rl.get("count", 0) >= MAX_ATTEMPTS:
+        _rate_limits.pop(phone, None)
+    return None
+
+
+def record_failed_attempt(phone: str) -> int:
+    """Record a failed login attempt. Returns attempts remaining."""
+    rl = _rate_limits.setdefault(phone, {"count": 0, "locked_until": 0})
+    rl["count"] = rl.get("count", 0) + 1
+    remaining = MAX_ATTEMPTS - rl["count"]
+    if remaining <= 0:
+        rl["locked_until"] = time.time() + LOCKOUT_SECONDS
+        log.warning(f"Phone {phone[-4:]} locked for {LOCKOUT_SECONDS//60} minutes after {MAX_ATTEMPTS} failed attempts")
+    return max(remaining, 0)
+
+
+def clear_rate_limit(phone: str):
+    """Clear rate limit after successful login."""
+    _rate_limits.pop(phone, None)
+
+
+def verify_pin(phone: str, pin: str) -> Optional[dict]:
+    """Verify phone + PIN. Returns user info or None."""
+    # Normalize phone
+    if not phone.startswith("+91"):
+        phone = "+91" + phone.lstrip("+")
+
+    user = USER_REGISTRY.get(phone)
+    if not user:
+        return None
+
+    if _hash_pin(pin) == user["pin_hash"]:
+        return {
+            "name": user["name"],
+            "role": user["role"],
+            "phone": phone,
+        }
+    return None
+
+
 # ── In-memory session store ──
 # Maps session_token -> {phone, uid, name, role, verified_at, expires_at}
 _sessions: Dict[str, dict] = {}
 
 
 def _get_secret_key() -> str:
-    """Derive a signing key from Firebase API key (always available)."""
-    return settings.firebase_api_key or "acadza-fallback-key-change-me"
+    """Derive a signing key."""
+    return "acadza-pin-auth-secret-key"
 
 
 def _sign_token(data: str) -> str:
@@ -53,20 +120,17 @@ def _sign_token(data: str) -> str:
     return hmac.new(_get_secret_key().encode(), data.encode(), hashlib.sha256).hexdigest()
 
 
-def create_session(phone: str, uid: str) -> str:
-    """Create a session after Firebase token verification. Returns session token."""
-    raw = f"{uid}:{phone}:{time.time()}"
+def create_session(phone: str, name: str, role: str) -> str:
+    """Create a session after PIN verification. Returns session token."""
+    raw = f"{phone}:{name}:{time.time()}"
     token = hashlib.sha256(raw.encode()).hexdigest()
     sig = _sign_token(token)
     session_token = f"{token}.{sig}"
 
-    user_info = get_user_info(phone)
-
     _sessions[session_token] = {
         "phone": phone,
-        "uid": uid,
-        "name": user_info["name"],
-        "role": user_info["role"],
+        "name": name,
+        "role": role,
         "verified_at": time.time(),
         "expires_at": time.time() + SESSION_MAX_AGE,
     }
@@ -101,52 +165,3 @@ def verify_session(session_token: Optional[str]) -> Optional[dict]:
 def delete_session(session_token: str):
     """Remove a session."""
     _sessions.pop(session_token, None)
-
-
-async def verify_firebase_token(id_token: str) -> Optional[dict]:
-    """Verify a Firebase ID token server-side.
-
-    Uses firebase-admin if available, otherwise falls back to
-    Google's public keys endpoint for stateless verification.
-    """
-    try:
-        import firebase_admin
-        from firebase_admin import auth as fb_auth
-
-        # Initialize app if not already done
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app()
-
-        decoded = fb_auth.verify_id_token(id_token)
-        return {
-            "uid": decoded["uid"],
-            "phone": decoded.get("phone_number", ""),
-        }
-    except ImportError:
-        # firebase-admin not installed -- use REST verification
-        log.warning("firebase-admin not installed, using REST token verification")
-        return await _verify_token_rest(id_token)
-    except Exception as e:
-        log.error(f"Firebase token verification failed: {e}")
-        return None
-
-
-async def _verify_token_rest(id_token: str) -> Optional[dict]:
-    """Verify Firebase ID token via Google's tokeninfo endpoint (no SDK needed)."""
-    import aiohttp
-
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={settings.firebase_api_key}"
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json={"idToken": id_token}) as resp:
-            if resp.status != 200:
-                log.error(f"Firebase token lookup failed: {resp.status}")
-                return None
-            data = await resp.json()
-            users = data.get("users", [])
-            if not users:
-                return None
-            user = users[0]
-            return {
-                "uid": user.get("localId", ""),
-                "phone": user.get("phoneNumber", ""),
-            }

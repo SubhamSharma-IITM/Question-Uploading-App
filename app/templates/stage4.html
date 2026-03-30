@@ -35,9 +35,19 @@
                         <select id="tagged-by" class="form-select" onchange="updateTagDesc()">
                             <option value="AITAI" selected>AITAI (default)</option>
                             <option value="NITAI">NITAI</option>
+                            <option value="NITRAI">NITRAI</option>
+                            <!-- AIT/NIT disabled for production
                             <option value="AIT">AIT</option>
                             <option value="NIT">NIT</option>
-                            <option value="NITRAI">NITRAI</option>
+                            -->
+                        </select>
+                    </div>
+                    <div class="form-group" style="max-width: 140px;">
+                        <label>Difficulty</label>
+                        <select id="difficulty" class="form-select">
+                            <option value="EASY">Easy</option>
+                            <option value="MEDIUM" selected>Medium</option>
+                            <option value="HARD">Hard</option>
                         </select>
                     </div>
                     <button class="btn btn-primary" onclick="convertMetadata()" id="convert-btn">
@@ -49,26 +59,10 @@
                     <strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.
                 </div>
 
-                <!-- PYQ Settings (auto-loaded from session config) -->
-                <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
-                    <label class="form-check">
-                        <input type="checkbox" id="is-pyq" onchange="togglePYQ()">
-                        <span>Previous Year Questions (PYQ)</span>
-                    </label>
-                    <div id="pyq-settings" style="display: none; margin-top: 10px;">
-                        <div class="form-inline">
-                            <div class="form-group" style="max-width: 180px;">
-                                <label>Previous Exam</label>
-                                <select id="prev-exam" class="form-select">
-                                    <option value="">Select exam...</option>
-                                    <option value="MAINS">JEE Mains</option>
-                                    <option value="ADVANCED">JEE Advanced</option>
-                                    <option value="NEET">NEET</option>
-                                    <option value="MHCET">MH CET</option>
-                                </select>
-                            </div>
-                        </div>
-                        <small class="text-muted">Year is extracted per-question by the LLM in Stage 2.</small>
+                <!-- PYQ indicator (auto-loaded from Stage 2 session config, not editable here) -->
+                <div id="pyq-indicator" style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+                    <div style="font-size: 12px; color: var(--text-secondary);">
+                        PYQ Mode: <strong id="pyq-indicator-text"></strong>
                     </div>
                 </div>
             </div>
@@ -133,19 +127,12 @@
 const TAG_DESCRIPTIONS = {
     'AITAI': '<strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
     'NITAI': '<strong>NITAI</strong> — NEET AI-Tagged + AI-Verified. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
-    'AIT': '<strong>AIT</strong> — AI-Tagged for JEE. Pipeline stops at Stage 8 (duplicate check). Faculty review required before upload.',
-    'NIT': '<strong>NIT</strong> — NEET AI-Tagged. For Biology, Physics, Chemistry NEET questions. Pipeline stops at Stage 8. Faculty review required.',
-    'NITRAI': '<strong>NITRAI</strong> — Reserved for future use.',
+    'NITRAI': '<strong>NITRAI</strong> — Select exclusively for Assertion-Reason based questions of Biology (Botany/Zoology) for NEET.',
 };
 
 function updateTagDesc() {
     const val = document.getElementById('tagged-by').value;
     document.getElementById('tag-desc').innerHTML = TAG_DESCRIPTIONS[val] || '';
-}
-
-function togglePYQ() {
-    const checked = document.getElementById('is-pyq').checked;
-    document.getElementById('pyq-settings').style.display = checked ? 'block' : 'none';
 }
 
 // Auto-load session config (test_code, PYQ settings)
@@ -164,14 +151,13 @@ async function loadSessionConfig() {
                 const stem = cfg.pdf_filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
                 document.getElementById('source-name').value = stem;
             }
-            // Load PYQ config
+            // Show PYQ indicator if set in Stage 2
             if (cfg.is_pyq) {
-                document.getElementById('is-pyq').checked = true;
-                document.getElementById('pyq-settings').style.display = 'block';
-                if (cfg.prev_exam) {
-                    document.getElementById('prev-exam').value = cfg.prev_exam;
-                }
-                appendLog('info', 'Loaded PYQ config: ' + cfg.prev_exam + (cfg.pyq_year_from ? ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')' : ''));
+                const ind = document.getElementById('pyq-indicator');
+                ind.style.display = 'block';
+                const yearRange = cfg.pyq_year_from ? ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')' : '';
+                document.getElementById('pyq-indicator-text').textContent = (cfg.prev_exam || 'Yes') + yearRange;
+                appendLog('info', 'PYQ mode from Stage 2: ' + (cfg.prev_exam || 'enabled') + yearRange);
             }
         }
     } catch (e) {
@@ -186,29 +172,25 @@ async function convertMetadata() {
     const source = document.getElementById('source-name').value;
     const code = document.getElementById('test-code').value;
     const taggedBy = document.getElementById('tagged-by').value;
+    const difficulty = document.getElementById('difficulty').value;
     btn.disabled = true;
     btn.textContent = 'Converting...';
-    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ')...');
+    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ', difficulty: ' + difficulty + ')...');
 
     let url = '/api/sessions/{{ session.id }}/stage4/convert?source=' +
         encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
-        '&tagged_by=' + encodeURIComponent(taggedBy);
+        '&tagged_by=' + encodeURIComponent(taggedBy) +
+        '&difficulty=' + encodeURIComponent(difficulty);
 
-    // Add PYQ params if checked (including year range from session config)
-    const isPYQ = document.getElementById('is-pyq').checked;
-    if (isPYQ) {
+    // Auto-inject PYQ params from Stage 2 session config (no manual selection needed here)
+    if (window._sessionConfig && window._sessionConfig.is_pyq) {
         url += '&is_pyq=true';
-        url += '&prev_exam=' + encodeURIComponent(document.getElementById('prev-exam').value);
-        // Pass year range from loaded session config
-        if (window._sessionConfig) {
-            const yf = window._sessionConfig.pyq_year_from;
-            const yt = window._sessionConfig.pyq_year_to;
-            if (yf) url += '&pyq_year_from=' + yf;
-            if (yt) url += '&pyq_year_to=' + yt;
-            appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value + ' (' + (yf||'?') + '-' + (yt||'?') + ')');
-        } else {
-            appendLog('info', 'PYQ mode: ' + document.getElementById('prev-exam').value);
-        }
+        url += '&prev_exam=' + encodeURIComponent(window._sessionConfig.prev_exam || '');
+        const yf = window._sessionConfig.pyq_year_from;
+        const yt = window._sessionConfig.pyq_year_to;
+        if (yf) url += '&pyq_year_from=' + yf;
+        if (yt) url += '&pyq_year_to=' + yt;
+        appendLog('info', 'PYQ mode (from Stage 2): ' + (window._sessionConfig.prev_exam || '') + ' (' + (yf||'?') + '-' + (yt||'?') + ')');
     }
 
     try {

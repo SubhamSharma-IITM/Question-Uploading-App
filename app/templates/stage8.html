@@ -42,9 +42,7 @@
                     <span id="threshold-val" style="font-size: 13px; font-weight: 600; min-width: 36px;">85%</span>
                 </div>
                 <div class="btn-group">
-                    <button class="btn" onclick="selfCheck()" id="self-btn">Self-Duplicate Check</button>
-                    <button class="btn" onclick="crossCheck()" id="cross-btn">Cross-DB Check</button>
-                    <button class="btn btn-primary" onclick="runAll()" id="run-all-btn">Run Both Checks</button>
+                    <button class="btn btn-primary" onclick="runAll()" id="run-all-btn">Run Duplicate Check</button>
                     <button class="btn" onclick="skipDuplicates()" id="skip-btn">Skip</button>
                 </div>
             </div>
@@ -158,9 +156,17 @@ window.MathJax = {
 .flag-badge.board { background: #2563eb; }
 .flag-badge.ncert { background: #059669; }
 .flag-badge.solved { background: #d97706; }
-.math-preview { line-height: 1.6; overflow-x: auto; max-height: 300px; overflow-y: auto; }
-.math-preview h3, .math-preview h2, .math-preview h1 { display: inline; font-size: inherit; font-weight: inherit; margin: 0; }
+.math-preview {
+    line-height: 1.6; overflow-x: auto; overflow-y: auto;
+    /* White background + black text for readable preview regardless of theme */
+    background: #ffffff; color: #1a1a1a; padding: 8px; border-radius: 4px;
+}
+.math-preview h3, .math-preview h2, .math-preview h1 { display: inline; font-size: inherit; font-weight: inherit; margin: 0; color: #1a1a1a; }
 .math-preview img { max-width: 100%; height: auto; }
+.math-preview math { color: #1a1a1a; }
+/* Ensure grid columns stay separate */
+.dup-body { min-width: 0; }
+.dup-body > div { min-width: 0; overflow: hidden; }
 </style>
 
 <script>
@@ -370,14 +376,14 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
                 </span>
                 <span class="dup-sim">${(dup.similarity * 100).toFixed(1)}%</span>
             </div>
-            <div class="dup-body" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                <div style="padding: 10px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--primary);">
+            <div class="dup-body" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;" onclick="event.stopPropagation();">
+                <div style="padding: 10px; background: #f8f9fa; border-radius: 4px; border-left: 3px solid var(--primary); min-width: 0; overflow: hidden;">
                     <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">${labelA}: <code style="font-size:11px;">${escapeHtml(idA)}</code></div>
-                    <div style="font-size: 13px; overflow-x: auto;" class="math-preview">${htmlA || escapeHtml(textA)}</div>
+                    <div style="font-size: 13px;" class="math-preview">${htmlA || escapeHtml(textA)}</div>
                 </div>
-                <div style="padding: 10px; background: var(--bg-primary); border-radius: 4px; border-left: 3px solid var(--warning, #e6a817);">
+                <div style="padding: 10px; background: #f8f9fa; border-radius: 4px; border-left: 3px solid var(--warning, #e6a817); min-width: 0; overflow: hidden;">
                     <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight:600;">${labelB}: <code style="background:#333; padding:1px 5px; border-radius:3px; color:var(--primary); font-size:11px;">${escapeHtml(idB)}</code></div>
-                    <div style="font-size: 13px; overflow-x: auto;" class="math-preview">${htmlB || escapeHtml(textB)}</div>
+                    <div style="font-size: 13px;" class="math-preview">${htmlB || escapeHtml(textB)}</div>
                 </div>
             </div>
         </div>`;

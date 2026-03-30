@@ -78,7 +78,9 @@
                 </div>
                 <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; display: flex; gap: 8px;">
                     <button class="btn btn-danger btn-sm" onclick="stopBatch()" id="stop-btn" style="display: none;">Stop Batch</button>
+                    <!-- Run in Background disabled for now
                     <button class="btn" onclick="runInBackground()" id="bg-btn">Run In Background</button>
+                    -->
                 </div>
             </div>
         </div>
@@ -88,24 +90,6 @@
             <div class="card-header"><h2>Batch Results</h2></div>
             <div class="card-body">
                 <div id="results-content"></div>
-            </div>
-        </div>
-
-        <!-- MathML Preview -->
-        <div class="card" id="mathml-card" style="display: none;">
-            <div class="card-header">
-                <h2>MathML Preview</h2>
-                <div style="display: flex; gap: 6px; align-items: center;">
-                    <select id="preview-subject" style="font-size: 12px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary);">
-                        <option value="">All Subjects</option>
-                    </select>
-                    <button class="btn btn-sm" onclick="loadMorePreview()" id="load-more-btn">Load More</button>
-                    <span id="mathml-summary" style="font-size: 11px; color: var(--text-muted);"></span>
-                    <button class="btn btn-sm" onclick="document.getElementById('mathml-card').style.display='none'">Close</button>
-                </div>
-            </div>
-            <div class="card-body" style="padding: 10px;">
-                <div id="mathml-content"></div>
             </div>
         </div>
 
@@ -160,73 +144,6 @@
 .pipeline-step-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .pipeline-step-body strong { font-size: 13px; }
 
-/* MathML rendered preview */
-.mathml-rendered-preview {
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 10px 12px;
-    margin-top: 6px;
-    font-size: 14px;
-    line-height: 1.8;
-    color: var(--text-primary);
-    overflow-x: auto;
-}
-.mathml-rendered-preview math {
-    display: inline-block;
-    vertical-align: middle;
-    font-size: 16px;
-}
-.mathml-rendered-preview math[display="block"] {
-    display: block;
-    margin: 8px 0;
-    text-align: center;
-}
-.mathml-rendered-preview img {
-    max-width: 350px;
-    height: auto;
-}
-
-/* Collapsible raw source toggle */
-.mathml-raw-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-top: 6px;
-    padding: 3px 8px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-muted);
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    cursor: pointer;
-}
-.mathml-raw-toggle:hover {
-    border-color: var(--border-hover);
-    color: var(--text-secondary);
-}
-.mathml-raw-source {
-    display: none;
-    margin-top: 6px;
-}
-.mathml-raw-source.visible {
-    display: block;
-}
-.mathml-raw-source pre {
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 8px 10px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 11px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 200px;
-    overflow-y: auto;
-    color: var(--text-secondary);
-}
-
 /* Conversion count badges */
 .conv-badge {
     display: inline-block;
@@ -257,12 +174,6 @@ function markStepIncomplete(stepNum) {
     const numEl = document.getElementById('step-num-' + stepNum);
     if (stepEl) stepEl.classList.remove('completed');
     if (numEl) numEl.textContent = String(stepNum);
-}
-
-// Toggle raw MathML source visibility
-function toggleRawSource(id) {
-    const el = document.getElementById(id);
-    if (el) el.classList.toggle('visible');
 }
 
 async function scanBatch() {
@@ -400,10 +311,6 @@ async function convertAllMathML() {
             if (d.failed_qids_count === 0) {
                 appendLog('info', 'No LaTeX failures — batch will only include tagging requests (if any)');
             }
-            // Show MathML preview with initial samples
-            previewOffset = 0;
-            document.getElementById('mathml-content').innerHTML = '';
-            loadMorePreview();
             return;
         }
     } catch (e) {
@@ -606,8 +513,8 @@ async function stopBatch() {
     btn.textContent = 'Stop Batch';
 }
 
+/* Run in Background disabled for now
 async function runInBackground() {
-    // Check if a batch is actually submitted first
     if (!stepStatus[3]) {
         appendLog('warning', 'No batch submitted yet — submit a batch before running in background');
         return;
@@ -615,11 +522,11 @@ async function runInBackground() {
     if (!confirm('Run batch in background? You can advance to Stage 8 and return later to check results.')) return;
     appendLog('info', 'Batch running in background — you can now advance to Stage 8');
     { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
-    document.getElementById('bg-btn').disabled = true;
-    document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
-    // Save background state to checkpoint so we know to show poll on revisit
+    { const _bg = document.getElementById('bg-btn'); if (_bg) _bg.disabled = true; }
+    document.getElementById('bg-btn').textContent = 'Running in Background';
     apiPost('/api/sessions/{{ session.id }}/stage7/background');
 }
+*/
 
 async function downloadResults() {
     const btn = document.getElementById('download-btn');
@@ -647,7 +554,7 @@ async function downloadResults() {
                 markStepComplete(5);
                 btn.textContent = 'Downloaded \u2713';
                 document.getElementById('stop-btn').style.display = 'none';
-                document.getElementById('bg-btn').disabled = true;
+                { const _bg = document.getElementById('bg-btn'); if (_bg) _bg.disabled = true; }
                 // Keep btn disabled
             }
 
@@ -671,76 +578,6 @@ async function downloadResults() {
     btn.textContent = 'Download';
 }
 
-let previewOffset = 0;
-const PREVIEW_BATCH = 5;
-
-async function loadMorePreview() {
-    const btn = document.getElementById('load-more-btn');
-    btn.disabled = true;
-    btn.textContent = 'Loading...';
-    const subject = document.getElementById('preview-subject').value;
-
-    try {
-        const params = new URLSearchParams({offset: previewOffset, count: PREVIEW_BATCH});
-        if (subject) params.append('subject', subject);
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage7/preview?' + params.toString());
-        if (r.success && r.data.samples) {
-            const card = document.getElementById('mathml-card');
-            card.style.display = 'block';
-            const content = document.getElementById('mathml-content');
-
-            // Populate subject dropdown on first load
-            if (r.data.subjects && previewOffset === 0) {
-                const sel = document.getElementById('preview-subject');
-                const current = sel.value;
-                sel.innerHTML = '<option value="">All Subjects</option>';
-                r.data.subjects.forEach(s => {
-                    sel.innerHTML += `<option value="${escapeHtml(s)}" ${s === current ? 'selected' : ''}>${escapeHtml(s)}</option>`;
-                });
-            }
-
-            // Append samples
-            r.data.samples.forEach((s, i) => {
-                const idx = previewOffset + i;
-                const statusBadge = s.has_mathml
-                    ? '<span class="conv-badge success">MathML OK</span>'
-                    : '<span class="conv-badge fail">Has LaTeX</span>';
-                content.innerHTML += `
-                    <div style="margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 6px;">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                            <strong style="font-size: 12px;">${escapeHtml(s.qid)} — ${escapeHtml(s.subject || '')}</strong>
-                            ${statusBadge}
-                        </div>
-                        <div class="mathml-rendered-preview">${s.question_html || '<em>No question content</em>'}</div>
-                        <button class="mathml-raw-toggle" onclick="toggleRawSource('raw-${idx}')">View Source</button>
-                        <div class="mathml-raw-source" id="raw-${idx}"><pre>${escapeHtml(s.question_html || '')}</pre></div>
-                    </div>
-                `;
-            });
-
-            previewOffset += r.data.samples.length;
-            document.getElementById('mathml-summary').textContent =
-                `Showing ${previewOffset} of ${r.data.total_available}`;
-
-            if (r.data.samples.length < PREVIEW_BATCH) {
-                btn.textContent = 'No More';
-                btn.disabled = true;
-            }
-        }
-    } catch (e) {
-        appendLog('error', 'Preview error: ' + e.message);
-    }
-    btn.disabled = false;
-    btn.textContent = 'Load More';
-}
-
-// Reset preview when subject changes
-document.getElementById('preview-subject')?.addEventListener('change', () => {
-    previewOffset = 0;
-    document.getElementById('mathml-content').innerHTML = '';
-    loadMorePreview();
-});
-
 // Restore state from checkpoint when revisiting
 document.addEventListener('DOMContentLoaded', async () => {
     // First check if stage is already fully completed via checkpoint
@@ -760,7 +597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (el) el.disabled = true;
             });
             document.getElementById('stop-btn').style.display = 'none';
-            document.getElementById('bg-btn').disabled = true;
+            { const _bg = document.getElementById('bg-btn'); if (_bg) _bg.disabled = true; }
             const card = document.getElementById('results-card');
             card.style.display = 'block';
             document.getElementById('results-content').innerHTML = `
@@ -820,8 +657,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 markStepComplete(3);
                 document.getElementById('poll-btn').disabled = false;
                 document.getElementById('stop-btn').style.display = 'inline-flex';
-                document.getElementById('bg-btn').disabled = true;
-                document.getElementById('bg-btn').textContent = 'Running in Background \u2713';
+                { const _bg = document.getElementById('bg-btn'); if (_bg) _bg.disabled = true; }
+                { const _bg2 = document.getElementById('bg-btn'); if (_bg2) _bg2.textContent = 'Running in Background'; }
                 // Auto-poll to check if already complete
                 appendLog('info', 'Checking batch status...');
                 pollBatch();

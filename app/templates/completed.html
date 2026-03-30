@@ -313,23 +313,20 @@ async function loadSummary() {
             const qaCard = document.getElementById('qa-card');
             qaCard.style.display = 'block';
             const votes = s.qa_votes;
+            const qaQuarantined = (votes['3'] || 0) + (votes['4'] || 0);
             document.getElementById('qa-content').innerHTML = `
                 <div class="vote-grid">
                     <div class="vote-box vote-clean">
                         <div class="vote-value">${votes['1'] || 0}</div>
-                        <div class="vote-label">Clean (error=1)</div>
+                        <div class="vote-label">Safe to Upload</div>
                     </div>
                     <div class="vote-box vote-review">
                         <div class="vote-value">${votes['2'] || 0}</div>
-                        <div class="vote-label">Review (error=2)</div>
-                    </div>
-                    <div class="vote-box vote-manual">
-                        <div class="vote-value">${votes['3'] || 0}</div>
-                        <div class="vote-label">Manual (error=3)</div>
+                        <div class="vote-label">Upload (Review)</div>
                     </div>
                     <div class="vote-box vote-fix">
-                        <div class="vote-value">${votes['4'] || 0}</div>
-                        <div class="vote-label">Fix (error=4)</div>
+                        <div class="vote-value">${qaQuarantined}</div>
+                        <div class="vote-label">Quarantined</div>
                     </div>
                 </div>
             `;
@@ -358,11 +355,11 @@ async function scanUpload() {
         if (!r.success) { appendLog('error', r.error?.message || 'Scan failed'); return; }
 
         const d = r.data;
+        const e1 = d.error_breakdown?.[1] || 0;
+        const e2 = d.error_breakdown?.[2] || 0;
         document.getElementById('upload-scan-info').innerHTML = `
             <strong>${d.upload_ready || 0}</strong> questions ready for upload
-            (${d.quarantined_count || 0} quarantined, ${d.error_3_4_count || 0} rejected by QA)
-            across ${d.files_count || 0} files.
-            <span style="font-size:11px; color:var(--text-muted);">Error=1: ${d.error_breakdown?.[1] || 0} | Error=2: ${d.error_breakdown?.[2] || 0}</span>
+            <span style="font-size:12px; color:var(--text-muted);">(${e1} clean + ${e2} review)</span>
         `;
         document.getElementById('upload-db-btn').disabled = false;
         appendLog('success', `Scan: ${d.upload_ready} ready, ${d.total_questions} total, ${d.quarantined_count} quarantined`);

@@ -109,6 +109,12 @@ def _strip_question_number(text: str) -> str:
     # Require 2+ digits OR single digit followed by at least 2 spaces for safety.
     text = re.sub(r'^\d{2,}[\s\n]+(?=[A-Za-z])', '', text)
 
+    # Pattern 2b: N) format — question number prefix (e.g., "5) Which", "1) Find")
+    # SKIP if text contains 2) later — that signals a numbered options list (1) 2) 3) 4)
+    # which Stage 4 normalizes to (A)(B)(C)(D). Same heuristic as Pattern 3 below.
+    if not re.search(r'2\)', text[3:]):
+        text = re.sub(r'^\d{1,3}\)\s*', '', text)
+
     # Pattern 3: (N) numbered questions — only 1-2 digit numbers (e.g., "(1) Find", "(23) What")
     # Don't match 3+ digits like "(102) ions" which is likely content.
     # SKIP if text contains (2) later — that signals a numbered options list, not a Q number.

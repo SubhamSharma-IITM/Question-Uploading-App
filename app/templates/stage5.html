@@ -9,15 +9,15 @@
     </button>
 </div>
 <p class="stage-description">
-    Remove watermarks from extracted images. Preview samples before/after cleaning, or skip if no watermarks detected.
+    Chroma detection identifies colored watermarks. Review all images, unselect bad ones to quarantine, then proceed.
 </p>
 
 <div class="stage-layout">
     <div class="stage-controls">
-        <!-- Scan & Controls -->
+        <!-- Step A: Scan & Process -->
         <div class="card">
             <div class="card-header">
-                <h2>Image Scan</h2>
+                <h2>Step A: Watermark Detection & Removal</h2>
                 <button class="btn btn-sm" onclick="scanImages()" id="scan-btn">Scan Images</button>
             </div>
             <div class="card-body">
@@ -26,47 +26,62 @@
                 </div>
                 <div id="controls" style="display: none; margin-top: 12px;">
                     <div class="btn-group">
-                        <button class="btn" onclick="previewOriginals()" id="preview-orig-btn">Preview Originals</button>
-                        <button class="btn" onclick="previewCleaned()" id="preview-clean-btn">Preview Cleaned</button>
-                        <button class="btn btn-primary" onclick="applyWatermark()" id="apply-btn">Apply Watermark Removal</button>
+                        <button class="btn btn-primary" onclick="applyWatermark()" id="apply-btn">
+                            Apply Watermark Detection
+                        </button>
                         <button class="btn" onclick="skipWatermark()" id="skip-btn">Skip (No Watermarks)</button>
                     </div>
+                </div>
+                <!-- Processing results -->
+                <div id="wm-results" style="display: none; margin-top: 12px;">
+                    <div id="wm-results-content"></div>
                 </div>
             </div>
         </div>
 
-        <!-- Results -->
-        <div class="card" id="results-card" style="display: none;">
-            <div class="card-header"><h2>Processing Results</h2></div>
-            <div class="card-body">
-                <div id="results-content"></div>
+        <!-- Step B: Image Preview Pane (appears after processing) -->
+        <div class="card" id="preview-card" style="display: none;">
+            <div class="card-header">
+                <h2>Review Images</h2>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button class="btn btn-sm" onclick="selectAll()" id="select-all-btn">Select All</button>
+                    <button class="btn btn-sm" onclick="deselectAll()" id="deselect-all-btn">Deselect All</button>
+                    <button class="btn btn-sm" onclick="loadMorePreview('top')" id="load-more-top-btn">Load More</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding: 8px;">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; padding: 0 4px;">
+                    All images selected by default. <strong>Unselect</strong> any image to mark it for quarantine.
+                    Quarantine removes the question from the pipeline.
+                    <span id="preview-counter" style="float: right; font-weight: 600;"></span>
+                </div>
+                <!-- Bounded scroll box for images -->
+                <div id="preview-grid" style="max-height: 600px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px;"></div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button class="btn btn-sm" onclick="loadMorePreview('bottom')" id="load-more-bottom-btn">Load More</button>
+                        <span id="preview-counter-bottom" style="font-size: 11px; font-weight: 600; color: var(--text-muted);"></span>
+                    </div>
+                    <button class="btn btn-danger" onclick="removeUnselected()" id="remove-btn">
+                        Remove Unselected (0)
+                    </button>
+                </div>
             </div>
         </div>
 
-        <!-- SMILES Chemistry Rendering -->
+        <!-- Step C: SMILES Chemistry Rendering (activates after quarantine) -->
         <div class="card" id="smiles-card" style="display: none;">
             <div class="card-header">
-                <h2>SMILES Chemistry Formulas</h2>
+                <h2>Step C: SMILES Chemistry Formulas</h2>
                 <button class="btn btn-sm btn-primary" onclick="renderSmiles()" id="smiles-render-btn" disabled>
                     Render SMILES
                 </button>
             </div>
             <div class="card-body">
                 <div id="smiles-status" style="font-size: 13px; color: var(--text-secondary);">
-                    Checking for SMILES tags...
+                    Waiting for image review to complete...
                 </div>
                 <div id="smiles-result" style="display: none; margin-top: 8px;"></div>
-            </div>
-        </div>
-
-        <!-- Image Preview Grid -->
-        <div class="card" id="preview-card" style="display: none;">
-            <div class="card-header">
-                <h2 id="preview-title">Image Preview</h2>
-                <button class="btn btn-sm" onclick="loadMorePreview()" id="load-more-btn">Load More</button>
-            </div>
-            <div class="card-body" style="padding: 10px;">
-                <div id="preview-grid"></div>
             </div>
         </div>
     </div>
@@ -80,7 +95,7 @@
         <div class="log-body" id="log-body">
             <div class="log-entry info">
                 <span class="log-level">[INFO]</span>
-                <span class="log-msg">Ready — scan for images first</span>
+                <span class="log-msg">Ready -- scan for images first</span>
             </div>
         </div>
     </div>
@@ -88,8 +103,118 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+/* Stage 5 preview pane styles */
+.wm-preview-item {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    overflow: hidden;
+    transition: opacity 0.3s;
+}
+.wm-preview-item.quarantined {
+    opacity: 0.35;
+    pointer-events: none;
+}
+.wm-preview-item.muted {
+    opacity: 0.6;
+    pointer-events: none;
+}
+.wm-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+.wm-preview-header input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.wm-preview-header .wm-fname {
+    font-weight: 600;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wm-preview-header .wm-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+.wm-label-cleaned {
+    background: rgba(52,211,153,0.15);
+    color: var(--success);
+}
+.wm-label-skipped {
+    background: rgba(96,165,250,0.15);
+    color: var(--info);
+}
+.wm-label-failed {
+    background: rgba(248,113,113,0.15);
+    color: var(--error);
+}
+.wm-preview-body {
+    padding: 8px;
+    display: flex;
+    gap: 8px;
+}
+.wm-preview-body.single {
+    justify-content: center;
+}
+.wm-img-panel {
+    flex: 1;
+    text-align: center;
+}
+.wm-img-panel img {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    object-fit: contain;
+}
+.wm-img-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+.wm-qid-tag {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: 'Consolas', monospace;
+}
+</style>
+
 <script>
-let _previewMode = 'original'; // 'original' or 'cleaned'
+const SESSION_ID = '{{ session.id }}';
+const API_BASE = `/api/sessions/${SESSION_ID}/stage5`;
+
+// ── State ──
+let _allPreviewItems = [];       // Full list from server (loaded in pages)
+let _imageQidMap = {};           // {filename: qid}
+let _previewOffset = 0;         // Current pagination offset
+let _previewTotal = 0;           // Total image count from server
+let _previewLoaded = false;
+let _paneLocked = false;         // True after quarantine confirmed
+let _watermarkDone = false;
+let _quarantineDone = false;
+let _smilesDone = false;
+let _smilesNeeded = false;
+
+// ── Step A: Scan ──
 
 async function scanImages() {
     const btn = document.getElementById('scan-btn');
@@ -98,7 +223,7 @@ async function scanImages() {
     appendLog('info', 'Scanning for images...');
 
     try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/scan');
+        const r = await apiGet(`${API_BASE}/scan`);
         if (r.success) {
             const d = r.data;
             document.getElementById('scan-result').innerHTML = `
@@ -107,13 +232,11 @@ async function scanImages() {
                         <div class="stat-value">${d.total_images}</div>
                         <div class="stat-label">Total Images</div>
                     </div>
-                </div>
-            `;
+                </div>`;
             document.getElementById('controls').style.display = 'block';
-            appendLog('success', 'Found ' + d.total_images + ' images');
-
+            appendLog('success', `Found ${d.total_images} images`);
             if (d.total_images === 0) {
-                appendLog('warning', 'No images found — you can skip this stage');
+                appendLog('warning', 'No images found -- you can skip this stage');
             }
         }
     } catch (e) {
@@ -123,91 +246,36 @@ async function scanImages() {
     btn.textContent = 'Scan Images';
 }
 
-function previewOriginals() {
-    _previewMode = 'original';
-    loadPreview(false);
-}
-
-function previewCleaned() {
-    _previewMode = 'cleaned';
-    loadPreview(true);
-}
-
-function loadMorePreview() {
-    loadPreview(_previewMode === 'cleaned');
-}
-
-async function loadPreview(cleaned) {
-    const card = document.getElementById('preview-card');
-    const grid = document.getElementById('preview-grid');
-    const title = document.getElementById('preview-title');
-    card.style.display = 'block';
-    grid.innerHTML = '<div style="padding: 12px; color: var(--text-muted);">Loading preview...</div>';
-    title.textContent = cleaned ? 'Before / After Comparison' : 'Original Images';
-    appendLog('info', cleaned ? 'Loading before/after preview...' : 'Loading original images...');
-
-    try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/preview?count=7&cleaned=' + cleaned);
-        if (r.success && r.data.samples && r.data.samples.length > 0) {
-            let html = '<div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Showing ' +
-                r.data.samples.length + ' of ' + r.data.total + ' images</div>';
-
-            for (const s of r.data.samples) {
-                html += buildImagePreview(s, cleaned);
-            }
-            grid.innerHTML = html;
-            appendLog('success', 'Loaded ' + r.data.samples.length + ' samples');
-        } else {
-            grid.innerHTML = '<div class="alert alert-warning">No images available</div>';
-        }
-    } catch (e) {
-        grid.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
-    }
-}
-
-function buildImagePreview(sample, showCleaned) {
-    const sizeKB = (sample.size / 1024).toFixed(1);
-    let html = `<div class="preview-item">
-        <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-            <span>${sample.name}</span>
-            <span style="font-size: 11px; color: var(--text-muted);">${sizeKB} KB</span>
-        </div>
-        <div class="preview-item-body">`;
-
-    if (showCleaned && sample.cleaned) {
-        html += `<div class="diff-container">
-            <div class="diff-before">
-                <div class="preview-field-label diff-label-before">ORIGINAL</div>
-                <img src="${sample.original}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />
-            </div>
-            <div class="diff-after">
-                <div class="preview-field-label diff-label-after">CLEANED</div>
-                <img src="${sample.cleaned}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />
-            </div>
-        </div>`;
-    } else {
-        html += `<img src="${sample.original}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border);" />`;
-    }
-
-    html += `</div></div>`;
-    return html;
-}
+// ── Step A: Apply watermark removal ──
 
 async function applyWatermark() {
     const btn = document.getElementById('apply-btn');
     btn.disabled = true;
     btn.textContent = 'Processing...';
-    appendLog('info', 'Applying watermark removal to all images...');
+    document.getElementById('skip-btn').disabled = true;
+    appendLog('info', 'Running chroma detection + Fix1 pipeline on all images...');
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/apply');
+        const r = await apiPost(`${API_BASE}/apply`);
         if (r.success) {
-            showResults(r.data);
-            document.getElementById('advance-btn').disabled = false;
-            appendLog('success', 'Watermark removal: ' + r.data.processed + '/' + r.data.total + ' processed');
-            btn.textContent = 'Applied \u2713';
-            document.getElementById('skip-btn').disabled = true;
-            // Keep btn disabled after success
+            const d = r.data;
+            const resultsDiv = document.getElementById('wm-results');
+            resultsDiv.style.display = 'block';
+            document.getElementById('wm-results-content').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.total || 0}</div><div class="stat-label">Total</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.processed || 0}</div><div class="stat-label">Cleaned (WM)</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.skipped || 0}</div><div class="stat-label">Skipped (Clean)</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.failed || 0}</div><div class="stat-label">Failed</div></div>
+                </div>`;
+            btn.textContent = 'Applied';
+            _watermarkDone = true;
+            appendLog('success', `Done: ${d.processed} cleaned, ${d.skipped} skipped, ${d.failed} failed`);
+
+            // Load preview pane
+            await loadImageQidMap();
+            await loadPreviewPage(0);
+            document.getElementById('preview-card').style.display = 'block';
             return;
         } else {
             appendLog('error', 'Failed: ' + (r.error?.message || 'Unknown'));
@@ -216,59 +284,295 @@ async function applyWatermark() {
         appendLog('error', 'Error: ' + e.message);
     }
     btn.disabled = false;
-    btn.textContent = 'Apply Watermark Removal';
+    btn.textContent = 'Apply Watermark Detection';
+    document.getElementById('skip-btn').disabled = false;
 }
 
 async function skipWatermark() {
-    const skipBtn = document.getElementById('skip-btn');
-    skipBtn.disabled = true;
+    const btn = document.getElementById('skip-btn');
+    btn.disabled = true;
     appendLog('info', 'Skipping watermark removal...');
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/skip');
+        const r = await apiPost(`${API_BASE}/skip`);
         if (r.success) {
-            const card = document.getElementById('results-card');
-            card.style.display = 'block';
-            document.getElementById('results-content').innerHTML =
-                '<div class="alert alert-info">Watermark removal skipped. ' + r.data.count + ' images copied as-is.</div>';
-            document.getElementById('advance-btn').disabled = false;
+            const resultsDiv = document.getElementById('wm-results');
+            resultsDiv.style.display = 'block';
+            document.getElementById('wm-results-content').innerHTML =
+                `<div class="alert alert-info">Watermark removal skipped. ${r.data.count} images copied as-is.</div>`;
             document.getElementById('apply-btn').disabled = true;
-            skipBtn.textContent = 'Skipped \u2713';
-            appendLog('info', 'Skipped — ' + r.data.count + ' images copied unchanged');
+            btn.textContent = 'Skipped';
+            _watermarkDone = true;
+            _quarantineDone = true;
+            appendLog('info', `Skipped -- ${r.data.count} images copied unchanged`);
+            // Skip activates SMILES directly
+            activateSmilesStep();
             return;
         }
     } catch (e) {
         appendLog('error', 'Skip error: ' + e.message);
     }
-    skipBtn.disabled = false;
+    btn.disabled = false;
 }
 
-// ── SMILES detection + rendering ──
+// ── Step B: Preview pane ──
 
-async function scanSmiles() {
-    const card = document.getElementById('smiles-card');
-    const status = document.getElementById('smiles-status');
+async function loadImageQidMap() {
     try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage5/smiles/scan');
+        const r = await apiGet(`${API_BASE}/image_question_map`);
+        if (r.success) {
+            _imageQidMap = r.data || {};
+        }
+    } catch (e) {
+        appendLog('warning', 'Could not load image-question mapping');
+    }
+}
+
+async function loadPreviewPage(offset) {
+    const grid = document.getElementById('preview-grid');
+    if (offset === 0) {
+        grid.innerHTML = '<div style="padding: 12px; color: var(--text-muted);">Loading preview...</div>';
+        _allPreviewItems = [];
+    }
+
+    try {
+        const r = await apiGet(`${API_BASE}/preview_images?offset=${offset}&limit=20`);
         if (r.success) {
             const d = r.data;
-            card.style.display = 'block';
+            if (offset === 0) grid.innerHTML = '';
+
+            for (const item of d.items) {
+                _allPreviewItems.push(item);
+                grid.appendChild(buildPreviewItem(item));
+            }
+
+            _previewOffset = offset + d.items.length;
+            _previewTotal = d.total;
+            _previewLoaded = true;
+
+            // Show/hide Load More buttons
+            const hasMore = d.has_more;
+            document.getElementById('load-more-top-btn').style.display = hasMore ? '' : 'none';
+            document.getElementById('load-more-bottom-btn').style.display = hasMore ? '' : 'none';
+
+            updateQuarantineCounts();
+            appendLog('info', `Loaded ${_allPreviewItems.length} of ${d.total} images for review`);
+        }
+    } catch (e) {
+        grid.innerHTML = `<div class="alert alert-error">Error loading preview: ${e.message}</div>`;
+    }
+}
+
+function loadMorePreview(position) {
+    loadPreviewPage(_previewOffset);
+    // Scroll to top or bottom of grid
+    const grid = document.getElementById('preview-grid');
+    if (position === 'top') grid.scrollTop = grid.scrollHeight;
+}
+
+function buildPreviewItem(item) {
+    const div = document.createElement('div');
+    div.className = 'wm-preview-item';
+    div.dataset.filename = item.filename;
+
+    const qid = _imageQidMap[item.filename] || '';
+    const labelClass = item.action === 'cleaned' ? 'wm-label-cleaned'
+                     : item.action === 'skipped' ? 'wm-label-skipped'
+                     : 'wm-label-failed';
+
+    let bodyHtml = '';
+    if (item.action === 'cleaned' && item.cleaned) {
+        // Side-by-side: original left, cleaned right
+        bodyHtml = `
+            <div class="wm-preview-body">
+                <div class="wm-img-panel">
+                    <div class="wm-img-label">Original</div>
+                    <img src="${item.original}" alt="Original" />
+                </div>
+                <div class="wm-img-panel">
+                    <div class="wm-img-label">Cleaned</div>
+                    <img src="${item.cleaned}" alt="Cleaned" />
+                </div>
+            </div>`;
+    } else {
+        // Single panel: original only
+        bodyHtml = `
+            <div class="wm-preview-body single">
+                <div class="wm-img-panel">
+                    <img src="${item.original}" alt="Original" />
+                </div>
+            </div>`;
+    }
+
+    div.innerHTML = `
+        <div class="wm-preview-header">
+            <input type="checkbox" checked class="wm-checkbox"
+                   data-filename="${escapeHtml(item.filename)}"
+                   data-qid="${escapeHtml(qid)}"
+                   onchange="updateQuarantineCounts()" />
+            <span class="wm-fname" title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</span>
+            ${qid ? '<span class="wm-qid-tag">' + escapeHtml(qid) + '</span>' : ''}
+            <span class="wm-label ${labelClass}">${escapeHtml(item.chroma_label)}</span>
+        </div>
+        ${bodyHtml}`;
+
+    return div;
+}
+
+function selectAll() {
+    document.querySelectorAll('.wm-checkbox').forEach(cb => { cb.checked = true; });
+    updateQuarantineCounts();
+}
+
+function deselectAll() {
+    document.querySelectorAll('.wm-checkbox').forEach(cb => { cb.checked = false; });
+    updateQuarantineCounts();
+}
+
+function updateQuarantineCounts() {
+    const unchecked = document.querySelectorAll('.wm-checkbox:not(:checked)');
+    const uncheckedCount = unchecked.length;
+
+    const btn = document.getElementById('remove-btn');
+    btn.textContent = `Remove Unselected (${uncheckedCount})`;
+
+    // Update both counters
+    const counterTop = document.getElementById('preview-counter');
+    const counterBot = document.getElementById('preview-counter-bottom');
+    const txt = `Showing ${_allPreviewItems.length} of ${_previewTotal}`;
+    if (counterTop) counterTop.textContent = txt;
+    if (counterBot) counterBot.textContent = txt;
+}
+
+async function removeUnselected() {
+    const unchecked = document.querySelectorAll('.wm-checkbox:not(:checked)');
+    const uncheckedCount = unchecked.length;
+
+    // If nothing unselected, just confirm review and proceed
+    if (uncheckedCount === 0) {
+        appendLog('info', 'Confirming image review (0 removed)...');
+        try {
+            const r = await apiPost(`${API_BASE}/confirm_review`);
+            if (r.success) {
+                lockPreviewPane();
+                _quarantineDone = true;
+                activateSmilesStep();
+                appendLog('success', 'Image review confirmed -- proceeding to SMILES check');
+            }
+        } catch (e) {
+            appendLog('error', 'Confirm error: ' + e.message);
+        }
+        return;
+    }
+
+    // Collect QIDs to quarantine
+    const qidsToQuarantine = [];
+    const filenamesQuarantined = [];
+    unchecked.forEach(cb => {
+        const qid = cb.dataset.qid;
+        if (qid) qidsToQuarantine.push(qid);
+        filenamesQuarantined.push(cb.dataset.filename);
+    });
+
+    if (qidsToQuarantine.length === 0) {
+        appendLog('warning', 'No question IDs found for unselected images. Confirming review without quarantine.');
+        try {
+            const r = await apiPost(`${API_BASE}/confirm_review`);
+            if (r.success) {
+                lockPreviewPane();
+                _quarantineDone = true;
+                activateSmilesStep();
+            }
+        } catch (e) { appendLog('error', 'Confirm error: ' + e.message); }
+        return;
+    }
+
+    // Confirmation dialog
+    const msg = `${qidsToQuarantine.length} question(s) will be removed and will NOT be uploaded. Proceed?`;
+    if (!confirm(msg)) return;
+
+    const btn = document.getElementById('remove-btn');
+    btn.disabled = true;
+    btn.textContent = 'Removing...';
+    appendLog('info', `Removing ${qidsToQuarantine.length} questions...`);
+
+    try {
+        const r = await apiPost(`${API_BASE}/quarantine_images`, { qids: qidsToQuarantine });
+        if (r.success) {
+            appendLog('success',
+                `Removed ${r.data.quarantined} questions, ${r.data.remaining} remaining`);
+            updateSidebarQuarantineCount(r.data.quarantined);
+
+            // Fade out quarantined items
+            filenamesQuarantined.forEach(fname => {
+                const item = document.querySelector(`.wm-preview-item[data-filename="${CSS.escape(fname)}"]`);
+                if (item) item.classList.add('quarantined');
+            });
+
+            lockPreviewPane();
+            _quarantineDone = true;
+            activateSmilesStep();
+        } else {
+            appendLog('error', 'Remove failed: ' + (r.error?.message || 'Unknown'));
+            btn.disabled = false;
+            btn.textContent = `Remove Unselected (${uncheckedCount})`;
+        }
+    } catch (e) {
+        appendLog('error', 'Remove error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = `Remove Unselected (${uncheckedCount})`;
+    }
+}
+
+function lockPreviewPane() {
+    _paneLocked = true;
+    // Disable all checkboxes, mute items
+    document.querySelectorAll('.wm-checkbox').forEach(cb => { cb.disabled = true; });
+    document.querySelectorAll('.wm-preview-item:not(.quarantined)').forEach(el => {
+        el.classList.add('muted');
+    });
+    // Disable buttons
+    document.getElementById('remove-btn').disabled = true;
+    document.getElementById('select-all-btn').disabled = true;
+    document.getElementById('deselect-all-btn').disabled = true;
+    document.getElementById('load-more-top-btn').disabled = true;
+    document.getElementById('load-more-bottom-btn').disabled = true;
+}
+
+// ── Step C: SMILES ──
+
+async function activateSmilesStep() {
+    const card = document.getElementById('smiles-card');
+    card.style.display = 'block';
+    const status = document.getElementById('smiles-status');
+    status.textContent = 'Scanning for SMILES tags...';
+
+    try {
+        const r = await apiGet(`${API_BASE}/smiles/scan`);
+        if (r.success) {
+            const d = r.data;
             if (d.has_smiles) {
+                _smilesNeeded = true;
                 status.innerHTML = `<strong>${d.total_smiles_tags}</strong> SMILES formulas found in <strong>${d.entries_with_smiles}</strong> entries.` +
                     (d.rdkit_available
                         ? ' Click "Render SMILES" to convert to SVG images.'
-                        : ' <span style="color:var(--danger)">RDKit not installed — cannot render.</span>');
+                        : ' <span style="color:var(--error)">RDKit not installed -- cannot render.</span>');
                 if (d.rdkit_available) {
                     document.getElementById('smiles-render-btn').disabled = false;
                 }
                 appendLog('info', `SMILES: ${d.total_smiles_tags} formulas in ${d.entries_with_smiles} entries`);
             } else {
-                status.textContent = 'No SMILES formulas detected — step inactive.';
-                appendLog('info', 'SMILES: none detected');
+                _smilesNeeded = false;
+                _smilesDone = true;
+                status.textContent = 'No SMILES formulas detected -- step skipped.';
+                appendLog('info', 'SMILES: none detected -- skipped');
+                checkAdvanceGate();
             }
         }
     } catch (e) {
-        card.style.display = 'block';
+        _smilesNeeded = false;
+        _smilesDone = true;
         status.textContent = 'Error scanning for SMILES: ' + e.message;
+        checkAdvanceGate();
     }
 }
 
@@ -279,7 +583,7 @@ async function renderSmiles() {
     appendLog('info', 'Rendering SMILES formulas to SVG...');
 
     try {
-        const r = await apiPost('/api/sessions/{{ session.id }}/stage5/smiles/render');
+        const r = await apiPost(`${API_BASE}/smiles/render`);
         if (r.success) {
             const d = r.data;
             if (d.error) {
@@ -294,12 +598,11 @@ async function renderSmiles() {
                 <div class="stat-box"><div class="stat-value">${d.total_success}</div><div class="stat-label">Rendered</div></div>
                 <div class="stat-box"><div class="stat-value">${d.total_fail}</div><div class="stat-label">Failed</div></div>
                 <div class="stat-box"><div class="stat-value">${d.entries_modified}</div><div class="stat-label">Entries Modified</div></div>
-            </div>
-            <p style="font-size:12px; color:var(--text-secondary); margin-top:8px;">
-                SVG images saved as base64 in metadata. They will be uploaded to CDN in Stage 6.
-            </p>`;
-            btn.textContent = 'Rendered \u2713';
-            appendLog('success', `SMILES: ${d.total_success} rendered, ${d.total_fail} failed, ${d.entries_modified} entries`);
+            </div>`;
+            btn.textContent = 'Rendered';
+            _smilesDone = true;
+            appendLog('success', `SMILES: ${d.total_success} rendered, ${d.total_fail} failed`);
+            checkAdvanceGate();
         }
     } catch (e) {
         appendLog('error', 'SMILES render error: ' + e.message);
@@ -308,48 +611,103 @@ async function renderSmiles() {
     }
 }
 
-function showResults(data) {
-    const card = document.getElementById('results-card');
-    card.style.display = 'block';
+// ── Advance gate ──
 
-    let html = `<div class="stat-grid">
-        <div class="stat-box"><div class="stat-value">${data.total || 0}</div><div class="stat-label">Total</div></div>
-        <div class="stat-box"><div class="stat-value">${data.processed || 0}</div><div class="stat-label">Cleaned</div></div>
-        <div class="stat-box"><div class="stat-value">${data.failed || 0}</div><div class="stat-label">Failed</div></div>
-    </div>`;
-
-    document.getElementById('results-content').innerHTML = html;
+function checkAdvanceGate() {
+    // Advance only when: watermark done + quarantine done + SMILES done (or not needed)
+    if (_watermarkDone && _quarantineDone && (_smilesDone || !_smilesNeeded)) {
+        document.getElementById('advance-btn').disabled = false;
+        appendLog('info', 'All steps complete -- ready to advance to Stage 6');
+    }
 }
 
-// Restore state from checkpoint when revisiting
-document.addEventListener('DOMContentLoaded', () => {
-    // Always scan for SMILES on page load
-    scanSmiles();
+// ── Restore state on revisit ──
 
+document.addEventListener('DOMContentLoaded', async () => {
     const cp = _checkpoints.find(c => c.stage === 'stage5_watermark');
-    if (cp && cp.status === 'completed') {
-        const d = cp.data || {};
+    if (!cp) return;
+
+    const d = cp.data || {};
+
+    // Skipped entirely
+    if (d.skipped) {
         document.getElementById('controls').style.display = 'block';
         document.getElementById('apply-btn').disabled = true;
         document.getElementById('skip-btn').disabled = true;
-        if (d.skipped) {
-            const card = document.getElementById('results-card');
-            card.style.display = 'block';
-            document.getElementById('results-content').innerHTML =
-                '<div class="alert alert-info">Watermark removal was skipped.</div>';
-            document.getElementById('apply-btn').textContent = 'Skipped';
+        document.getElementById('skip-btn').textContent = 'Skipped';
+        const resultsDiv = document.getElementById('wm-results');
+        resultsDiv.style.display = 'block';
+        document.getElementById('wm-results-content').innerHTML =
+            '<div class="alert alert-info">Watermark removal was skipped.</div>';
+        _watermarkDone = true;
+        _quarantineDone = true;
+        // Check SMILES
+        activateSmilesStep();
+        return;
+    }
+
+    // Watermark step completed
+    if (d.watermark_step === 'completed') {
+        _watermarkDone = true;
+        document.getElementById('controls').style.display = 'block';
+        document.getElementById('apply-btn').disabled = true;
+        document.getElementById('apply-btn').textContent = 'Applied';
+        document.getElementById('skip-btn').disabled = true;
+
+        // Show results
+        const resultsDiv = document.getElementById('wm-results');
+        resultsDiv.style.display = 'block';
+        document.getElementById('wm-results-content').innerHTML = `
+            <div class="stat-grid">
+                <div class="stat-box"><div class="stat-value">${d.total || 0}</div><div class="stat-label">Total</div></div>
+                <div class="stat-box"><div class="stat-value">${d.processed || 0}</div><div class="stat-label">Cleaned</div></div>
+                <div class="stat-box"><div class="stat-value">${d.skipped || 0}</div><div class="stat-label">Skipped</div></div>
+                <div class="stat-box"><div class="stat-value">${d.failed || 0}</div><div class="stat-label">Failed</div></div>
+            </div>`;
+
+        // Quarantine step done?
+        if (d.quarantine_step === 'completed') {
+            _quarantineDone = true;
+            // Show locked preview pane
+            document.getElementById('preview-card').style.display = 'block';
+            await loadImageQidMap();
+            await loadPreviewPage(0);
+            lockPreviewPane();
+            // Mark quarantined items
+            const quarantinedQids = new Set(d.quarantined_qids || []);
+            if (quarantinedQids.size > 0) {
+                document.querySelectorAll('.wm-checkbox').forEach(cb => {
+                    if (quarantinedQids.has(cb.dataset.qid)) {
+                        cb.checked = false;
+                        const item = cb.closest('.wm-preview-item');
+                        if (item) item.classList.add('quarantined');
+                    }
+                });
+            }
+            // Activate SMILES
+            activateSmilesStep();
         } else {
-            document.getElementById('apply-btn').textContent = 'Applied \u2713';
-            showResults(d);
+            // Show preview pane for review
+            document.getElementById('preview-card').style.display = 'block';
+            await loadImageQidMap();
+            await loadPreviewPage(0);
         }
     }
 
-    // Restore SMILES rendered state
-    const smilesCP = _checkpoints.find(c => c.stage === 'stage5_watermark' && c.data && c.data.smiles_rendered);
-    if (smilesCP) {
-        const btn = document.getElementById('smiles-render-btn');
-        btn.disabled = true;
-        btn.textContent = 'Rendered \u2713';
+    // SMILES already rendered
+    if (d.smiles_success !== undefined || d.smiles_fail !== undefined) {
+        _smilesDone = true;
+        const smilesBtn = document.getElementById('smiles-render-btn');
+        smilesBtn.disabled = true;
+        smilesBtn.textContent = 'Rendered';
+    }
+
+    // Check if fully done
+    if (cp.status === 'completed') {
+        _watermarkDone = true;
+        _quarantineDone = true;
+        _smilesDone = true;
+        checkAdvanceGate();
     }
 });
 </script>

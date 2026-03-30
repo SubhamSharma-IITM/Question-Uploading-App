@@ -152,9 +152,49 @@ The `--reload` flag watches source files, but stale `.pyc` from a previous run c
 ### OpenAI Batch Size Limit
 OpenAI Batch API rejects files > 200MB. For large sessions (300+ questions with images), batch JSONL files can exceed this. Batch splitting with proper merge-on-download is required (see Stage 7 and Stage 9 implementations).
 
+## Known Bugs (Active)
+
+### Vertex AI Batch Response Ordering (Stage 9) — CRITICAL
+`stage9_quality.py:2366-2367` maps responses by line index, but Vertex AI shuffles response order. 99% of Pass1 QID mappings are wrong. **Code fix needed** before next batch run: extract QID from `data["request"]["contents"][0]["parts"][0]["text"]` instead of `qid_line_map[line_idx]`. See `memory/project_vertex_ordering_bug.md` for full analysis.
+
+### Watermark Module (Stage 5) — Image Corruption
+Stage 5 watermark removal destroys image content on poor-quality source images. 887 image questions flagged (711 converted error=1->error=2). Team review CSV: `Downloads/image_questions_for_review.csv`. Module overhaul pending.
+
+## Platform Stats (2026-03-30)
+- **Total uploaded: 8,297** (error=1: 3,727 + error=2: 4,570)
+- Quarantined (not uploaded): 1,682
+- Main tracking sheet: Google Sheets ID `1euq9eM4IUFcYii9RY-voiaPBohk4q46HF-4s4CefVig`
+- Detailed stats and operation logs: see `memory/project_upload_stats_2026_03_30.md`
+
+## Tools (in tools/ directory)
+- `vertex_bug_audit.ipynb` / `vertex_bug_audit_v2.ipynb` — Colab notebooks for auditing Pass1 ordering bug
+- `vertex_bug_fix_error.py` — Convert Pass1 false positives error=2->error=1 via API
+- `image_corruption_audit.ipynb` — Colab notebook to find IMAGE=TRUE questions
+- `image_corruption_fix_error.py` — Convert watermark-damaged error=1->error=2 via API
+- `batch_db_patch.py` — General-purpose batch DB updater (MathML fixes, year fix, etc.)
+- `upload_stats_colab.ipynb` — Drive scanner + master sheet populator (replaces Apps Script)
+
+## Acadza API Endpoints
+- `POST /user/login` — JWT auth, credentials in .env
+- `POST /question/multiget` — batch fetch, body: `{"ids": [...]}`, max ~100 per call
+- `POST /question/details` — single fetch, header: `questionid`
+- `PUT /question/update/field` — update, header: `questionid`, body: full payload minus `_id/createdAt/updatedAt/__v`
+- `POST /question/create` — Stage 10 upload
+- `POST /question/upload/androidbulk` — Stage 6 image CDN upload
+- Auth module: `app/pipeline/auth.py` (JWT with auto-refresh on 401)
+
+## Remaining Work (Priority Order)
+1. **Fix Vertex AI code** — `stage9_quality.py:2366-2367` extract QID from embedded request
+2. **Catch escaped culprits** — need Manish Sir PC access for `pass1_batch_results.jsonl`
+3. **Watermark module overhaul** — Stage 5 destroying images
+4. **Session data storage strategy** — for hosting migration
+5. **Login improvement** — PIN + password recovery (replaces timeout lockout)
+6. **Train team** — onboard operators
+7. **Render deployment** — Dockerfile, persistent storage
+8. **Ship online**
+
 ## Future Work (Pending)
 - **Image-based question embeddings**: ~6K DB questions are image-only (OCR text via MathPIX exists but not embedded). Need to generate text embeddings from OCR output and add to FAISS index for cross-duplicate matching against image-based DB entries.
-- **UI overhaul**: Auto dark/light mode via `prefers-color-scheme`, progress time estimates, session dashboard cards, cost tracker per session.
 - **Celery/Redis job queue**: Replace `asyncio.to_thread` for horizontal scaling beyond 5 concurrent sessions.
 - **Token cost dashboard**: Track API spend per session across Gemini/OpenAI/Vertex AI.
 - **Model cascading**: Use cheaper models for obvious-pass questions, expensive models for edge cases.

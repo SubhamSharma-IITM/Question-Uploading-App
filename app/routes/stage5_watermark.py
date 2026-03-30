@@ -1,10 +1,20 @@
-"""Stage 5: Watermark Removal — routes with image preview."""
+"""Stage 5: Watermark Removal — routes with chroma detection + preview pane.
+
+V3 flow:
+1. /scan — discover images
+2. /apply — chroma detection + Fix1 pipeline (batch)
+3. /preview_images — paginated preview with chroma labels (GET, offset/limit)
+4. /quarantine_images — bulk quarantine from user review (POST)
+5. /smiles/scan + /smiles/render — SMILES rendering (only after quarantine done)
+"""
 
 import asyncio
 from pathlib import Path
+from typing import List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.config import settings
 from app.db import get_session, update_session
@@ -26,6 +36,12 @@ def _get_session_or_404(session_id: str):
     return session, None
 
 
+def _get_stage(session_id: str):
+    from app.pipeline.stage5_watermark import WatermarkStage
+    session_dir = Path(settings.sessions_dir) / session_id
+    return WatermarkStage(session_id, session_dir)
+
+
 @router.get("/scan")
 async def scan_images(session_id: str):
     """Scan session for images and return count/stats.
@@ -37,10 +53,7 @@ async def scan_images(session_id: str):
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     result = stage.scan_images()
 
     # If scan found 0 images, try auto-discovery from alternative locations
@@ -49,6 +62,7 @@ async def scan_images(session_id: str):
         from app.db import insert_log
         from app.sse import sse_manager
 
+        session_dir = Path(settings.sessions_dir) / session_id
         exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
         img_dir = session_dir / "images_original"
         img_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +92,6 @@ async def scan_images(session_id: str):
                 "type": "log", "level": "info",
                 "message": f"Auto-discovered {discovered} images from alternative directories"
             })
-            # Re-scan after discovery
             result = stage.scan_images()
 
     return APIResponse(data=result)
@@ -86,21 +99,45 @@ async def scan_images(session_id: str):
 
 @router.get("/preview")
 async def preview_samples(session_id: str, count: int = 7, cleaned: bool = False):
-    """Get random image samples as base64 for preview.
+    """Legacy: random image samples as base64 for preview."""
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
 
-    cleaned=false: show originals only
-    cleaned=true: show before/after pairs
+    stage = _get_stage(session_id)
+    result = await asyncio.to_thread(stage.preview_samples, count=count, cleaned=cleaned)
+    return APIResponse(data=result)
+
+
+@router.get("/preview_images")
+async def preview_images(session_id: str, offset: int = 0, limit: int = 20):
+    """Paginated image preview with chroma detection labels.
+
+    Returns per-image: original base64, cleaned base64 (if WM detected),
+    chroma label, filename. Used by the Stage 5 preview pane.
     """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.preview_samples, count=count, cleaned=cleaned)
+    stage = _get_stage(session_id)
+    result = await asyncio.to_thread(stage.get_preview_images, offset=offset, limit=limit)
     return APIResponse(data=result)
+
+
+@router.get("/image_question_map")
+async def image_question_map(session_id: str):
+    """Map image filenames to question QIDs from metadata_v2.
+
+    Returns {filename: qid} for all images referenced in metadata.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    stage = _get_stage(session_id)
+    mapping = await asyncio.to_thread(stage.get_image_question_map)
+    return APIResponse(data=mapping)
 
 
 @router.post("/process-single")
@@ -110,51 +147,91 @@ async def process_single(session_id: str, filename: str):
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     result = await asyncio.to_thread(stage.process_single, filename)
     return APIResponse(data=result)
 
 
 @router.post("/apply")
 async def apply_watermark_removal(session_id: str):
-    """Batch process all images for watermark removal."""
+    """Batch process all images with chroma detection gate.
+
+    Does NOT mark stage as completed — user must review preview pane first.
+    Checkpoint status set to 'in_progress' with watermark_step='completed'.
+    """
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     result = await asyncio.to_thread(stage.execute)
 
     if "error" not in result:
         update_session(session_id, current_stage="stage5_watermark")
-        from app.db import upsert_checkpoint
-        upsert_checkpoint(session_id, "stage5_watermark", "completed", {
-            "total": result.get("total", 0),
-            "processed": result.get("processed", 0),
-            "failed": result.get("failed", 0),
-        })
 
     return APIResponse(data=result)
 
 
+class QuarantineRequest(BaseModel):
+    qids: List[str]
+
+
+@router.post("/quarantine_images")
+async def quarantine_images(session_id: str, body: QuarantineRequest):
+    """Bulk quarantine questions after user image review.
+
+    Receives list of QIDs to quarantine. Removes them from metadata_v2
+    and records in quarantine DB. Called by "Quarantine Unselected Images" button.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    stage = _get_stage(session_id)
+    result = await asyncio.to_thread(stage.quarantine_images, body.qids)
+
+    # Update sidebar quarantine count
+    from app.sse import sse_manager
+    sse_manager.emit(session_id, {
+        "type": "log", "level": "info",
+        "message": f"Quarantined {result['quarantined']} questions from image review"
+    })
+
+    return APIResponse(data=result)
+
+
+@router.post("/confirm_review")
+async def confirm_review(session_id: str):
+    """Confirm image review is complete (even if 0 quarantined).
+
+    Called when user finishes reviewing images but doesn't quarantine any.
+    Marks quarantine_step as completed so SMILES can activate.
+    """
+    session, err = _get_session_or_404(session_id)
+    if err:
+        return err
+
+    stage = _get_stage(session_id)
+    cp_data = stage._load_checkpoint_data()
+    if cp_data.get("quarantine_step") != "completed":
+        cp_data["quarantine_step"] = "completed"
+        cp_data["quarantined_qids"] = []
+        cp_data["quarantined_count"] = 0
+        stage.save_checkpoint("in_progress", cp_data)
+        stage.log("info", "Image review confirmed -- no quarantines, proceeding to SMILES")
+
+    return APIResponse(data={"confirmed": True})
+
+
 @router.post("/skip")
 async def skip_watermark(session_id: str):
-    """Skip watermark removal (no watermark issues in images)."""
+    """Skip watermark removal entirely (no watermark issues in images)."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
     session_dir = Path(settings.sessions_dir) / session_id
-
-    # Use stage's _get_image_dir() to benefit from fallback logic
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     img_dir = stage._get_image_dir()
     out_dir = session_dir / "images_cleaned"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +248,11 @@ async def skip_watermark(session_id: str):
     from app.sse import sse_manager
     insert_log(session_id, "stage5_watermark", "info", f"Skipped watermark removal - {count} images copied as-is")
     sse_manager.emit(session_id, {"type": "log", "level": "info", "message": f"Skipped - {count} images copied"})
-    upsert_checkpoint(session_id, "stage5_watermark", "completed", {"skipped": True, "count": count})
+    upsert_checkpoint(session_id, "stage5_watermark", "completed", {
+        "skipped": True, "count": count,
+        "watermark_step": "completed",
+        "quarantine_step": "completed",
+    })
 
     return APIResponse(data={"skipped": True, "count": count})
 
@@ -180,37 +261,23 @@ async def skip_watermark(session_id: str):
 
 @router.get("/smiles/scan")
 async def scan_smiles(session_id: str):
-    """Scan session metadata for <smiles> tags.
-
-    Called on page load to auto-detect SMILES presence and activate/deactivate
-    the SMILES rendering section in the UI.
-    """
+    """Scan session metadata for <smiles> tags."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     result = stage.scan_smiles()
     return APIResponse(data=result)
 
 
 @router.post("/smiles/render")
 async def render_smiles(session_id: str):
-    """Render all <smiles> tags to SVG <img> tags in metadata.
-
-    Replaces <smiles>CCO</smiles> with <img src="data:image/svg+xml;base64,...">.
-    These base64 images will be uploaded to CDN in Stage 6 alongside regular images.
-    """
+    """Render all <smiles> tags to SVG <img> tags in metadata."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
-    session_dir = Path(settings.sessions_dir) / session_id
-
-    from app.pipeline.stage5_watermark import WatermarkStage
-    stage = WatermarkStage(session_id, session_dir)
+    stage = _get_stage(session_id)
     result = await asyncio.to_thread(stage.render_smiles)
     return APIResponse(data=result)

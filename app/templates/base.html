@@ -73,20 +73,16 @@
                     <div class="sidebar-label">STATS</div>
                     <div class="sidebar-stats">
                         <div class="stat-row">
-                            <span>Total Qs</span>
-                            <span class="stat-val">{{ stats.total }}</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>Answered</span>
-                            <span class="stat-val">{{ stats.with_answer }}</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>Solved</span>
-                            <span class="stat-val">{{ stats.with_solution }}</span>
+                            <span>Triplets</span>
+                            <span class="stat-val" id="sidebar-triplets">--</span>
                         </div>
                         <div class="stat-row">
                             <span>Quarantined</span>
                             <span class="stat-val warn" id="sidebar-quarantine-count">{{ stats.quarantined }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Live</span>
+                            <span class="stat-val" id="sidebar-live-count" style="color: var(--success);">--</span>
                         </div>
                     </div>
                 </div>
@@ -132,15 +128,50 @@
                 if (advBtn) advBtn.disabled = false;
             }
 
+            // Populate triplets from checkpoint data (Stage 4 or Stage 2)
+            const tripletEl = document.getElementById('sidebar-triplets');
+            const liveEl = document.getElementById('sidebar-live-count');
+            let tripletCount = 0;
+            // Stage 4 checkpoint has authoritative triplet count
+            const s4cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
+            if (s4cp && s4cp.data && s4cp.data.triplets) {
+                tripletCount = s4cp.data.triplets;
+            } else {
+                // Fallback: Stage 2 checkpoint
+                const s2cp = _checkpoints.find(c => c.stage === 'stage2_mapping');
+                if (s2cp && s2cp.data && s2cp.data.triplets) {
+                    tripletCount = s2cp.data.triplets;
+                }
+            }
+            if (tripletEl && tripletCount > 0) {
+                tripletEl.textContent = tripletCount;
+            }
+
             // Fetch live quarantine count from DB to keep sidebar accurate
             const qEl = document.getElementById('sidebar-quarantine-count');
             if (qEl) {
                 apiGet('/api/sessions/{{ session.id }}/quarantine-count').then(r => {
                     if (r.success && r.data && typeof r.data.count === 'number') {
                         qEl.textContent = r.data.count;
+                        // Update live count = triplets - quarantined
+                        if (liveEl && tripletCount > 0) {
+                            liveEl.textContent = Math.max(0, tripletCount - r.data.count);
+                        }
                     }
                 }).catch(() => {});
             }
+
+            // Global helper for stages to update quarantine count after operations
+            window.updateSidebarQuarantineCount = function(delta) {
+                if (qEl) {
+                    const current = parseInt(qEl.textContent) || 0;
+                    const updated = current + delta;
+                    qEl.textContent = updated;
+                    if (liveEl && tripletCount > 0) {
+                        liveEl.textContent = Math.max(0, tripletCount - updated);
+                    }
+                }
+            };
         });
     </script>
     {% endif %}

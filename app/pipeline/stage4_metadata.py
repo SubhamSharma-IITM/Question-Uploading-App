@@ -92,6 +92,12 @@ def _normalize_options_to_ABCD(html: str) -> str:
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*3\s*\)', r'\1(C)', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*4\s*\)', r'\1(D)', result, flags=re.MULTILINE)
 
+    # Handle 1) 2) 3) 4) format (number-closing-paren without opening paren)
+    result = re.sub(r'(<br/>|<br>|^)\s*1\)\s*', r'\1(A) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*2\)\s*', r'\1(B) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*3\)\s*', r'\1(C) ', result, flags=re.MULTILINE)
+    result = re.sub(r'(<br/>|<br>|^)\s*4\)\s*', r'\1(D) ', result, flags=re.MULTILINE)
+
     # Handle A) B) C) D) format (without parentheses)
     result = re.sub(r'(<br/>|<br>|^)\s*[Aa]\)\s*', r'\1(A) ', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*[Bb]\)\s*', r'\1(B) ', result, flags=re.MULTILINE)
@@ -260,6 +266,7 @@ def _build_metadata_v2(
     source_name: str,
     test_code: str,
     tagged_by: str = "AITAI",
+    difficulty: str = "MEDIUM",
     is_pyq: bool = False,
     prev_exam: Optional[str] = None,
     pyq_year: Optional[int] = None,
@@ -299,9 +306,11 @@ def _build_metadata_v2(
     # Resolve previous exam
     resolved_prev_exam = ""
     prev_exam_year = 0
+    is_mhcet = False
     if is_pyq and prev_exam:
         resolved_prev_exam = PREV_EXAM_MAP.get(prev_exam.upper(), prev_exam.upper())
         prev_exam_year = pyq_year or 0
+        is_mhcet = prev_exam.upper() in ("MHCET", "MH CET")
 
     metadata = {
         "qid": qid,
@@ -321,7 +330,7 @@ def _build_metadata_v2(
         **{t: {} for t in ("scq", "mcq", "integerQuestion", "matchQuestion",
                            "subjective", "passageQuestion") if t != qtype},
         "class": 12,
-        "level": "MEDIUM",
+        "level": difficulty,
         "addedByAi": True,
         "taggedBy": tagged_by,
         "tagSubConcept": [],
@@ -330,6 +339,7 @@ def _build_metadata_v2(
         "isNCERT": False,
         "isBoard": False,
         "isNEET": is_neet,
+        "isMHCET": is_mhcet,
         "isBuffer": True,
         "isPrevious": is_pyq,
         "previousExam": resolved_prev_exam,
@@ -399,6 +409,7 @@ class MetadataMapperStage(BasePipelineStage):
         source_name = kwargs.get("source", "")
         test_code = kwargs.get("test_code", "") or self._get_default_test_code()
         tagged_by = kwargs.get("tagged_by", "AITAI")
+        difficulty = kwargs.get("difficulty", "MEDIUM")
         is_pyq = kwargs.get("is_pyq", False)
         prev_exam = kwargs.get("prev_exam", None)
         pyq_year_from = kwargs.get("pyq_year_from", None)
@@ -438,6 +449,7 @@ class MetadataMapperStage(BasePipelineStage):
                 meta = _build_metadata_v2(
                     entry, source_name, test_code,
                     tagged_by=tagged_by,
+                    difficulty=difficulty,
                     is_pyq=is_pyq,
                     prev_exam=prev_exam,
                     pyq_year=pyq_year,

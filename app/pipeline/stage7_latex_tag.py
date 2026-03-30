@@ -1709,6 +1709,44 @@ class LatexTagStage(BasePipelineStage):
                 )
                 quarantined_count += 1
 
+        # Remove quarantined entries from metadata_v2 files
+        # (same pattern as Stage 8 duplicate removal — keeps metadata clean for downstream)
+        all_quarantined_qids = set(still_failed_qids + empty_tag_qids)
+        if all_quarantined_qids:
+            meta_dir = self._get_metadata_dir()
+            files_modified = 0
+            questions_removed = 0
+            if meta_dir.exists():
+                meta_files = []
+                for sub in sorted(meta_dir.iterdir()):
+                    if sub.is_dir():
+                        meta_files.extend(
+                            f for f in sub.glob("*_metadata_v2.json")
+                            if "backup" not in f.name
+                        )
+                    elif sub.suffix == ".json" and "metadata_v2" in sub.name and "backup" not in sub.name:
+                        meta_files.append(sub)
+
+                for f in meta_files:
+                    try:
+                        with open(f, "r", encoding="utf-8") as fh:
+                            data = json.load(fh)
+                        if not isinstance(data, list):
+                            continue
+                        original_len = len(data)
+                        filtered = [q for q in data if q.get("qid") not in all_quarantined_qids]
+                        removed = original_len - len(filtered)
+                        if removed > 0:
+                            self.backup(f)
+                            with open(f, "w", encoding="utf-8") as fh:
+                                json.dump(filtered, fh, indent=2, ensure_ascii=False)
+                            files_modified += 1
+                            questions_removed += removed
+                    except Exception as e:
+                        self.log("error", f"Failed to prune {f.name}: {e}")
+
+            self.log("info", f"Removed {questions_removed} quarantined entries from {files_modified} metadata_v2 files")
+
         # Save quarantine info for downstream stages
         quarantine_path = self._get_batch_dir() / "stage7_quarantine.json"
         quarantine_data = {

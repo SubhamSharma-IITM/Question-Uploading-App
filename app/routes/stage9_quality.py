@@ -499,7 +499,7 @@ def _compute_pipeline_summary(session_id: str, session_dir: Path) -> dict:
     summary["total_quarantined"] = quarantined_by_error + quarantined_by_db
     summary["quarantined_by_error"] = quarantined_by_error
     summary["quarantined_by_duplicate"] = quarantined_by_db
-    summary["total_ready"] = len(all_questions) - quarantined_by_error
+    summary["total_ready"] = len(all_questions) - quarantined_by_error - quarantined_by_db
 
     # Per-stage checkpoint stats
     checkpoints = get_all_checkpoints(session_id)

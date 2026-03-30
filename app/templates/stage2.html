@@ -35,7 +35,9 @@
                         <label>LLM Provider</label>
                         <select id="llm-provider" class="form-select" onchange="onProviderChange()">
                             <option value="gemini" selected>Gemini Flash</option>
+                            <!-- Claude disabled for production
                             <option value="anthropic">Claude Sonnet 4.6</option>
+                            -->
                         </select>
                     </div>
                     <div class="form-group" style="max-width: 120px;">
@@ -43,9 +45,6 @@
                         <input type="number" id="max-q" value="30" min="1" max="500" class="form-input" onchange="onSettingsChange()">
                     </div>
                     <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
-                        <button class="btn btn-sm" onclick="testApiKey()" id="test-api-btn">
-                            Test API Key
-                        </button>
                         <button class="btn btn-primary" onclick="startMapping(false)" id="start-btn">
                             Start Extraction
                         </button>

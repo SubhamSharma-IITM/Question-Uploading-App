@@ -1,9 +1,11 @@
 """Stage 5: Watermark Removal — pipeline adapter.
 
-Smart watermark removal that preserves black text/lines on white background.
-Removes colored watermarks (blue, red, grey) using a multi-step CV pipeline.
+V3 Architecture (2026-03-30):
+  Images -> LAB Chroma Detection (threshold=12, min_pct=0.3%)
+    - No colored watermark -> SKIP (keep original unchanged)
+    - Has colored watermark -> Fix1 pipeline (red HSV inpaint + binarize)
 
-Pipeline (forked from Colab watermark_removal.ipynb "Final Code"):
+Fix1 pipeline (for watermarked images only):
 1. Red watermark removal via HSV masking + cv2.inpaint (TELEA algorithm)
 2. Grayscale conversion
 3. Bilateral denoise (edge-preserving noise removal)
@@ -12,6 +14,9 @@ Pipeline (forked from Colab watermark_removal.ipynb "Final Code"):
 6. CLAHE local contrast enhancement
 7. Unsharp mask sharpening
 8. Gamma correction (push whites whiter, blacks blacker)
+
+Gray/black watermarks are NOT caught by chroma detection (known limitation).
+They pass through as originals for human review in the preview pane.
 
 Forked from: watermark_removal.ipynb (Colab), watermark-removal/src/remove_watermark.py
 """
@@ -81,6 +86,52 @@ _WM_MAX_ASPECT = 5.0        # reject blobs with aspect ratio above this (thin li
 _RED_MIN_THICKNESS = 20     # min blob min-side in pixels
 _RED_MIN_AREA = 800         # min blob area in pixels
 _RED_FILL_DENSITY = 0.40    # min fill ratio (0-1) for red blobs
+
+# Chroma detection parameters (LAB color space)
+_CHROMA_THRESHOLD = 10      # min chroma distance from gray axis for "colored" pixel
+_CHROMA_MIN_PCT = 0.3       # min % of pixels that must be colored to flag watermark
+
+
+def detect_colored_watermark(
+    img_bgr: "np.ndarray",
+    chroma_threshold: float = _CHROMA_THRESHOLD,
+    min_colored_pct: float = _CHROMA_MIN_PCT,
+) -> Tuple[bool, Optional["np.ndarray"], Dict[str, Any]]:
+    """Detect colored watermark via LAB chroma distance.
+
+    Converts to LAB color space and measures chroma = sqrt(a^2 + b^2) for
+    each pixel. Colored watermarks (red, blue, mixed) have high chroma;
+    grayscale diagram content (lines, text, hatching) has chroma ~ 0.
+
+    Returns:
+        has_watermark: True if colored watermark detected
+        mask: binary mask of colored pixels (or None if no watermark)
+        stats: dict with chroma_mean, chroma_max, colored_pct
+    """
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    a = lab[:, :, 1].astype(np.float32) - 128.0
+    b = lab[:, :, 2].astype(np.float32) - 128.0
+    chroma = np.sqrt(a * a + b * b)
+
+    colored_mask = (chroma > chroma_threshold).astype(np.uint8) * 255
+
+    # Morphological cleanup — close small gaps, remove noise specks
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    colored_mask = cv2.morphologyEx(colored_mask, cv2.MORPH_CLOSE, kernel)
+    colored_mask = cv2.morphologyEx(colored_mask, cv2.MORPH_OPEN, kernel)
+
+    total_pixels = img_bgr.shape[0] * img_bgr.shape[1]
+    colored_count = int(np.count_nonzero(colored_mask))
+    colored_pct = colored_count / total_pixels * 100
+
+    stats = {
+        "chroma_mean": round(float(np.mean(chroma)), 2),
+        "chroma_max": round(float(np.max(chroma)), 2),
+        "colored_pct": round(colored_pct, 3),
+    }
+
+    has_watermark = colored_pct >= min_colored_pct
+    return has_watermark, colored_mask if has_watermark else None, stats
 
 
 def _filter_thick_blobs(
@@ -336,10 +387,16 @@ def _remove_watermark_cv2(img_path: str) -> Optional[bytes]:
     ], dtype=np.float32)
     sharp = cv2.filter2D(enhanced, -1, sharpen_kernel)
 
-    # Step 6b: Post-sharpen watermark detection — catches grey/faded watermarks
-    # that survived the initial red HSV removal. Uses connected component
-    # analysis to find thick, dense blobs and sets them to white.
-    sharp = _remove_post_sharpen_watermark(sharp)
+    # Step 6b: Post-sharpen watermark detection — DISABLED.
+    # This step used connected component analysis to find "thick, dense blobs"
+    # and remove them as watermarks. However, after binarization (step 3),
+    # grey watermarks are already eliminated. Step 6b was instead destroying
+    # real content: hatched diagram regions, large chemistry text (CH3CH2MgBr),
+    # DNA sequences, and dense labeling — all misclassified as watermarks.
+    # Red watermarks are handled by step 0 (HSV inpainting); no post-sharpen
+    # detection is needed. Disabled 2026-03-30 after analysis of 539 images
+    # showed 15.2% false positive rate (82/539 images had content destroyed).
+    # See experiments/watermark_lab/ for full diagnostic data.
 
     # Step 7: Gamma correction — final push. Whites become whiter, blacks blacker.
     lut = np.array([
@@ -670,7 +727,16 @@ class WatermarkStage(BasePipelineStage):
         return scan
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """Batch process all images for watermark removal."""
+        """Batch process all images with chroma detection gate.
+
+        For each image:
+        1. Run LAB chroma detection (7ms/image)
+        2. If no colored watermark -> copy original to images_cleaned/ (SKIP)
+        3. If colored watermark -> run Fix1 pipeline -> save to images_cleaned/
+
+        Saves per-image decision log to watermark_decisions.json for the
+        preview pane to display chroma labels and side-by-side comparisons.
+        """
         img_dir = self._get_image_dir()
         out_dir = self._get_output_dir()
         exts = {".png", ".jpg", ".jpeg"}
@@ -681,47 +747,279 @@ class WatermarkStage(BasePipelineStage):
             self.log("warning", "No images found to process")
             return {"processed": 0, "failed": 0, "skipped": 0}
 
-        self.log("info", f"Processing {len(all_images)} images...")
+        self.log("info", f"Processing {len(all_images)} images (chroma detection + Fix1 pipeline)...")
 
         processed = 0
+        skipped = 0
         failed = 0
+        decisions = []  # Per-image log for preview pane
 
         for i, img_path in enumerate(all_images):
+            decision = {"filename": img_path.name, "action": "unknown"}
             try:
-                cleaned_bytes = remove_watermark(str(img_path))
-                if cleaned_bytes:
-                    out_path = out_dir / img_path.with_suffix(".png").name
-                    with open(out_path, "wb") as f:
-                        f.write(cleaned_bytes)
-                    processed += 1
+                if HAS_CV2:
+                    img_bgr = cv2.imread(str(img_path))
+                    if img_bgr is None:
+                        raise ValueError("cv2.imread returned None")
+
+                    # Chroma detection gate
+                    has_wm, _mask, chroma_stats = detect_colored_watermark(img_bgr)
+                    decision.update(chroma_stats)
+
+                    if has_wm:
+                        # Colored watermark detected -> run Fix1 binarization pipeline
+                        cleaned_bytes = remove_watermark(str(img_path))
+                        if cleaned_bytes:
+                            out_path = out_dir / img_path.with_suffix(".png").name
+                            with open(out_path, "wb") as f:
+                                f.write(cleaned_bytes)
+                            processed += 1
+                            decision["action"] = "cleaned"
+                        else:
+                            shutil.copy2(img_path, out_dir / img_path.name)
+                            failed += 1
+                            decision["action"] = "failed"
+                            self.log("warning", f"Fix1 failed on {img_path.name}, copied original")
+                    else:
+                        # No colored watermark -> pass through original unchanged
+                        shutil.copy2(img_path, out_dir / img_path.name)
+                        skipped += 1
+                        decision["action"] = "skipped"
                 else:
-                    # Copy original if processing fails
+                    # No cv2 available — copy original
                     shutil.copy2(img_path, out_dir / img_path.name)
-                    failed += 1
-                    self.log("warning", f"Failed to clean {img_path.name}, copied original")
+                    skipped += 1
+                    decision["action"] = "skipped"
+                    decision["reason"] = "cv2_unavailable"
+
             except Exception as e:
                 shutil.copy2(img_path, out_dir / img_path.name)
                 failed += 1
+                decision["action"] = "failed"
+                decision["error"] = str(e)
                 self.log("error", f"Error processing {img_path.name}: {e}")
+
+            decisions.append(decision)
 
             # Progress
             pct = (i + 1) / len(all_images) * 100
             if (i + 1) % 10 == 0 or (i + 1) == len(all_images):
                 self.progress(pct, f"{i + 1}/{len(all_images)} images")
-                self.log("info", f"Progress: {i + 1}/{len(all_images)} ({pct:.0f}%)")
+                self.log("info",
+                         f"Progress: {i + 1}/{len(all_images)} ({pct:.0f}%) "
+                         f"-- cleaned={processed} skipped={skipped} failed={failed}")
 
-        self.save_checkpoint("completed", {
+        # Save per-image decision log for preview pane
+        decisions_path = self.session_dir / "watermark_decisions.json"
+        try:
+            with open(decisions_path, "w", encoding="utf-8") as f:
+                json.dump(decisions, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log("warning", f"Could not save decisions log: {e}")
+
+        result_data = {
             "total": len(all_images),
             "processed": processed,
+            "skipped": skipped,
             "failed": failed,
-        })
-
-        self.log("success", f"Watermark removal complete: {processed} cleaned, {failed} failed")
-        return {
-            "total": len(all_images),
-            "processed": processed,
-            "failed": failed,
+            "watermark_step": "completed",
         }
+        self.save_checkpoint("in_progress", result_data)
+
+        self.log("success",
+                 f"Watermark removal complete: {processed} cleaned, "
+                 f"{skipped} skipped (no watermark), {failed} failed")
+        return result_data
+
+    # ── Preview pane: paginated image list with chroma decisions ─────────
+
+    def get_preview_images(self, offset: int = 0, limit: int = 20) -> Dict[str, Any]:
+        """Return paginated image list with original + cleaned base64 and chroma labels.
+
+        Reads watermark_decisions.json (written by execute()) to determine:
+        - Which images were cleaned (show original left + cleaned right)
+        - Which were skipped (show original only, label "No watermark detected")
+
+        Returns base64 data URIs for both original and cleaned (if applicable).
+        """
+        img_dir = self._get_image_dir()
+        out_dir = self._get_output_dir()
+
+        # Load decisions log
+        decisions_path = self.session_dir / "watermark_decisions.json"
+        decisions_map = {}
+        if decisions_path.exists():
+            try:
+                with open(decisions_path, "r", encoding="utf-8") as f:
+                    decisions_list = json.load(f)
+                decisions_map = {d["filename"]: d for d in decisions_list}
+            except Exception:
+                pass
+
+        # Get all images from original dir
+        exts = {".png", ".jpg", ".jpeg"}
+        all_images = sorted(
+            [f for f in img_dir.iterdir() if f.suffix.lower() in exts],
+            key=lambda p: p.name,
+        ) if img_dir.exists() else []
+
+        total = len(all_images)
+        page = all_images[offset:offset + limit]
+
+        items = []
+        for img_path in page:
+            fname = img_path.name
+            decision = decisions_map.get(fname, {})
+            action = decision.get("action", "unknown")
+
+            entry = {
+                "filename": fname,
+                "action": action,
+                "colored_pct": decision.get("colored_pct", 0),
+                "chroma_label": (
+                    "Watermark removed" if action == "cleaned"
+                    else "No watermark detected" if action == "skipped"
+                    else "Processing failed" if action == "failed"
+                    else "Not processed"
+                ),
+                "original": file_to_base64(str(img_path)),
+            }
+
+            # Add cleaned image if watermark was removed
+            if action == "cleaned":
+                # Cleaned file may be .png even if original was .jpg
+                cleaned_path = out_dir / img_path.with_suffix(".png").name
+                if not cleaned_path.exists():
+                    cleaned_path = out_dir / fname
+                if cleaned_path.exists():
+                    entry["cleaned"] = file_to_base64(str(cleaned_path))
+
+            items.append(entry)
+
+        return {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": (offset + limit) < total,
+        }
+
+    # ── Image-level quarantine ────────────────────────────────────────────
+
+    def quarantine_images(self, qids_to_quarantine: List[str]) -> Dict[str, Any]:
+        """Quarantine questions by QID — removes them from metadata_v2 files.
+
+        Called after user reviews preview pane and clicks "Quarantine Unselected".
+        Quarantined questions are:
+        1. Recorded in the quarantine DB table
+        2. Removed from all metadata_v2 files (so they don't flow downstream)
+
+        Args:
+            qids_to_quarantine: List of QIDs to quarantine
+
+        Returns:
+            Dict with counts of quarantined and remaining questions.
+        """
+        if not qids_to_quarantine:
+            return {"quarantined": 0, "remaining": 0, "message": "Nothing to quarantine"}
+
+        from app.db import quarantine_question
+
+        qid_set = set(qids_to_quarantine)
+        quarantined_count = 0
+        remaining_count = 0
+
+        # Record each in quarantine DB
+        for qid in qids_to_quarantine:
+            quarantine_question(
+                self.session_id, qid,
+                stage="stage5_watermark",
+                reason="user_image_review",
+                data={"message": "Quarantined via Stage 5 image review"},
+            )
+            quarantined_count += 1
+
+        # Remove from metadata_v2 files
+        meta_files = self._get_metadata_files()
+        files_modified = 0
+        for mf in meta_files:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            questions = data if isinstance(data, list) else data.get("questions", [])
+            original_len = len(questions)
+            filtered = [q for q in questions if q.get("qid") not in qid_set]
+
+            if len(filtered) < original_len:
+                if isinstance(data, list):
+                    data[:] = filtered
+                elif "questions" in data:
+                    data["questions"] = filtered
+
+                self.backup(mf)
+                with open(mf, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                files_modified += 1
+                remaining_count += len(filtered)
+            else:
+                remaining_count += len(questions)
+
+        self.log("info",
+                 f"Quarantined {quarantined_count} questions from image review, "
+                 f"{remaining_count} remaining in {files_modified} files modified")
+
+        # Update checkpoint with quarantine data
+        cp_data = self._load_checkpoint_data()
+        cp_data["quarantine_step"] = "completed"
+        cp_data["quarantined_qids"] = list(qid_set)
+        cp_data["quarantined_count"] = quarantined_count
+        cp_data["remaining_count"] = remaining_count
+        self.save_checkpoint("in_progress", cp_data)
+
+        return {
+            "quarantined": quarantined_count,
+            "remaining": remaining_count,
+            "files_modified": files_modified,
+        }
+
+    def get_image_question_map(self) -> Dict[str, str]:
+        """Map image filenames to question QIDs by scanning metadata_v2 HTML.
+
+        Scans all <img src="./images/filename"> tags in question/solution HTML
+        and maps each filename to the QID of the entry containing it.
+
+        Returns: {filename: qid}
+        """
+        import re
+        img_src_re = re.compile(r'<img[^>]+src=["\']\.?/?images/([^"\']+)["\']', re.IGNORECASE)
+        mapping = {}
+
+        meta_files = self._get_metadata_files()
+        QUESTION_TYPES = ["scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion", "subjective"]
+
+        for mf in meta_files:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            questions = data if isinstance(data, list) else data.get("questions", [])
+            for q in questions:
+                qid = q.get("qid", "")
+                for qt in QUESTION_TYPES:
+                    obj = q.get(qt)
+                    if not obj or not isinstance(obj, dict):
+                        continue
+                    for field in ("question", "ques", "solution", "sol"):
+                        val = str(obj.get(field, "") or "")
+                        for match in img_src_re.finditer(val):
+                            mapping[match.group(1)] = qid
+
+        return mapping
 
     # ── SMILES detection + rendering ──────────────────────────────────────
 

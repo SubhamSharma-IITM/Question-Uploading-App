@@ -18,7 +18,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.db import init_db
-from app.firebase_auth import verify_session, create_session, delete_session as delete_auth_session, verify_firebase_token, get_user_info, SESSION_COOKIE_NAME
+from app.firebase_auth import (
+    verify_session, create_session, delete_session as delete_auth_session,
+    verify_pin, get_user_info, check_rate_limit, record_failed_attempt,
+    clear_rate_limit, SESSION_COOKIE_NAME,
+)
 from app.utils import _safe_print
 
 # ── Paths ──
@@ -158,64 +162,80 @@ app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", 
 
 
 # ── Auth pages ──
-def _firebase_ctx():
-    """Firebase config dict for login template."""
-    return {
-        "firebase_api_key": settings.firebase_api_key,
-        "firebase_auth_domain": settings.firebase_auth_domain,
-        "firebase_project_id": settings.firebase_project_id,
-        "firebase_storage_bucket": settings.firebase_storage_bucket,
-        "firebase_messaging_sender_id": settings.firebase_messaging_sender_id,
-        "firebase_app_id": settings.firebase_app_id,
-    }
-
-
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    """Login page with Firebase Phone Auth."""
-    # If already logged in, redirect to dashboard
+    """Login page with phone + PIN."""
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if verify_session(session_token):
         return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, **_firebase_ctx()})
+    return templates.TemplateResponse("login.html", {"request": request})
 
 
 @app.post("/auth/verify")
 async def auth_verify(request: Request):
-    """Verify Firebase ID token and create session."""
+    """Verify phone + PIN and create session."""
     body = await request.json()
-    id_token = body.get("id_token", "")
+    phone = body.get("phone", "").strip()
+    pin = body.get("pin", "").strip()
 
-    if not id_token:
-        _safe_print("[AUTH] Missing id_token in request")
-        return JSONResponse(content={"success": False, "error": "Missing token"})
+    if not phone or not pin:
+        return JSONResponse(content={"success": False, "error": "Phone and PIN required"})
 
-    _safe_print(f"[AUTH] Verifying Firebase token (length={len(id_token)})...")
-    user_info = await verify_firebase_token(id_token)
+    # Normalize phone
+    full_phone = "+91" + phone if not phone.startswith("+") else phone
+
+    # Check rate limit
+    locked_seconds = check_rate_limit(full_phone)
+    if locked_seconds:
+        mins = (locked_seconds // 60) + 1
+        return JSONResponse(content={
+            "success": False,
+            "error": f"Too many attempts. Locked for {mins} min.",
+            "locked": True,
+            "locked_seconds": locked_seconds,
+        })
+
+    # Verify PIN
+    user_info = verify_pin(phone, pin)
     if not user_info:
-        _safe_print("[AUTH] Token verification FAILED")
-        return JSONResponse(content={"success": False, "error": "Invalid token"})
+        remaining = record_failed_attempt(full_phone)
+        _safe_print(f"[AUTH] Failed login for {full_phone[-4:]}, {remaining} attempts left")
+        if remaining > 0:
+            return JSONResponse(content={
+                "success": False,
+                "error": f"Invalid PIN. {remaining} attempt{'s' if remaining != 1 else ''} left.",
+                "attempts_left": remaining,
+            })
+        else:
+            return JSONResponse(content={
+                "success": False,
+                "error": f"Account locked for 15 minutes.",
+                "locked": True,
+                "locked_seconds": 15 * 60,
+            })
 
-    user_detail = get_user_info(user_info["phone"])
-    _safe_print(f"[AUTH] Verified: {user_detail['name']} ({user_detail['role']}), phone={user_info['phone']}")
-    session_token = create_session(user_info["phone"], user_info["uid"])
+    # Success — clear rate limit and create session
+    clear_rate_limit(full_phone)
+    _safe_print(f"[AUTH] Login: {user_info['name']} ({user_info['role']})")
+    session_token = create_session(user_info["phone"], user_info["name"], user_info["role"])
 
     response = JSONResponse(content={
         "success": True,
         "redirect": "/",
-        "user_name": user_detail["name"],
-        "user_role": user_detail["role"],
+        "user_name": user_info["name"],
+        "user_role": user_info["role"],
     })
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
         max_age=7 * 24 * 3600,
         httponly=True,
+        samesite="lax",
     )
-    # Display cookie (readable by JS/templates for personalization)
+    # Display cookie for session persistence across --reload
     response.set_cookie(
         key="acadza_display",
-        value=f"{user_detail['name']}|{user_detail['role']}",
+        value=f"{user_info['name']}|{user_info['role']}",
         max_age=7 * 24 * 3600,
         httponly=False,
         samesite="lax",

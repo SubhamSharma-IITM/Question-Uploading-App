@@ -29,7 +29,7 @@
                 <div id="cred-status" style="display: none; margin-top: 12px;"></div>
                 <div id="controls" style="display: none; margin-top: 12px;">
                     <div class="btn-group">
-                        <button class="btn btn-primary" onclick="uploadImages()" id="upload-btn">Upload to CDN</button>
+                        <button class="btn btn-primary" onclick="uploadImages()" id="upload-btn">Upload Images</button>
                         <button class="btn" onclick="skipImages()" id="skip-btn">Skip (No Images / Defer)</button>
                     </div>
                 </div>
@@ -209,7 +209,7 @@ async function uploadImages() {
                     '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
                 appendLog('error', d.error);
                 btn.disabled = false;
-                btn.textContent = 'Upload to CDN';
+                btn.textContent = 'Upload Images';
                 document.getElementById('skip-btn').disabled = false;
             } else if (d.status === 'no_images') {
                 document.getElementById('results-content').innerHTML =
@@ -282,13 +282,13 @@ async function uploadImages() {
         } else {
             appendLog('error', 'Upload failed: ' + (r.error?.message || 'Unknown'));
             btn.disabled = false;
-            btn.textContent = 'Upload to CDN';
+            btn.textContent = 'Upload Images';
             document.getElementById('skip-btn').disabled = false;
         }
     } catch (e) {
         appendLog('error', 'Upload error: ' + e.message);
         btn.disabled = false;
-        btn.textContent = 'Upload to CDN';
+        btn.textContent = 'Upload Images';
         document.getElementById('skip-btn').disabled = false;
     }
 }

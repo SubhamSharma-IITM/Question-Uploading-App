@@ -2303,6 +2303,23 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             self.log("error", f"{pass_key} Vertex AI batch poll error: {e}")
             return {**status_data, "error": str(e)}
 
+    @staticmethod
+    def _extract_qid_from_vertex_response(data: Dict) -> Optional[str]:
+        """Extract QID from Vertex AI response's embedded request text.
+
+        Vertex AI does NOT preserve request order in batch responses, so line-index
+        mapping is unreliable. Instead, extract the QID from the original request
+        text which is echoed back in the response under:
+          data["request"]["contents"][0]["parts"][0]["text"]
+        where the prompt contains 'QID: <actual_qid>'.
+        """
+        try:
+            text = data["request"]["contents"][0]["parts"][0]["text"]
+            match = re.search(r"QID:\s*(\S+)", text)
+            return match.group(1) if match else None
+        except (KeyError, IndexError, TypeError):
+            return None
+
     def _download_vertex_batch_results(self, pass_key: str) -> Dict[str, Any]:
         """Download Vertex AI batch results from GCS, build ledger file."""
         pass_info = PASS_MODELS[pass_key]
@@ -2358,15 +2375,35 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
         self.log("info", f"Saved raw results: {results_path.name}")
 
         # Parse results and build ledger
+        # NOTE: Vertex AI does NOT preserve request order in batch responses.
+        # QID must be extracted from the embedded request text, NOT from line index.
+        # The qid_line_map is kept as fallback only (should never be needed).
         ledger = []
         approved = 0
         rejected = 0
         errors_list = []
+        extracted_count = 0
+        fallback_count = 0
 
         for line_idx, raw_line in enumerate(all_lines):
-            qid = qid_line_map.get(str(line_idx), f"unknown_{line_idx}")
             try:
                 data = json.loads(raw_line)
+            except json.JSONDecodeError:
+                errors_list.append(f"line_{line_idx}: invalid JSON")
+                continue
+
+            # Primary: extract QID from embedded request text (Vertex echoes request back)
+            embedded_qid = self._extract_qid_from_vertex_response(data)
+            if embedded_qid:
+                qid = embedded_qid
+                extracted_count += 1
+            else:
+                # Fallback: line-index map (unreliable due to Vertex shuffling)
+                qid = qid_line_map.get(str(line_idx), f"unknown_{line_idx}")
+                fallback_count += 1
+                self.log("warning", f"{pass_key} line {line_idx}: QID extraction failed, fell back to line-index -> {qid}")
+
+            try:
                 # Vertex AI output format: {"response": {"candidates": [{"content": {"parts": [{"text": "..."}]}}]}}
                 response = data.get("response", {})
                 candidates = response.get("candidates", [])
@@ -2413,6 +2450,11 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     "errors": [{"type": "API_ERROR", "field": "metadata", "detail": str(e)}],
                 })
                 errors_list.append(f"{qid}: {e}")
+
+        if fallback_count > 0:
+            self.log("warning", f"{pass_key} QID mapping: {extracted_count} extracted from request, {fallback_count} fell back to line-index (UNRELIABLE)")
+        else:
+            self.log("info", f"{pass_key} QID mapping: all {extracted_count} extracted from embedded request text")
 
         # Save ledger
         ledger_dir = self._get_ledger_dir()

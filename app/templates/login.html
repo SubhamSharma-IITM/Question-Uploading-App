@@ -19,7 +19,7 @@
             position: relative;
         }
 
-        /* Background gear — emerging from right, ~30% cropped */
+        /* Background gear — emerging from right */
         .bg-gear {
             position: fixed;
             right: -20%;
@@ -32,52 +32,18 @@
             z-index: 0;
             animation: gearArrive 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
-        /* Gear exit — triggered by JS adding .gear-exit class */
         .bg-gear.gear-exit {
             animation: gearLeave 1s cubic-bezier(0.55, 0, 1, 0.45) forwards;
         }
 
         @keyframes gearArrive {
-            0% {
-                transform: translateY(-50%) rotate(-90deg);
-                right: -60%;
-                opacity: 0;
-            }
+            0% { transform: translateY(-50%) rotate(-90deg); right: -60%; opacity: 0; }
             40% { opacity: 0.05; }
-            100% {
-                transform: translateY(-50%) rotate(0deg);
-                right: -20%;
-                opacity: 0.09;
-            }
+            100% { transform: translateY(-50%) rotate(0deg); right: -20%; opacity: 0.09; }
         }
         @keyframes gearLeave {
-            0% {
-                transform: translateY(-50%) rotate(0deg);
-                right: -20%;
-                opacity: 0.09;
-            }
-            100% {
-                transform: translateY(-50%) rotate(90deg);
-                right: -70%;
-                opacity: 0;
-            }
-        }
-
-        /* reCAPTCHA — keep badge in bottom-right, challenge below the card */
-        .grecaptcha-badge {
-            z-index: 50 !important;
-        }
-        /* Push CAPTCHA challenge iframe behind the glass card */
-        iframe[src*="recaptcha"][role="presentation"] {
-            z-index: 0 !important;
-        }
-        div[style*="visibility: visible"] > div > iframe[title*="recaptcha"] {
-            z-index: 9999 !important;
-            position: fixed !important;
-            top: auto !important;
-            bottom: 20px !important;
-            left: 50% !important;
-            transform: translateX(-50%) !important;
+            0% { transform: translateY(-50%) rotate(0deg); right: -20%; opacity: 0.09; }
+            100% { transform: translateY(-50%) rotate(90deg); right: -70%; opacity: 0; }
         }
 
         .login-wrap {
@@ -137,10 +103,7 @@
 
         .field { margin-bottom: 24px; }
 
-        .phone-row {
-            display: flex;
-            gap: 8px;
-        }
+        .phone-row { display: flex; gap: 8px; }
 
         input {
             width: 100%;
@@ -169,13 +132,9 @@
             background: rgba(20, 22, 34, 0.9);
         }
 
-        /* OTP boxes */
-        .otp-boxes {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-        .otp-box {
+        /* PIN boxes */
+        .pin-boxes { display: flex; gap: 10px; justify-content: center; }
+        .pin-box {
             width: 48px;
             height: 56px;
             text-align: center;
@@ -190,12 +149,17 @@
             transition: border-color 0.2s, box-shadow 0.2s;
             -webkit-text-security: disc;
         }
-        .otp-box:focus {
+        .pin-box:focus {
             border-color: #4f7df9;
             box-shadow: 0 0 0 3px rgba(79, 125, 249, 0.15);
         }
-        .otp-box.filled {
-            border-color: rgba(79, 125, 249, 0.4);
+        .pin-box.filled { border-color: rgba(79, 125, 249, 0.4); }
+        .pin-box.error { border-color: rgba(248, 113, 113, 0.5); animation: shake 0.4s ease; }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-4px); }
+            40%, 80% { transform: translateX(4px); }
         }
 
         .btn {
@@ -211,7 +175,6 @@
             transition: all 0.2s;
             position: relative;
             overflow: hidden;
-            letter-spacing: 0.2px;
         }
         .btn:hover { background: #3d6be6; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,125,249,0.3); }
         .btn:active { transform: translateY(0); }
@@ -219,8 +182,7 @@
 
         .btn .spinner {
             display: none;
-            width: 20px;
-            height: 20px;
+            width: 20px; height: 20px;
             border: 2.5px solid rgba(255,255,255,0.3);
             border-top-color: #fff;
             border-radius: 50%;
@@ -229,7 +191,6 @@
         }
         .btn.loading .spinner { display: inline-block; }
         .btn.loading .btn-text { display: none; }
-
         @keyframes spin { to { transform: rotate(360deg); } }
 
         .msg {
@@ -246,7 +207,6 @@
 
         .step { display: none; }
         .step.active { display: block; animation: fadeIn 0.3s ease; }
-
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
         .link-row {
@@ -255,54 +215,48 @@
             font-size: 13px;
             color: #5c6280;
         }
-        .link-row a { color: #4f7df9; cursor: pointer; text-decoration: none; transition: color 0.15s; font-weight: 500; }
+        .link-row a { color: #4f7df9; cursor: pointer; text-decoration: none; font-weight: 500; }
         .link-row a:hover { color: #8badff; }
 
-        #recaptcha-container { display: flex; justify-content: center; margin-bottom: 12px; }
-
-        /* Toast — prominent, centered top */
+        /* Toast */
         .toast {
             position: fixed;
-            top: 32px;
+            top: 12px;
             left: 50%;
-            transform: translateX(-50%) translateY(-120px);
+            transform: translateX(-50%) translateY(-100px);
             background: linear-gradient(135deg, rgba(20, 24, 42, 0.95), rgba(30, 36, 58, 0.95));
             backdrop-filter: blur(20px);
             border: 1px solid rgba(79, 125, 249, 0.25);
-            border-radius: 14px;
-            padding: 22px 32px;
+            border-radius: 12px;
+            padding: 14px 28px;
             box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset;
             z-index: 100;
             transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
             opacity: 0;
-            min-width: 300px;
+            min-width: 280px;
             text-align: center;
         }
         .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-        .toast h3 {
-            font-size: 18px;
-            font-weight: 700;
-            margin-bottom: 6px;
-            color: #f0f2fa;
-            letter-spacing: -0.3px;
-        }
-        .toast p {
-            font-size: 14px;
-            color: #8badff;
-            line-height: 1.4;
-            font-weight: 500;
-            font-style: italic;
-        }
+        .toast h3 { font-size: 18px; font-weight: 700; margin-bottom: 6px; color: #f0f2fa; }
+        .toast p { font-size: 14px; color: #8badff; font-weight: 500; font-style: italic; }
         .toast::before {
             content: '';
             position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 2px;
+            top: 0; left: 0; right: 0; height: 2px;
             background: linear-gradient(90deg, transparent, #4f7df9, transparent);
             border-radius: 14px 14px 0 0;
         }
 
-        /* Footer branding */
+        /* Lockout countdown */
+        .lockout {
+            text-align: center;
+            padding: 16px;
+            color: #f87171;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .lockout .timer { font-size: 28px; font-weight: 700; margin: 8px 0; font-variant-numeric: tabular-nums; }
+
         .login-footer {
             text-align: center;
             margin-top: 28px;
@@ -312,25 +266,20 @@
             letter-spacing: 2px;
         }
 
-        /* Subtle ambient glow */
         body::before {
             content: '';
             position: fixed;
-            width: 500px;
-            height: 500px;
+            width: 500px; height: 500px;
             background: radial-gradient(circle, rgba(79,125,249,0.06) 0%, transparent 70%);
-            top: 30%;
-            left: 20%;
+            top: 30%; left: 20%;
             pointer-events: none;
             z-index: 0;
         }
     </style>
 </head>
 <body>
-    <!-- Background gear logo -->
     <img src="/static/img/acadza-gear-white.svg" alt="" class="bg-gear" id="bg-gear">
 
-    <!-- Toast notification -->
     <div id="toast" class="toast">
         <h3 id="toast-title"></h3>
         <p id="toast-sub"></p>
@@ -341,7 +290,7 @@
 
         <div class="card">
             <h2 id="welcome-heading">Welcome back</h2>
-            <p class="sub">Sign in with your phone number</p>
+            <p class="sub">Enter your phone number and PIN</p>
 
             <div id="msg-err" class="msg err"></div>
             <div id="msg-ok" class="msg ok"></div>
@@ -352,36 +301,42 @@
                     <label>Phone number</label>
                     <div class="phone-row">
                         <input type="text" class="cc" value="+91" readonly>
-                        <input type="tel" id="phone" placeholder="10-digit number"
-                               maxlength="10" autofocus>
+                        <input type="tel" id="phone" placeholder="10-digit number" maxlength="10" autofocus>
                     </div>
                 </div>
-                <div id="recaptcha-container"></div>
-                <button id="btn-send" class="btn" onclick="sendOTP()" disabled>
-                    <span class="btn-text">Send OTP</span>
-                    <span class="spinner"></span>
+                <button id="btn-next" class="btn" onclick="goToPin()">
+                    <span class="btn-text">Continue</span>
                 </button>
             </div>
 
-            <!-- Step 2: OTP -->
-            <div id="step-otp" class="step">
+            <!-- Step 2: PIN -->
+            <div id="step-pin" class="step">
                 <div class="field">
-                    <label>Verification code</label>
-                    <div class="otp-boxes">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="0">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="1">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="2">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="3">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="4">
-                        <input type="text" class="otp-box" maxlength="1" inputmode="numeric" data-idx="5">
+                    <label>6-digit PIN</label>
+                    <div class="pin-boxes">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="0">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="1">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="2">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="3">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="4">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="5">
                     </div>
                 </div>
-                <button id="btn-verify" class="btn" onclick="verifyOTP()">
-                    <span class="btn-text">Verify</span>
+                <button id="btn-login" class="btn" onclick="login()">
+                    <span class="btn-text">Sign In</span>
                     <span class="spinner"></span>
                 </button>
                 <div class="link-row">
                     <a onclick="goBack()">Change number</a>
+                </div>
+            </div>
+
+            <!-- Lockout -->
+            <div id="step-locked" class="step">
+                <div class="lockout">
+                    <div>Account locked</div>
+                    <div class="timer" id="lockout-timer">15:00</div>
+                    <div style="font-size:12px;color:#6b7194;font-weight:400;">Too many failed attempts. Try again later.</div>
                 </div>
             </div>
         </div>
@@ -389,82 +344,39 @@
         <div class="login-footer">ACADZA AUTOMATION SUITE</div>
     </div>
 
-    <!-- Firebase SDK -->
-    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-
     <script>
-    const firebaseConfig = {
-        apiKey: "{{ firebase_api_key }}",
-        authDomain: "{{ firebase_auth_domain }}",
-        projectId: "{{ firebase_project_id }}",
-        storageBucket: "{{ firebase_storage_bucket }}",
-        messagingSenderId: "{{ firebase_messaging_sender_id }}",
-        appId: "{{ firebase_app_id }}"
-    };
-    firebase.initializeApp(firebaseConfig);
-
-    // User registry (mirrors server-side for instant heading update)
+    // User registry for instant heading update
     const USERS = {
         '9661172783': 'Shubham',
         '7488290347': 'Team Member',
     };
 
-    // ── localStorage cache for returning users ──
+    // localStorage cache
     function getCachedUser() {
-        try {
-            const raw = localStorage.getItem('acadza_user');
-            if (!raw) return null;
-            return JSON.parse(raw);
-        } catch(e) { return null; }
+        try { const r = localStorage.getItem('acadza_user'); return r ? JSON.parse(r) : null; }
+        catch(e) { return null; }
     }
     function setCachedUser(name, role) {
-        try {
-            localStorage.setItem('acadza_user', JSON.stringify({
-                name: name, role: role, ts: Date.now()
-            }));
-        } catch(e) {}
+        try { localStorage.setItem('acadza_user', JSON.stringify({name, role, ts: Date.now()})); }
+        catch(e) {}
     }
 
-    const auth = firebase.auth();
-    let confirmResult = null;
-    let recaptcha = null;
-    let recaptchaWidgetId = null;
-
-    function log(msg) { console.log('[AUTH]', msg); }
-
-    function showErr(m) { log('ERROR: ' + m); const e = document.getElementById('msg-err'); e.textContent = m; e.classList.add('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
-    function showOk(m)  { log('OK: ' + m); const e = document.getElementById('msg-ok');  e.textContent = m; e.classList.add('vis'); document.getElementById('msg-err').classList.remove('vis'); }
-    function clearMsg()  { document.getElementById('msg-err').classList.remove('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
-
-    // Motivational lines by time of day
+    // Motivational lines
     const MOTIVATIONS = {
-        morning: [
-            "Fresh day, fresh uploads.",
-            "Build something great today.",
-            "The early grind pays off.",
-            "Let's make today count.",
-        ],
-        afternoon: [
-            "Momentum is everything.",
-            "Keep the pipeline flowing.",
-            "Halfway there, stay sharp.",
-            "Great work takes persistence.",
-        ],
-        evening: [
-            "One more push, champion.",
-            "Consistency builds empires.",
-            "Strong finish to the day.",
-            "Quality over quantity, always.",
-        ],
+        morning: ["Fresh day, fresh uploads.", "Build something great today.", "The early grind pays off.", "Let's make today count."],
+        afternoon: ["Momentum is everything.", "Keep the pipeline flowing.", "Halfway there, stay sharp.", "Great work takes persistence."],
+        evening: ["One more push, champion.", "Consistency builds empires.", "Strong finish to the day.", "Quality over quantity, always."],
     };
-
     function getMotivation() {
         const h = new Date().getHours();
-        const bucket = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
-        const lines = MOTIVATIONS[bucket];
-        return lines[Math.floor(Math.random() * lines.length)];
+        const b = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+        const l = MOTIVATIONS[b];
+        return l[Math.floor(Math.random() * l.length)];
     }
+
+    function showErr(m) { const e = document.getElementById('msg-err'); e.textContent = m; e.classList.add('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
+    function showOk(m)  { const e = document.getElementById('msg-ok');  e.textContent = m; e.classList.add('vis'); document.getElementById('msg-err').classList.remove('vis'); }
+    function clearMsg()  { document.getElementById('msg-err').classList.remove('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
 
     function showToast(title, sub) {
         const t = document.getElementById('toast');
@@ -474,220 +386,165 @@
         setTimeout(() => t.classList.remove('show'), 6000);
     }
 
-    function setLoading(btn, loading) {
-        if (loading) { btn.classList.add('loading'); btn.disabled = true; }
-        else { btn.classList.remove('loading'); btn.disabled = false; }
-    }
-
-    // ── reCAPTCHA ──
-    function initRecaptcha() {
-        log('Initializing reCAPTCHA...');
-        if (recaptcha) {
-            try { recaptcha.clear(); } catch(e) { log('clear() ok: ' + e.message); }
-            recaptcha = null;
-        }
-        const old = document.getElementById('recaptcha-container');
-        const el = document.createElement('div');
-        el.id = 'recaptcha-container';
-        old.parentNode.replaceChild(el, old);
-
-        recaptcha = new firebase.auth.RecaptchaVerifier(el, {
-            size: 'invisible',
-            callback: (token) => { log('reCAPTCHA solved, len=' + token.length); },
-            'expired-callback': () => { log('reCAPTCHA expired'); }
-        });
-        recaptcha.render().then((wid) => {
-            recaptchaWidgetId = wid;
-            log('reCAPTCHA ready, widget=' + wid);
-            document.getElementById('btn-send').disabled = false;
-        }).catch((err) => {
-            log('reCAPTCHA error: ' + err.message);
-            // Don't block — enable button anyway, reCAPTCHA will retry on send
-            document.getElementById('btn-send').disabled = false;
-        });
-    }
-
-    // ── Phone input — update heading with user name ──
-    document.getElementById('phone').addEventListener('input', function() {
+    // ── Phone input ──
+    const phoneInput = document.getElementById('phone');
+    phoneInput.addEventListener('input', function() {
         this.value = this.value.replace(/\D/g, '').slice(0, 10);
         const heading = document.getElementById('welcome-heading');
         if (this.value.length === 10 && USERS[this.value]) {
             heading.textContent = 'Welcome back, ' + USERS[this.value];
         } else {
-            // Restore cached name or default
             const cached = getCachedUser();
             heading.textContent = cached ? 'Welcome back, ' + cached.name.split(' ')[0] : 'Welcome back';
         }
     });
-    document.getElementById('phone').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
+    phoneInput.addEventListener('keydown', e => { if (e.key === 'Enter') goToPin(); });
 
-    // ── OTP boxes ──
-    const otpBoxes = document.querySelectorAll('.otp-box');
-    otpBoxes.forEach((box, i) => {
+    function goToPin() {
+        clearMsg();
+        const phone = phoneInput.value.trim();
+        if (!/^\d{10}$/.test(phone)) { showErr('Enter a valid 10-digit number'); return; }
+        document.getElementById('step-phone').classList.remove('active');
+        document.getElementById('step-pin').classList.add('active');
+        pinBoxes[0].focus();
+    }
+
+    // ── PIN boxes ──
+    const pinBoxes = document.querySelectorAll('.pin-box');
+    pinBoxes.forEach((box, i) => {
         box.addEventListener('input', function() {
             this.value = this.value.replace(/\D/g, '').slice(0, 1);
+            this.classList.remove('error');
             if (this.value) {
                 this.classList.add('filled');
-                if (i < 5) otpBoxes[i + 1].focus();
-                if (i === 5) {
-                    const otp = getOTP();
-                    if (otp.length === 6) setTimeout(() => verifyOTP(), 150);
-                }
+                if (i < 5) pinBoxes[i + 1].focus();
+                if (i === 5 && getPIN().length === 6) setTimeout(() => login(), 100);
             } else {
                 this.classList.remove('filled');
             }
         });
         box.addEventListener('keydown', function(e) {
             if (e.key === 'Backspace' && !this.value && i > 0) {
-                otpBoxes[i - 1].focus();
-                otpBoxes[i - 1].value = '';
-                otpBoxes[i - 1].classList.remove('filled');
+                pinBoxes[i - 1].focus();
+                pinBoxes[i - 1].value = '';
+                pinBoxes[i - 1].classList.remove('filled');
             }
         });
         box.addEventListener('paste', function(e) {
             e.preventDefault();
             const pasted = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
-            if (pasted.length >= 1) {
-                for (let j = 0; j < 6; j++) {
-                    otpBoxes[j].value = pasted[j] || '';
-                    if (pasted[j]) otpBoxes[j].classList.add('filled');
-                }
-                otpBoxes[Math.min(pasted.length, 5)].focus();
-                if (pasted.length === 6) setTimeout(() => verifyOTP(), 150);
+            for (let j = 0; j < 6; j++) {
+                pinBoxes[j].value = pasted[j] || '';
+                if (pasted[j]) pinBoxes[j].classList.add('filled');
             }
+            pinBoxes[Math.min(pasted.length, 5)].focus();
+            if (pasted.length === 6) setTimeout(() => login(), 100);
         });
     });
 
-    function getOTP() {
-        return Array.from(otpBoxes).map(b => b.value).join('');
-    }
+    function getPIN() { return Array.from(pinBoxes).map(b => b.value).join(''); }
+    function clearPIN() { pinBoxes.forEach(b => { b.value = ''; b.classList.remove('filled', 'error'); }); }
+    function shakePIN() { pinBoxes.forEach(b => { b.classList.add('error'); }); }
 
-    function clearOTP() {
-        otpBoxes.forEach(b => { b.value = ''; b.classList.remove('filled'); });
-    }
-
-    // ── Send OTP ──
-    async function sendOTP() {
+    // ── Login ──
+    async function login() {
         clearMsg();
-        const phone = document.getElementById('phone').value.trim();
-        if (!/^\d{10}$/.test(phone)) { showErr('Enter a valid 10-digit number'); return; }
+        const pin = getPIN();
+        if (pin.length !== 6) { showErr('Enter all 6 digits'); return; }
 
-        const btn = document.getElementById('btn-send');
-        setLoading(btn, true);
-        const fullPhone = '+91' + phone;
-        log('Sending OTP to ' + fullPhone);
+        const btn = document.getElementById('btn-login');
+        btn.classList.add('loading'); btn.disabled = true;
 
         try {
-            confirmResult = await auth.signInWithPhoneNumber(fullPhone, recaptcha);
-            log('OTP sent successfully');
-            showOk('OTP sent to ' + fullPhone);
-            document.getElementById('step-phone').classList.remove('active');
-            document.getElementById('step-otp').classList.add('active');
-            otpBoxes[0].focus();
-        } catch (err) {
-            log('Send FAILED: ' + err.code + ' - ' + err.message);
-            if (err.code === 'auth/too-many-requests') showErr('Too many attempts. Try again later.');
-            else if (err.code === 'auth/invalid-phone-number') showErr('Invalid phone number.');
-            else if (err.code === 'auth/quota-exceeded') showErr('SMS quota exceeded.');
-            else showErr(err.message || 'Failed to send OTP');
-            setLoading(btn, false);
-            initRecaptcha();
-        }
-    }
-
-    // ── Verify OTP ──
-    async function verifyOTP() {
-        clearMsg();
-        const otp = getOTP();
-        if (otp.length !== 6) { showErr('Enter all 6 digits'); return; }
-
-        const btn = document.getElementById('btn-verify');
-        setLoading(btn, true);
-        log('Verifying OTP...');
-
-        try {
-            const result = await confirmResult.confirm(otp);
-            const idToken = await result.user.getIdToken();
-            log('Firebase verified, posting to server...');
-
             const resp = await fetch('/auth/verify', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ id_token: idToken }),
+                body: JSON.stringify({ phone: phoneInput.value.trim(), pin: pin }),
             });
             const data = await resp.json();
-            log('Server: ' + JSON.stringify(data));
 
             if (data.success) {
-                // Cache user in localStorage for future visits
-                const fullName = data.user_name || '';
-                const userRole = data.user_role || '';
-                if (fullName) setCachedUser(fullName, userRole);
+                // Cache user
+                if (data.user_name) setCachedUser(data.user_name, data.user_role || '');
 
-                // Gear exits the screen
+                // Gear exit
                 document.getElementById('bg-gear').classList.add('gear-exit');
 
-                // Greeting
-                const hour = new Date().getHours();
-                const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-                const firstName = fullName ? fullName.split(' ')[0] : (getCachedUser()?.name?.split(' ')[0] || 'there');
-                const motivation = getMotivation();
+                // Toast
+                const h = new Date().getHours();
+                const greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+                const firstName = (data.user_name || 'there').split(' ')[0];
+                setTimeout(() => showToast(greeting + ', ' + firstName + '!', getMotivation()), 400);
 
-                // Toast appears as gear starts leaving
-                setTimeout(() => {
-                    showToast(greeting + ', ' + firstName + '!', motivation);
-                }, 400);
-
-                // Redirect after toast is visible
+                // Redirect
                 setTimeout(() => { window.location.href = data.redirect || '/'; }, 3000);
             } else {
-                showErr(data.error || 'Verification failed');
-                setLoading(btn, false);
+                // Failed
+                shakePIN();
+                clearPIN();
+                showErr(data.error);
+                btn.classList.remove('loading'); btn.disabled = false;
+
+                // Show lockout screen if locked
+                if (data.locked) {
+                    showLockout(data.locked_seconds || 900);
+                } else {
+                    pinBoxes[0].focus();
+                }
             }
         } catch (err) {
-            log('Verify FAILED: ' + (err.code || '') + ' - ' + err.message);
-            if (err.code === 'auth/invalid-verification-code') showErr('Invalid OTP. Try again.');
-            else if (err.code === 'auth/code-expired') showErr('OTP expired. Request a new one.');
-            else showErr(err.message || 'Verification failed');
-            setLoading(btn, false);
-            clearOTP();
-            otpBoxes[0].focus();
+            showErr('Network error: ' + err.message);
+            btn.classList.remove('loading'); btn.disabled = false;
         }
+    }
+
+    // ── Lockout ──
+    let lockoutInterval = null;
+    function showLockout(seconds) {
+        document.getElementById('step-pin').classList.remove('active');
+        document.getElementById('step-phone').classList.remove('active');
+        document.getElementById('step-locked').classList.add('active');
+
+        let remaining = seconds;
+        updateTimer(remaining);
+        lockoutInterval = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+                clearInterval(lockoutInterval);
+                document.getElementById('step-locked').classList.remove('active');
+                document.getElementById('step-phone').classList.add('active');
+                clearMsg();
+                phoneInput.focus();
+            } else {
+                updateTimer(remaining);
+            }
+        }, 1000);
+    }
+    function updateTimer(s) {
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        document.getElementById('lockout-timer').textContent = m + ':' + String(sec).padStart(2, '0');
     }
 
     // ── Go back ──
     function goBack() {
-        log('Back to phone');
         clearMsg();
-        confirmResult = null;
-        clearOTP();
-        document.getElementById('step-otp').classList.remove('active');
+        clearPIN();
+        document.getElementById('step-pin').classList.remove('active');
         document.getElementById('step-phone').classList.add('active');
-        document.getElementById('phone').focus();
         document.getElementById('welcome-heading').textContent = 'Welcome back';
-        initRecaptcha();
+        phoneInput.focus();
     }
 
+    // ── Init ──
     document.addEventListener('DOMContentLoaded', () => {
-        log('Page loaded, project: ' + firebaseConfig.projectId);
-
-        // Show cached user name on page load
         const cached = getCachedUser();
         if (cached && cached.name) {
             const firstName = cached.name.split(' ')[0];
-            // Same day = "Welcome back, Name". New day = "Welcome, Name"
-            const cachedDate = new Date(cached.ts).toDateString();
-            const today = new Date().toDateString();
-            const heading = document.getElementById('welcome-heading');
-            if (cachedDate === today) {
-                heading.textContent = 'Welcome back, ' + firstName;
-            } else {
-                heading.textContent = 'Welcome, ' + firstName;
-            }
-            log('Cached user: ' + cached.name + ' (' + cached.role + ')');
+            const sameDay = new Date(cached.ts).toDateString() === new Date().toDateString();
+            document.getElementById('welcome-heading').textContent =
+                sameDay ? 'Welcome back, ' + firstName : 'Welcome, ' + firstName;
         }
-
-        initRecaptcha();
     });
     </script>
 </body>
