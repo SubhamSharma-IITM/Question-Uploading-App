@@ -23,14 +23,14 @@
             --login-gear-opacity: 0.09;
         }
         [data-theme="light"] {
-            --login-bg: #f0f2f5;
-            --login-card-bg: rgba(255, 255, 255, 0.9);
-            --login-card-border: rgba(0, 0, 0, 0.08);
-            --login-text: #1a1d2e;
-            --login-text-sub: #5a6078;
-            --login-input-bg: rgba(0, 0, 0, 0.04);
-            --login-input-border: rgba(0, 0, 0, 0.12);
-            --login-gear-opacity: 0.04;
+            --login-bg: #eaecf0;
+            --login-card-bg: rgba(255, 255, 255, 0.88);
+            --login-card-border: rgba(0, 0, 0, 0.1);
+            --login-text: #1e2235;
+            --login-text-sub: #545a78;
+            --login-input-bg: #f4f5f8;
+            --login-input-border: #c8ccd8;
+            --login-gear-opacity: 0.05;
         }
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -123,7 +123,7 @@
             display: block;
             font-size: 12px;
             font-weight: 700;
-            color: #8890b0;
+            color: var(--login-text-sub, #8890b0);
             margin-bottom: 8px;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -136,10 +136,10 @@
         input {
             width: 100%;
             padding: 12px 16px;
-            background: rgba(26, 29, 42, 0.8);
-            border: 1.5px solid rgba(45, 49, 72, 0.7);
+            background: var(--login-input-bg, rgba(26, 29, 42, 0.8));
+            border: 1.5px solid var(--login-input-border, rgba(45, 49, 72, 0.7));
             border-radius: 8px;
-            color: #e4e6ef;
+            color: var(--login-text, #e4e6ef);
             font-size: 16px;
             font-weight: 500;
             outline: none;
@@ -149,15 +149,15 @@
             border-color: rgba(79, 125, 249, 0.5);
             box-shadow: 0 0 0 3px rgba(79, 125, 249, 0.1);
         }
-        input::placeholder { color: #3d4268; }
+        input::placeholder { color: var(--login-text-sub, #3d4268); }
 
         .cc {
             width: 68px;
             flex-shrink: 0;
             text-align: center;
-            color: #8890b0;
+            color: var(--login-text-sub, #8890b0);
             font-weight: 600;
-            background: rgba(20, 22, 34, 0.9);
+            background: var(--login-input-bg, rgba(20, 22, 34, 0.9));
         }
 
         /* PIN boxes */
@@ -170,9 +170,9 @@
             font-weight: 700;
             padding: 0;
             border-radius: 10px;
-            background: rgba(26, 29, 42, 0.8);
-            border: 1.5px solid rgba(45, 49, 72, 0.7);
-            color: #e4e6ef;
+            background: var(--login-input-bg, rgba(26, 29, 42, 0.8));
+            border: 1.5px solid var(--login-input-border, rgba(45, 49, 72, 0.7));
+            color: var(--login-text, #e4e6ef);
             caret-color: #4f7df9;
             transition: border-color 0.2s, box-shadow 0.2s;
             -webkit-text-security: disc;
@@ -290,8 +290,9 @@
             margin-top: 28px;
             font-size: 10px;
             font-weight: 600;
-            color: #1e2130;
+            color: var(--login-text-sub, #1e2130);
             letter-spacing: 2px;
+            opacity: 0.5;
         }
 
         body::before {
@@ -314,7 +315,14 @@
     </div>
 
     <div class="login-wrap">
-        <img src="/static/img/acadza-logo-white.svg" alt="Acadza" class="logo">
+        <img id="login-logo" src="/static/img/acadza-logo-white.svg" alt="Acadza" class="logo">
+        <script>
+        // Swap logo for light theme
+        (function() {
+            var t = document.documentElement.getAttribute('data-theme') || 'dark';
+            if (t === 'light') document.getElementById('login-logo').src = '/static/img/acadza-logo.svg';
+        })();
+        </script>
 
         <div class="card">
             <h2 id="welcome-heading">Welcome back</h2>

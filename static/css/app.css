@@ -28,27 +28,60 @@
     --logo-filter: none;
 }
 
-/* ── Light Theme — calibrated professional white ── */
+/* ── Light Theme — calibrated professional grey-white ── */
 [data-theme="light"] {
-    --bg-primary: #f4f5f7;
-    --bg-secondary: #ffffff;
-    --bg-card: #ffffff;
-    --bg-input: #f0f1f4;
-    --border: #d8dbe4;
-    --border-hover: #b8bdd0;
-    --text-primary: #1a1d2e;
-    --text-secondary: #4a5068;
-    --text-muted: #8890a8;
+    --bg-primary: #eef0f4;
+    --bg-secondary: #f6f7f9;
+    --bg-card: #f9fafb;
+    --bg-input: #eceef2;
+    --border: #d0d4de;
+    --border-hover: #b0b6c8;
+    --text-primary: #1e2235;
+    --text-secondary: #454d68;
+    --text-muted: #7c839e;
     --accent: #3b6ce7;
     --accent-hover: #2d5bd4;
     --success: #16a364;
-    --warning: #d97706;
+    --warning: #ca8a04;
     --error: #dc2626;
     --info: #2563eb;
-    --shadow: 0 1px 4px rgba(0,0,0,0.08);
-    --glass-bg: rgba(255, 255, 255, 0.85);
-    --glass-border: rgba(0, 0, 0, 0.06);
-    --logo-filter: invert(1) brightness(0.3);
+    --shadow: 0 1px 6px rgba(0,0,0,0.06);
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(0, 0, 0, 0.07);
+}
+
+/* Light theme overrides for specific elements */
+[data-theme="light"] .top-bar {
+    background: #ffffff;
+    border-bottom-color: #d0d4de;
+}
+[data-theme="light"] .sidebar {
+    background: #f6f7f9;
+    border-right-color: #d0d4de;
+}
+[data-theme="light"] .sidebar-item.viewing {
+    background: rgba(59, 108, 231, 0.08);
+}
+[data-theme="light"] .card {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+[data-theme="light"] .log-body {
+    background: #f4f5f8;
+}
+[data-theme="light"] .data-table td {
+    border-bottom-color: #e4e7ed;
+}
+[data-theme="light"] .btn {
+    background: #f0f1f5;
+    border-color: #d0d4de;
+}
+[data-theme="light"] .btn:hover {
+    background: #e4e6ed;
+}
+[data-theme="light"] .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
 }
 
 /* ── Reset & Base ── */

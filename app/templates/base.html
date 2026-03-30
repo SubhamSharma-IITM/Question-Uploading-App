@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Acadza Question Uploading App{% endblock %}</title>
     <link rel="stylesheet" href="/static/css/app.css">
+    <!-- Theme: apply BEFORE render to prevent flash -->
+    <script>
+    (function() {
+        var saved = localStorage.getItem('acadza_theme');
+        var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', theme);
+    })();
+    </script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -13,7 +21,7 @@
         <header class="top-bar">
             <div class="top-bar-left">
                 <div class="logo-link" style="display:flex;align-items:center;gap:10px;cursor:default;">
-                    <img src="/static/img/acadza-logo-white.svg" alt="Acadza" style="height:22px;opacity:0.9;">
+                    <img class="theme-logo" src="/static/img/acadza-logo-white.svg" alt="Acadza" style="height:22px;opacity:0.9;">
                     <span style="font-weight:800;font-size:15px;letter-spacing:-0.3px;">Question Uploader</span>
                 </div>
             </div>
@@ -104,28 +112,26 @@
         </div>
     </div>
 
-    <!-- Theme: apply saved preference immediately to prevent flash -->
+    <!-- Theme toggle + icon sync -->
     <script>
-    (function() {
-        const saved = localStorage.getItem('acadza_theme');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const theme = saved || (prefersDark ? 'dark' : 'dark'); // default dark
-        document.documentElement.setAttribute('data-theme', theme);
-        // Update icon after DOM ready
-        document.addEventListener('DOMContentLoaded', () => {
-            const icon = document.getElementById('theme-icon');
-            if (icon) icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
-        });
-    })();
-
     function toggleTheme() {
         const current = document.documentElement.getAttribute('data-theme') || 'dark';
         const next = current === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
         localStorage.setItem('acadza_theme', next);
-        const icon = document.getElementById('theme-icon');
-        if (icon) icon.textContent = next === 'dark' ? '\u263E' : '\u2600';
+        _syncThemeUI(next);
     }
+    function _syncThemeUI(theme) {
+        const icon = document.getElementById('theme-icon');
+        if (icon) icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
+        // Swap logo: white version for dark, default (blue) for light
+        document.querySelectorAll('.theme-logo').forEach(el => {
+            el.src = theme === 'dark' ? '/static/img/acadza-logo-white.svg' : '/static/img/acadza-logo.svg';
+        });
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        _syncThemeUI(document.documentElement.getAttribute('data-theme') || 'dark');
+    });
     </script>
 
     <script src="/static/js/sse_client.js"></script>
