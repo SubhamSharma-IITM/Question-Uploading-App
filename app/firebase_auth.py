@@ -32,19 +32,50 @@ def _hash_pin(pin: str) -> str:
 # ── User registry: phone -> {name, role, pin_hash} ──
 # PINs are SHA-256 hashed. To generate a hash:
 #   python -c "import hashlib; print(hashlib.sha256('123456'.encode()).hexdigest())"
+# Default PIN for new accounts: 143143 (change on first login -- TODO)
 USER_REGISTRY: Dict[str, dict] = {
+    # ── Admins ──
     "+919661172783": {
-        "name": "Shubham Sharma",
-        "role": "Architect",
+        "name": "Subham Sharma",
+        "role": "Admin",
         "pin_hash": _hash_pin("143143"),
     },
-    "+917488290347": {
-        "name": "Team Member",
-        "role": "Developer",
-        "pin_hash": _hash_pin("123456"),
+    "+917992279131": {
+        "name": "Manish Anand",
+        "role": "Admin",
+        "pin_hash": _hash_pin("143143"),
     },
-    # Add more:
-    # "+91XXXXXXXXXX": {"name": "Name", "role": "Team", "pin_hash": _hash_pin("NNNNNN")},
+    "+917667909991": {
+        "name": "Ashish Anand",
+        "role": "Admin",
+        "pin_hash": _hash_pin("143143"),
+    },
+    "+919125985931": {
+        "name": "Saurabh Agrahari",
+        "role": "Admin",
+        "pin_hash": _hash_pin("143143"),
+    },
+    # ── Team Members ──
+    "+919279006541": {
+        "name": "Khushboo Kumari",
+        "role": "Team",
+        "pin_hash": _hash_pin("143143"),
+    },
+    "+918108728834": {
+        "name": "Rubina Khan",
+        "role": "Team",
+        "pin_hash": _hash_pin("143143"),
+    },
+    "+918452099268": {
+        "name": "Rutuja Mayekar",
+        "role": "Team",
+        "pin_hash": _hash_pin("143143"),
+    },
+    "+917644045760": {
+        "name": "Raushan Yadav",
+        "role": "Team",
+        "pin_hash": _hash_pin("143143"),
+    },
 }
 
 

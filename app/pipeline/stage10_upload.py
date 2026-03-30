@@ -296,15 +296,55 @@ class UploadStage(BasePipelineStage):
                  f"{mode} complete: posted={total_posted}, failed={total_failed}, "
                  f"skipped={total_skipped}, CSV at {combined_path.name}")
 
+        # Count err1 vs err2 and per-subject for dashboard stats
+        posted_err1 = 0
+        posted_err2 = 0
+        subject_counts = {}  # {subject: {1: count, 2: count}}
+        for row in all_csv_rows:
+            status = row.get("UploadedQuestionID", "")
+            if status in ("QUARANTINED", "FAILED", "DRY_RUN") or status.startswith("SKIPPED"):
+                continue
+            el = row.get("Error Level", 2)
+            if el == 1:
+                posted_err1 += 1
+            else:
+                posted_err2 += 1
+            # Track subject (from metadata)
+            # Subject is in the entry but not in csv_rows -- use qtype as proxy
+            # Actually, let's track from all_csv_rows which doesn't have subject
+            # We'll add subject tracking in the upload loop above in a future pass
+
         self.save_checkpoint("completed", {
             "posted": total_posted,
+            "posted_err1": posted_err1,
+            "posted_err2": posted_err2,
             "failed": total_failed,
             "skipped": total_skipped,
             "dry_run": dry_run,
         })
 
+        # Write upload_log entries for dashboard stats tracking
+        if not dry_run and total_posted > 0:
+            try:
+                from app.db import log_upload
+                # Get the user who owns this session
+                from app.db import get_session
+                session = get_session(self.session_id)
+                user_phone = (session or {}).get("created_by", "")
+                if user_phone:
+                    # Log err1 and err2 as separate entries
+                    if posted_err1 > 0:
+                        log_upload(self.session_id, user_phone, 1, "", posted_err1)
+                    if posted_err2 > 0:
+                        log_upload(self.session_id, user_phone, 2, "", posted_err2)
+                    self.log("info", f"Dashboard stats logged: err1={posted_err1}, err2={posted_err2}")
+            except Exception as e:
+                self.log("warning", f"Failed to log upload stats: {e}")
+
         return {
             "posted": total_posted,
+            "posted_err1": posted_err1,
+            "posted_err2": posted_err2,
             "failed": total_failed,
             "skipped": total_skipped,
             "total": total,

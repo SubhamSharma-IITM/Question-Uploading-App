@@ -345,10 +345,16 @@
     </div>
 
     <script>
-    // User registry for instant heading update
+    // User registry for instant heading update on phone entry
     const USERS = {
-        '9661172783': 'Shubham',
-        '7488290347': 'Team Member',
+        '9661172783': 'Subham',
+        '7992279131': 'Manish',
+        '7667909991': 'Ashish',
+        '9125985931': 'Saurabh',
+        '9279006541': 'Khushboo',
+        '8108728834': 'Rubina',
+        '8452099268': 'Rutuja',
+        '7644045760': 'Raushan',
     };
 
     // localStorage cache
@@ -392,10 +398,10 @@
         this.value = this.value.replace(/\D/g, '').slice(0, 10);
         const heading = document.getElementById('welcome-heading');
         if (this.value.length === 10 && USERS[this.value]) {
-            heading.textContent = 'Welcome back, ' + USERS[this.value];
+            heading.textContent = getGreetingPrefix() + ', ' + USERS[this.value];
         } else {
             const cached = getCachedUser();
-            heading.textContent = cached ? 'Welcome back, ' + cached.name.split(' ')[0] : 'Welcome back';
+            heading.textContent = cached ? getGreetingPrefix() + ', ' + cached.name.split(' ')[0] : getGreetingPrefix();
         }
     });
     phoneInput.addEventListener('keydown', e => { if (e.key === 'Enter') goToPin(); });
@@ -459,7 +465,7 @@
             const resp = await fetch('/auth/verify', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ phone: phoneInput.value.trim(), pin: pin }),
+                body: JSON.stringify({ phone: phoneInput.value.trim(), pin: pin, next: '{{ next_url | default("/", true) }}' }),
             });
             const data = await resp.json();
 
@@ -532,18 +538,33 @@
         clearPIN();
         document.getElementById('step-pin').classList.remove('active');
         document.getElementById('step-phone').classList.add('active');
-        document.getElementById('welcome-heading').textContent = 'Welcome back';
+        const cached = getCachedUser();
+        document.getElementById('welcome-heading').textContent = cached
+            ? getGreetingPrefix() + ', ' + cached.name.split(' ')[0]
+            : getGreetingPrefix();
         phoneInput.focus();
+    }
+
+    // ── Time-based greeting ──
+    function getGreetingPrefix() {
+        const h = new Date().getHours();
+        if (h < 12) return 'Good morning';
+        if (h < 17) return 'Good afternoon';
+        return 'Good evening';
     }
 
     // ── Init ──
     document.addEventListener('DOMContentLoaded', () => {
         const cached = getCachedUser();
+        const heading = document.getElementById('welcome-heading');
         if (cached && cached.name) {
             const firstName = cached.name.split(' ')[0];
-            const sameDay = new Date(cached.ts).toDateString() === new Date().toDateString();
-            document.getElementById('welcome-heading').textContent =
-                sameDay ? 'Welcome back, ' + firstName : 'Welcome, ' + firstName;
+            const sameDay = cached.ts && new Date(cached.ts).toDateString() === new Date().toDateString();
+            heading.textContent = sameDay
+                ? 'Welcome back, ' + firstName
+                : getGreetingPrefix() + ', ' + firstName;
+        } else {
+            heading.textContent = getGreetingPrefix();
         }
     });
     </script>

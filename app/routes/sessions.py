@@ -26,10 +26,14 @@ router = APIRouter(tags=["Sessions"])
 
 
 @router.post("/api/sessions")
-async def create_new_session(req: CreateSessionRequest):
+async def create_new_session(req: CreateSessionRequest, request: Request):
     """Create a new upload session."""
     session_id = short_uuid()
     created_at = now_iso()
+
+    # Get logged-in user phone for ownership tracking
+    user = getattr(request.state, "user", {})
+    created_by = user.get("phone", "")
 
     # Create session directory
     session_dir = Path(settings.sessions_dir) / session_id
@@ -44,7 +48,7 @@ async def create_new_session(req: CreateSessionRequest):
     # Insert into DB — start at stage1_upload so sidebar highlights Step 1
     # and first "Advance" goes to stage2 (not back to stage1)
     create_session(session_id, req.name, created_at, req.config,
-                   initial_stage="stage1_upload")
+                   initial_stage="stage1_upload", created_by=created_by)
 
     return APIResponse(data={
         "session_id": session_id,

@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI):
     init_db()
     _safe_print("[OK] Database initialized")
 
+    # Seed users table from registry (ensures all users exist before first login)
+    from app.db import seed_users_from_registry
+    from app.firebase_auth import USER_REGISTRY
+    seed_users_from_registry(USER_REGISTRY)
+    _safe_print(f"[OK] Seeded {len(USER_REGISTRY)} users")
+
     # Ensure session directories exist
     Path(settings.sessions_dir).mkdir(parents=True, exist_ok=True)
     _safe_print(f"[OK] Sessions dir: {settings.sessions_dir}")
@@ -99,7 +105,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 parts = display.split("|", 1)
                 session_data = {"name": parts[0], "role": parts[1], "phone": "", "uid": "restored"}
                 # Re-create server session so verify works on next request
-                new_token = create_session("", "restored")
+                new_token = create_session("", parts[0], parts[1])
                 from app.firebase_auth import _sessions
                 if new_token in _sessions:
                     _sessions[new_token]["name"] = parts[0]
@@ -113,7 +119,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # No valid session at all
             if path.startswith("/api/"):
                 return JSONResponse(status_code=401, content={"success": False, "error": "Not authenticated"})
-            return RedirectResponse(url="/login", status_code=302)
+            # Redirect to login with ?next= so we can bounce back after auth
+            from urllib.parse import quote
+            redirect_url = f"/login?next={quote(str(request.url.path), safe='')}"
+            return RedirectResponse(url=redirect_url, status_code=302)
 
         # Attach user info to request state
         request.state.user = session_data
@@ -134,6 +143,132 @@ app.add_middleware(AuthMiddleware)
 
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ── Heartbeat (client pings every 5 min for activity tracking) ──
+@app.post("/api/heartbeat")
+async def heartbeat(request: Request):
+    """Record a heartbeat from the client."""
+    user = getattr(request.state, "user", {})
+    phone = user.get("phone", "")
+    if not phone:
+        return JSONResponse(status_code=401, content={"success": False})
+    body = await request.json()
+    from app.db import update_heartbeat
+    update_heartbeat(phone, body.get("session_id"), body.get("stage"))
+    return {"success": True}
+
+
+# ── Dashboard stats API ──
+@app.get("/api/dashboard/stats")
+async def dashboard_stats(request: Request, days: int = 7):
+    """Get dashboard stats for the logged-in user.
+
+    days=1 (today), days=2 (yesterday+today), days=7, days=14, days=9999 (all-time)
+    """
+    user = getattr(request.state, "user", {})
+    phone = user.get("phone", "")
+    role = user.get("role", "Team")
+
+    from app.db import (
+        get_upload_stats, get_all_users_stats, list_sessions,
+        get_session_stats, get_heartbeats, list_users,
+        get_checkpoint_upload_stats,
+    )
+
+    # Personal stats: today, yesterday, and selected range
+    my_today = get_upload_stats(user_phone=phone, days=1)
+    my_yesterday = get_upload_stats(user_phone=phone, days=2)
+    # Subtract today from yesterday+today to get yesterday only
+    my_yesterday_only = {
+        "err1": max(my_yesterday["err1"] - my_today["err1"], 0),
+        "err2": max(my_yesterday["err2"] - my_today["err2"], 0),
+    }
+    my_range = get_upload_stats(user_phone=phone, days=days)
+
+    # Aggregate stats from checkpoint data (all-time truth)
+    cp_stats = get_checkpoint_upload_stats()
+
+    # Session counts
+    all_sessions = list_sessions()
+    active_sessions = [s for s in all_sessions if s["current_stage"] != "completed"]
+    completed_sessions = [s for s in all_sessions if s["current_stage"] == "completed"]
+
+    total_in_process = 0
+    for s in active_sessions:
+        st = get_session_stats(s["id"])
+        total_in_process += st.get("total", 0)
+
+    # Last session for this user
+    my_sessions = sorted(
+        [s for s in all_sessions if s.get("created_by") == phone],
+        key=lambda s: s["created_at"], reverse=True,
+    )
+    last_session = None
+    if my_sessions:
+        ls = my_sessions[0]
+        last_session = {
+            "name": ls["name"],
+            "id": ls["id"],
+            "stage": ls["current_stage"],
+        }
+
+    result = {
+        "today": my_today,
+        "yesterday": my_yesterday_only,
+        "range": my_range,
+        "range_days": days,
+        "role": role,
+        "active_sessions": len(active_sessions),
+        "completed_sessions": len(completed_sessions),
+        "in_process": total_in_process,
+        "last_session": last_session,
+        "all_time": {
+            "err1": cp_stats["total_err1"],
+            "err2": cp_stats["total_err2"],
+            "sessions_uploaded": len(cp_stats["by_session"]),
+        },
+    }
+
+    # Admin: team stats from upload_log (date-filtered)
+    if role in ("Admin", "Architect"):
+        all_users = list_users()
+        # Per-user upload_log stats for selected range
+        team_merged = []
+        for u in all_users:
+            p = u["phone"]
+            u_range = get_upload_stats(user_phone=p, days=days)
+            u_today = get_upload_stats(user_phone=p, days=1)
+            u_yesterday_full = get_upload_stats(user_phone=p, days=2)
+            u_yesterday_only = {
+                "err1": max(u_yesterday_full["err1"] - u_today["err1"], 0),
+                "err2": max(u_yesterday_full["err2"] - u_today["err2"], 0),
+            }
+
+            # Session counts
+            user_sessions = [s for s in all_sessions if s.get("created_by") == p]
+            user_active = [s for s in user_sessions if s["current_stage"] != "completed"]
+            user_completed = [s for s in user_sessions if s["current_stage"] == "completed"]
+
+            team_merged.append({
+                "phone": p,
+                "name": u.get("name", ""),
+                "role": u.get("role", "Team"),
+                "last_login": u.get("last_login") or "",
+                "today_err1": u_today["err1"],
+                "today_err2": u_today["err2"],
+                "yesterday_err1": u_yesterday_only["err1"],
+                "yesterday_err2": u_yesterday_only["err2"],
+                "range_err1": u_range["err1"],
+                "range_err2": u_range["err2"],
+                "active_sessions": len(user_active),
+                "completed_sessions": len(user_completed),
+                "total_sessions": len(user_sessions),
+            })
+        result["team"] = team_merged
+        result["heartbeats"] = get_heartbeats()
+
+    return {"success": True, "data": result}
+
 
 # ── Import & include routers ──
 from app.routes.sessions import router as sessions_router
@@ -163,12 +298,15 @@ app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", 
 
 # ── Auth pages ──
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def login_page(request: Request, next: str = "/"):
     """Login page with phone + PIN."""
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if verify_session(session_token):
-        return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request})
+        return RedirectResponse(url=next or "/", status_code=302)
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "next_url": next or "/",
+    })
 
 
 @app.post("/auth/verify")
@@ -217,26 +355,36 @@ async def auth_verify(request: Request):
     # Success — clear rate limit and create session
     clear_rate_limit(full_phone)
     _safe_print(f"[AUTH] Login: {user_info['name']} ({user_info['role']})")
+
+    # Record login in user DB (upsert + update last_login)
+    from app.db import upsert_user, update_user_login
+    upsert_user(user_info["phone"], user_info["name"], user_info["role"])
+    update_user_login(user_info["phone"])
+
     session_token = create_session(user_info["phone"], user_info["name"], user_info["role"])
+
+    # Check for redirect target from ?next= param
+    redirect_to = body.get("next", "/") or "/"
 
     response = JSONResponse(content={
         "success": True,
-        "redirect": "/",
+        "redirect": redirect_to,
         "user_name": user_info["name"],
         "user_role": user_info["role"],
     })
+    # Session cookie (no max_age = dies on browser close)
+    # This ensures browser close forces re-login
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
-        max_age=7 * 24 * 3600,
         httponly=True,
         samesite="lax",
     )
-    # Display cookie for session persistence across --reload
+    # Display cookie: session-scoped (no max_age) for --reload recovery
+    # Dies on browser close, same as auth cookie
     response.set_cookie(
         key="acadza_display",
         value=f"{user_info['name']}|{user_info['role']}",
-        max_age=7 * 24 * 3600,
         httponly=False,
         samesite="lax",
     )
@@ -260,17 +408,37 @@ async def auth_logout(request: Request):
 async def dashboard(request: Request):
     """Main dashboard -- list sessions, create new."""
     from app.db import list_sessions, get_session_stats, get_checkpoint
+    import json as _json
+
     sessions = list_sessions()
+    active_count = 0
+    completed_count = 0
+    in_process = 0
+
     for s in sessions:
         s["stats"] = get_session_stats(s["id"])
+
+        # Track active vs completed
+        if s["current_stage"] == "completed":
+            completed_count += 1
+        else:
+            active_count += 1
+            in_process += s["stats"].get("total", 0)
+
+        # Get upload counts (err1/err2) from Stage 10 checkpoint
         cp = get_checkpoint(s["id"], "stage10_upload")
         if cp and isinstance(cp.get("data"), str):
-            import json as _json
             try:
                 cp["data"] = _json.loads(cp["data"])
             except Exception:
                 cp["data"] = {}
-        s["uploaded_count"] = (cp.get("data") or {}).get("posted", 0) if cp else 0
+        cp_data = (cp.get("data") or {}) if cp else {}
+        s["upload_err1"] = cp_data.get("posted_err1", 0)
+        s["upload_err2"] = cp_data.get("posted_err2", 0)
+        # Fallback: if no split, use total posted count as err1+err2 combined
+        if not s["upload_err1"] and not s["upload_err2"] and cp_data.get("posted", 0):
+            s["upload_err1"] = cp_data.get("posted", 0)
+
     # Get user info from auth session
     user = getattr(request.state, "user", {})
     return templates.TemplateResponse("dashboard.html", {
@@ -278,6 +446,9 @@ async def dashboard(request: Request):
         "sessions": sessions,
         "user_name": user.get("name", ""),
         "user_role": user.get("role", ""),
+        "active_count": active_count,
+        "completed_count": completed_count,
+        "in_process": in_process,
     })
 
 

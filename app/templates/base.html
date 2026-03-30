@@ -12,7 +12,10 @@
         <!-- Top Bar -->
         <header class="top-bar">
             <div class="top-bar-left">
-                <a href="/" class="logo-link">ACADZA Question Uploader</a>
+                <div class="logo-link" style="display:flex;align-items:center;gap:10px;cursor:default;">
+                    <img src="/static/img/acadza-logo-white.svg" alt="Acadza" style="height:22px;opacity:0.9;">
+                    <span style="font-weight:800;font-size:15px;letter-spacing:-0.3px;">Question Uploader</span>
+                </div>
             </div>
             <div class="top-bar-right">
                 {% if session %}
