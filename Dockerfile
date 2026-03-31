@@ -28,6 +28,10 @@ WORKDIR /opt/render/project/src
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install rdkit via pip (older version that has Python 3.11 wheels)
+# Stage 5 SMILES rendering gracefully degrades if unavailable
+RUN pip install --no-cache-dir rdkit-pypi==2023.3.1b1 || echo "rdkit install failed — SMILES rendering disabled"
+
 # Copy application code
 COPY . .
 

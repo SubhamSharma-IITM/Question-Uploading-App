@@ -41,7 +41,8 @@ google-cloud-storage>=2.14.0
 faiss-cpu>=1.9.0
 
 # SMILES Chemistry Rendering (Stage 5)
-# rdkit-pypi works on Linux (pip install), rdkit on conda
-rdkit-pypi>=2024.3.0
+# rdkit-pypi has no wheels for Python 3.11+ on pip
+# Install via conda in Dockerfile, or skip (Stage 5 gracefully degrades without it)
+# rdkit-pypi>=2024.3.0
 
 # lxml is pulled in by beautifulsoup4 automatically
