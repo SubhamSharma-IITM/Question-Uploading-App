@@ -30,7 +30,7 @@
             --login-text-sub: #545a78;
             --login-input-bg: #f4f5f8;
             --login-input-border: #c8ccd8;
-            --login-gear-opacity: 0.05;
+            --login-gear-opacity: 0.08;
         }
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -320,7 +320,10 @@
         // Swap logo for light theme
         (function() {
             var t = document.documentElement.getAttribute('data-theme') || 'dark';
-            if (t === 'light') document.getElementById('login-logo').src = '/static/img/acadza-logo.svg';
+            if (t === 'light') {
+                document.getElementById('login-logo').src = '/static/img/acadza-logo.svg';
+                document.getElementById('bg-gear').src = '/static/img/acadza-gear.svg';
+            }
         })();
         </script>
 
