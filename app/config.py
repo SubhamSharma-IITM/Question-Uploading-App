@@ -1,7 +1,14 @@
-"""Application configuration via Pydantic Settings + .env file."""
+"""Application configuration via Pydantic Settings + .env file.
+
+Path resolution priority:
+  1. Explicit env var (DATA_DIR, SESSIONS_DIR, etc.)
+  2. Render persistent disk auto-detect (/data exists)
+  3. Local fallback (repo data/ directory)
+"""
 
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from dotenv import load_dotenv
 
 _env_path = Path(__file__).parent.parent / ".env"
@@ -25,7 +32,9 @@ class Settings(BaseSettings):
     # ── Paths ──
     # Auto-detect Render persistent disk at /data, fall back to local data/
     data_dir: str = _default_data_dir()
-    sessions_dir: str = str(Path(_default_data_dir()) / "sessions")
+    sessions_dir: str = ""  # Derived from data_dir if not set
+    db_path: str = ""       # Derived from data_dir if not set
+    db_index_dir: str = ""  # Derived from data_dir if not set
 
     # ── MathPIX ──
     mathpix_app_id: str = ""
@@ -57,10 +66,10 @@ class Settings(BaseSettings):
     aws_s3_region: str = "ap-south-1"
 
     # ── Reference database (for duplicate check + Stage 10 absorption) ──
-    db_path: str = str(Path(_default_data_dir()) / "allque030326.json")
+    # (derived from data_dir if empty)
 
     # ── Global FAISS index cache (shared across sessions) ──
-    db_index_dir: str = str(Path(_default_data_dir()) / "db_index_cache")
+    # (derived from data_dir if empty)
 
     # ── Tagging modules (Stage 7) ──
     # Bundled in repo: data/tagging_modules/{subject}_tagging_module/
@@ -72,6 +81,22 @@ class Settings(BaseSettings):
 
     # ── Concurrency ──
     max_concurrent_tasks: int = 3
+
+    @model_validator(mode="after")
+    def _derive_paths_from_data_dir(self):
+        """Fill in empty path fields from data_dir.
+
+        This runs AFTER env vars override defaults, so data_dir is final.
+        Any sub-path not explicitly set via env var gets derived from data_dir.
+        """
+        base = Path(self.data_dir)
+        if not self.sessions_dir:
+            self.sessions_dir = str(base / "sessions")
+        if not self.db_path:
+            self.db_path = str(base / "allque030326.json")
+        if not self.db_index_dir:
+            self.db_index_dir = str(base / "db_index_cache")
+        return self
 
     model_config = {"env_file": ".env", "env_prefix": ""}
 
