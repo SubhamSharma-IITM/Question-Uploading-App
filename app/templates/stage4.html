@@ -338,12 +338,14 @@ let metadataGenerated = false;
 let lastConvertSettings = null;
 
 function captureSettings() {
+    const pyqEl = document.getElementById('is-pyq');
+    const examEl = document.getElementById('prev-exam');
     return JSON.stringify({
         source: document.getElementById('source-name').value,
         code: document.getElementById('test-code').value,
         taggedBy: document.getElementById('tagged-by').value,
-        isPYQ: document.getElementById('is-pyq').checked,
-        prevExam: document.getElementById('prev-exam').value,
+        isPYQ: pyqEl ? pyqEl.checked : false,
+        prevExam: examEl ? examEl.value : '',
     });
 }
 

@@ -249,8 +249,8 @@ async function scanDuplicates() {
 
             if (!d.db_available) {
                 appendLog('warning', 'Reference database not found — cross-check will be limited');
-                document.getElementById('cross-btn').disabled = true;
-                document.getElementById('cross-btn').title = 'Reference database not available — configure DB path in .env';
+                const crossBtn = document.getElementById('cross-btn');
+                if (crossBtn) { crossBtn.disabled = true; crossBtn.title = 'Reference database not available'; }
             }
         }
     } catch (e) {
@@ -633,9 +633,9 @@ async function skipDuplicates() {
         if (r.success) {
             appendLog('info', 'Duplicate checking skipped');
             document.getElementById('advance-btn').disabled = false;
-            document.getElementById('self-btn').disabled = true;
-            document.getElementById('cross-btn').disabled = true;
-            document.getElementById('run-all-btn').disabled = true;
+            ['self-btn', 'cross-btn', 'run-all-btn'].forEach(id => {
+                const el = document.getElementById(id); if (el) el.disabled = true;
+            });
             skipBtn.textContent = 'Skipped \u2713';
             return;
         }
