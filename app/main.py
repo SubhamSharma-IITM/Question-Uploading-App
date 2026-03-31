@@ -303,8 +303,7 @@ async def login_page(request: Request, next: str = "/"):
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if verify_session(session_token):
         return RedirectResponse(url=next or "/", status_code=302)
-    return templates.TemplateResponse("login.html", context={
-        "request": request,
+    return templates.TemplateResponse(request, "login.html", context={
         "next_url": next or "/",
     })
 
@@ -441,8 +440,7 @@ async def dashboard(request: Request):
 
     # Get user info from auth session
     user = getattr(request.state, "user", {})
-    return templates.TemplateResponse("dashboard.html", context={
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", context={
         "sessions": sessions,
         "user_name": user.get("name", ""),
         "user_role": user.get("role", ""),
@@ -461,8 +459,7 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
 
     session = get_session(session_id)
     if session is None:
-        return templates.TemplateResponse("dashboard.html", context={
-            "request": request,
+        return templates.TemplateResponse(request, "dashboard.html", context={
             "sessions": [],
             "error": f"Session {session_id} not found",
         })
@@ -514,8 +511,7 @@ async def session_page(request: Request, session_id: str, stage: Optional[str] =
     template_name = template_map.get(stage, "stage1.html")
 
     user = getattr(request.state, "user", {})
-    return templates.TemplateResponse(template_name, context={
-        "request": request,
+    return templates.TemplateResponse(request, template_name, context={
         "session": session,
         "current_stage": current_stage,
         "view_stage": stage,
