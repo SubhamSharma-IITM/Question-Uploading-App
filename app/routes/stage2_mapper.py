@@ -138,10 +138,8 @@ async def start_mapping(
             _ucp(session_id, "stage2_mapping", "failed", {"error": str(e)})
             insert_log(session_id, "stage2_mapping", "error", f"Extraction failed: {e}")
             return
-        finally:
-            _running_stages.pop(session_id, None)
-            _bg_tasks.pop(session_id, None)
 
+        # Process result BEFORE cleanup (no finally block that races)
         if "error" not in result:
             update_session(session_id, current_stage="stage2_mapping")
             from app.db import upsert_checkpoint as _ucp, get_checkpoint
@@ -175,8 +173,23 @@ async def start_mapping(
             from app.db import upsert_checkpoint as _ucp
             _ucp(session_id, "stage2_mapping", "failed", result)
 
+    def _task_done_callback(task: asyncio.Task):
+        """Cleanup tracking dicts AFTER task is truly finished."""
+        _running_stages.pop(session_id, None)
+        _bg_tasks.pop(session_id, None)
+        # Log any unexpected exception
+        try:
+            exc = task.exception()
+            if exc:
+                from app.db import insert_log
+                insert_log(session_id, "stage2_mapping", "error",
+                           f"Background task crashed: {exc}")
+        except (asyncio.CancelledError, asyncio.InvalidStateError):
+            pass
+
     # Spawn background task — returns immediately
     task = asyncio.create_task(_run_extraction())
+    task.add_done_callback(_task_done_callback)
     _bg_tasks[session_id] = task
 
     return APIResponse(data={"status": "started", "message": "Extraction started in background. Poll /progress for updates."})

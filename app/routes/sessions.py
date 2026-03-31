@@ -14,6 +14,7 @@ from app.db import (
     get_session,
     get_session_stats,
     list_sessions,
+    list_sessions_by_user,
     update_session,
     get_all_checkpoints,
 )
@@ -58,9 +59,13 @@ async def create_new_session(req: CreateSessionRequest, request: Request):
 
 
 @router.get("/api/sessions")
-async def list_all_sessions():
-    """List all sessions with stats."""
-    sessions = list_sessions()
+async def list_all_sessions(request: Request):
+    """List sessions — each user sees only their own sessions."""
+    user = getattr(request.state, "user", {})
+    phone = user.get("phone", "")
+
+    sessions = list_sessions_by_user(phone) if phone else []
+
     result = []
     for s in sessions:
         stats = get_session_stats(s["id"])
@@ -218,4 +223,4 @@ async def session_log_stream(request: Request, session_id: str):
             ).model_dump(),
         )
 
-    return EventSourceResponse(sse_manager.stream(session_id))
+    return EventSourceResponse(sse_manager.stream(session_id), ping=15)

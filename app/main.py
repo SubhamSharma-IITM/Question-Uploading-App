@@ -64,6 +64,11 @@ async def lifespan(app: FastAPI):
     _task_semaphore = asyncio.Semaphore(settings.max_concurrent_tasks)
     _safe_print(f"[OK] Max concurrent tasks: {settings.max_concurrent_tasks}")
 
+    # Capture event loop for thread-safe SSE emit
+    from app.sse import sse_manager
+    sse_manager.set_loop(asyncio.get_running_loop())
+    _safe_print("[OK] SSE event loop registered")
+
     _safe_print("-" * 60)
     _safe_print(f"  Ready at http://localhost:{settings.port}")
     _safe_print("-" * 60)
@@ -406,10 +411,12 @@ async def auth_logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Main dashboard -- list sessions, create new."""
-    from app.db import list_sessions, get_session_stats, get_checkpoint
+    from app.db import list_sessions_by_user, get_session_stats, get_checkpoint
     import json as _json
 
-    sessions = list_sessions()
+    user = getattr(request.state, "user", {})
+    phone = user.get("phone", "")
+    sessions = list_sessions_by_user(phone) if phone else []
     active_count = 0
     completed_count = 0
     in_process = 0
@@ -438,8 +445,6 @@ async def dashboard(request: Request):
         if not s["upload_err1"] and not s["upload_err2"] and cp_data.get("posted", 0):
             s["upload_err1"] = cp_data.get("posted", 0)
 
-    # Get user info from auth session
-    user = getattr(request.state, "user", {})
     return templates.TemplateResponse(request, "dashboard.html", context={
         "sessions": sessions,
         "user_name": user.get("name", ""),

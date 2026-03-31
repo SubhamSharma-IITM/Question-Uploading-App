@@ -1,13 +1,16 @@
 /**
- * SSE Client — Generic Server-Sent Events connection manager.
- * Connects to /api/sessions/{id}/logs and dispatches events to the log pane.
- * Historical logs are loaded from DB first, then SSE streams live events.
+ * SSE Client -- Server-Sent Events + polling fallback.
+ * Connects to /api/sessions/{id}/logs for live events.
+ * Falls back to polling /logs/history if SSE drops.
+ * Historical logs loaded from DB on init.
  */
 
 let _sseConnection = null;
 let _sseSessionId = null;
 let _historyLoaded = false;
 let _lastLogStage = null;
+let _logPollTimer = null;
+let _lastLogCount = 0;  // Track how many logs we have to detect new ones
 
 /**
  * Load historical logs from DB, then connect SSE for live events.
@@ -15,6 +18,7 @@ let _lastLogStage = null;
 async function initLogs(sessionId) {
     _sseSessionId = sessionId;
     _historyLoaded = false;
+    _lastLogCount = 0;
 
     // Load historical logs from REST endpoint
     try {
@@ -33,14 +37,18 @@ async function initLogs(sessionId) {
                 }
                 appendLog(log.level || 'info', log.message || '');
             }
+            _lastLogCount = json.data.length;
             _historyLoaded = true;
         }
     } catch (e) {
         console.warn('Failed to load historical logs:', e);
     }
 
-    // Then connect SSE for live events
+    // Connect SSE for live events
     connectSSE(sessionId);
+
+    // Start log polling fallback (catches logs if SSE drops)
+    startLogPolling(sessionId);
 }
 
 function connectSSE(sessionId) {
@@ -63,12 +71,18 @@ function connectSSE(sessionId) {
     };
 
     _sseConnection.onerror = (err) => {
-        console.warn('SSE connection error, will retry...');
+        const state = _sseConnection ? _sseConnection.readyState : -1;
+        // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
+        console.warn('[SSE] Connection error, readyState=' + state + '. Polling fallback active.');
+        if (state === 2) {
+            console.warn('[SSE] Connection CLOSED by server/proxy. Relying on log polling fallback.');
+        }
     };
 
     _sseConnection.onopen = () => {
+        console.log('[SSE] Connection opened for session ' + sessionId.substring(0, 8));
         if (!_historyLoaded) {
-            appendLog('info', 'SSE connected — live log stream active');
+            appendLog('info', 'Live log stream connected');
         }
     };
 }
@@ -78,6 +92,7 @@ function disconnectSSE() {
         _sseConnection.close();
         _sseConnection = null;
     }
+    stopLogPolling();
 }
 
 function handleSSEEvent(data) {
@@ -88,8 +103,49 @@ function handleSSEEvent(data) {
             _appendStageSeparator(data.stage);
         }
         appendLog(data.level || 'info', data.message || '');
+        _lastLogCount++;
     } else if (data.type === 'progress') {
         updateProgress(data.stage, data.pct, data.message);
+    }
+}
+
+/**
+ * Polling fallback -- fetches logs from DB every 5s.
+ * Only appends NEW logs (compares count with _lastLogCount).
+ * This ensures logs appear even if SSE connection is broken.
+ */
+function startLogPolling(sessionId) {
+    stopLogPolling();
+    _logPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch(`/api/sessions/${sessionId}/logs/history`);
+            const json = await resp.json();
+            if (!json.success || !json.data) return;
+
+            const allLogs = json.data;
+            if (allLogs.length > _lastLogCount) {
+                // New logs arrived that SSE missed -- polling fallback caught them
+                const newLogs = allLogs.slice(_lastLogCount);
+                console.log('[SSE-FALLBACK] Polling caught ' + newLogs.length + ' new logs (SSE missed them)');
+                for (const log of newLogs) {
+                    if (log.stage && log.stage !== _lastLogStage) {
+                        _lastLogStage = log.stage;
+                        _appendStageSeparator(log.stage);
+                    }
+                    appendLog(log.level || 'info', log.message || '');
+                }
+                _lastLogCount = allLogs.length;
+            }
+        } catch (e) {
+            // Silently ignore polling errors
+        }
+    }, 5000);
+}
+
+function stopLogPolling() {
+    if (_logPollTimer) {
+        clearInterval(_logPollTimer);
+        _logPollTimer = null;
     }
 }
 
@@ -111,7 +167,7 @@ function _appendStageSeparator(stageName) {
     const label = _stageLabelMap[stageName] || stageName;
     const sep = document.createElement('div');
     sep.className = 'log-entry separator';
-    sep.innerHTML = `<span class="log-separator">━━━ ${escapeHtml(label)} ━━━</span>`;
+    sep.innerHTML = `<span class="log-separator">--- ${escapeHtml(label)} ---</span>`;
     logBody.appendChild(sep);
     logBody.scrollTop = logBody.scrollHeight;
 }
@@ -167,6 +223,7 @@ function clearLogs() {
     if (logBody) {
         logBody.innerHTML = '';
     }
+    _lastLogCount = 0;
 }
 
 function escapeHtml(text) {

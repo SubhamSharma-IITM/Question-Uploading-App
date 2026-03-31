@@ -96,8 +96,6 @@ async def upload_to_db(session_id: str):
             _ucp(session_id, "stage10_upload", "failed", {"error": str(e)})
             insert_log(session_id, "stage10_upload", "error", f"Upload failed: {e}")
             return
-        finally:
-            _bg_tasks.pop(session_id, None)
 
         if "error" not in result:
             from app.db import upsert_checkpoint as _ucp, insert_log
@@ -114,7 +112,11 @@ async def upload_to_db(session_id: str):
             from app.db import upsert_checkpoint as _ucp
             _ucp(session_id, "stage10_upload", "failed", result)
 
+    def _task_done(t: asyncio.Task):
+        _bg_tasks.pop(session_id, None)
+
     task = asyncio.create_task(_run_upload())
+    task.add_done_callback(_task_done)
     _bg_tasks[session_id] = task
     return APIResponse(data={"status": "started", "message": "Upload running in background."})
 

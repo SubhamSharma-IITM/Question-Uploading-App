@@ -239,13 +239,15 @@ async def run_all_checks(session_id: str, threshold: float = 0.85):
             _ucp(session_id, "stage8_duplicates", "failed", {"error": str(e)})
             insert_log(session_id, "stage8_duplicates", "error", f"Duplicate check failed: {e}")
             return
-        finally:
-            _bg_tasks.pop(session_id, None)
 
         if "error" not in result.get("self_check", {}) and "error" not in result.get("cross_check", {}):
             update_session(session_id, current_stage="stage8_duplicates")
 
+    def _task_done(t: asyncio.Task):
+        _bg_tasks.pop(session_id, None)
+
     task = asyncio.create_task(_run_checks())
+    task.add_done_callback(_task_done)
     _bg_tasks[session_id] = task
     return APIResponse(data={"status": "started", "message": "Duplicate check running in background."})
 
