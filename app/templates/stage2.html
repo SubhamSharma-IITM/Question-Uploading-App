@@ -177,10 +177,9 @@ function freezeInputs(frozen) {
         const el = document.getElementById(id);
         if (el) el.disabled = frozen;
     });
-    // Also freeze test-api-btn during extraction
-    if (frozen) {
-        document.getElementById('test-api-btn').disabled = true;
-    }
+    // Also freeze test-api-btn during extraction (if present)
+    const testBtn = document.getElementById('test-api-btn');
+    if (testBtn && frozen) testBtn.disabled = true;
 }
 
 const providerNames = {gemini: 'Gemini', anthropic: 'Claude', openai: 'OpenAI'};
@@ -188,12 +187,14 @@ const providerNames = {gemini: 'Gemini', anthropic: 'Claude', openai: 'OpenAI'};
 function onProviderChange() {
     const provider = document.getElementById('llm-provider').value;
     const btn = document.getElementById('test-api-btn');
-    if (verifiedProviders[provider]) {
-        btn.disabled = true;
-        btn.textContent = (providerNames[provider] || provider) + ' OK \u2713';
-    } else {
-        btn.disabled = false;
-        btn.textContent = 'Test API Key';
+    if (btn) {
+        if (verifiedProviders[provider]) {
+            btn.disabled = true;
+            btn.textContent = (providerNames[provider] || provider) + ' OK \u2713';
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Test API Key';
+        }
     }
     // If extraction was completed and user changes provider, allow re-extraction
     if (extractionCompleted) {
@@ -232,6 +233,7 @@ function enableRestart() {
 
 async function testApiKey() {
     const btn = document.getElementById('test-api-btn');
+    if (!btn) return;
     const provider = document.getElementById('llm-provider').value;
     btn.disabled = true;
     btn.textContent = 'Testing...';
