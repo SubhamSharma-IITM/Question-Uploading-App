@@ -1,4 +1,7 @@
-"""Stage 10: Upload to DB -- routes for scan, upload, CSV/ZIP download, absorb."""
+"""Stage 10: Upload to DB -- routes for scan, upload, CSV/ZIP download, absorb.
+
+Upload and absorb run as background tasks to avoid Render proxy timeout.
+"""
 
 import asyncio
 import io
@@ -6,6 +9,7 @@ import json
 import re
 import zipfile
 from pathlib import Path
+from typing import Dict
 
 
 def _safe_csv_name(session: dict) -> str:
@@ -21,6 +25,7 @@ from app.db import get_session, update_session
 from app.models import APIResponse, ErrorDetail
 
 router = APIRouter()
+_bg_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _get_session_or_404(session_id: str):
@@ -68,29 +73,66 @@ async def dry_run_upload(session_id: str):
 
 @router.post("/upload")
 async def upload_to_db(session_id: str):
-    """Upload all ready questions to Acadza DB API."""
+    """Upload all ready questions to Acadza DB API — background task."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
+    if session_id in _bg_tasks and not _bg_tasks[session_id].done():
+        return APIResponse(data={"error": "Upload already running for this session"})
+
     session_dir = Path(settings.sessions_dir) / session_id
 
-    from app.pipeline.stage10_upload import UploadStage
-    stage = UploadStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.upload, dry_run=False)
+    from app.db import upsert_checkpoint
+    upsert_checkpoint(session_id, "stage10_upload", "running", {})
 
-    if "error" not in result:
-        from app.db import upsert_checkpoint, insert_log
-        from app.sse import sse_manager
-        upsert_checkpoint(session_id, "stage10_upload", "completed", {
-            "posted": result.get("posted", 0),
-            "failed": result.get("failed", 0),
-            "skipped": result.get("skipped", 0),
-        })
-        msg = f"Upload complete: {result.get('posted', 0)} posted, {result.get('failed', 0)} failed"
-        insert_log(session_id, "stage10_upload", "success", msg)
-        sse_manager.emit(session_id, {"type": "log", "level": "success", "message": msg})
+    async def _run_upload():
+        try:
+            from app.pipeline.stage10_upload import UploadStage
+            stage = UploadStage(session_id, session_dir)
+            result = await asyncio.to_thread(stage.upload, dry_run=False)
+        except Exception as e:
+            from app.db import upsert_checkpoint as _ucp, insert_log
+            _ucp(session_id, "stage10_upload", "failed", {"error": str(e)})
+            insert_log(session_id, "stage10_upload", "error", f"Upload failed: {e}")
+            return
+        finally:
+            _bg_tasks.pop(session_id, None)
 
+        if "error" not in result:
+            from app.db import upsert_checkpoint as _ucp, insert_log
+            from app.sse import sse_manager
+            _ucp(session_id, "stage10_upload", "completed", {
+                "posted": result.get("posted", 0),
+                "failed": result.get("failed", 0),
+                "skipped": result.get("skipped", 0),
+            })
+            msg = f"Upload complete: {result.get('posted', 0)} posted, {result.get('failed', 0)} failed"
+            insert_log(session_id, "stage10_upload", "success", msg)
+            sse_manager.emit(session_id, {"type": "log", "level": "success", "message": msg})
+        else:
+            from app.db import upsert_checkpoint as _ucp
+            _ucp(session_id, "stage10_upload", "failed", result)
+
+    task = asyncio.create_task(_run_upload())
+    _bg_tasks[session_id] = task
+    return APIResponse(data={"status": "started", "message": "Upload running in background."})
+
+
+@router.get("/upload-progress")
+async def upload_progress(session_id: str):
+    """Get upload progress from checkpoint + task state."""
+    from app.db import get_checkpoint
+    cp = get_checkpoint(session_id, "stage10_upload")
+    if cp and isinstance(cp.get("data"), str):
+        try:
+            cp["data"] = json.loads(cp["data"])
+        except Exception:
+            cp["data"] = {}
+    result = cp or {"status": "not_started"}
+    is_running = session_id in _bg_tasks and not _bg_tasks[session_id].done()
+    if is_running:
+        result["bg_running"] = True
     return APIResponse(data=result)
 
 

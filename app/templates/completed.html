@@ -408,42 +408,17 @@ async function uploadToDB() {
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage10/upload');
-        if (r.success) {
-            const d = r.data;
-            appendLog('success', `Upload complete: ${d.posted} posted, ${d.failed} failed, ${d.skipped} skipped`);
-            document.getElementById('upload-result').style.display = 'block';
-            document.getElementById('upload-result').innerHTML = `
-                <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
-                    <div class="summary-stat-box highlight-green"><div class="sv">${d.posted || 0}</div><div class="sl">Posted</div></div>
-                    <div class="summary-stat-box highlight-red"><div class="sv">${d.failed || 0}</div><div class="sl">Failed</div></div>
-                    <div class="summary-stat-box"><div class="sv">${d.skipped || 0}</div><div class="sl">Skipped</div></div>
-                </div>
-            `;
-            btn.textContent = 'Uploaded';
-            document.getElementById('stats-zip-btn').disabled = false;
-
-            // Auto-trigger local DB absorption
-            appendLog('info', 'Auto-absorbing into local DB + FAISS index...');
-            try {
-                const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
-                if (ar.success) {
-                    const ad = ar.data;
-                    appendLog('success', `Absorbed ${ad.absorbed} entries to local DB, ${ad.embedded} vectors to FAISS`);
-                    document.getElementById('absorb-result').style.display = 'block';
-                    document.getElementById('absorb-result').innerHTML = `
-                        <div style="font-size:12px; color:var(--success); margin-top:6px;">
-                            Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
-                        </div>
-                    `;
-                } else {
-                    appendLog('warning', 'DB absorption failed: ' + (ar.error?.message || 'unknown'));
-                }
-            } catch (ae) {
-                appendLog('warning', 'DB absorption error: ' + ae.message);
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', r.data.error);
+                btn.disabled = false;
+                btn.textContent = 'Upload to DB';
+                return;
             }
-
-            // Show post-upload actions
-            document.getElementById('post-upload-actions').style.display = 'block';
+            // Background task started — poll
+            appendLog('info', 'Upload running in background. Polling...');
+            pollUploadToDB(btn);
+            return;
         } else {
             appendLog('error', r.error?.message || 'Upload failed');
             btn.disabled = false;
@@ -454,6 +429,67 @@ async function uploadToDB() {
         btn.disabled = false;
         btn.textContent = 'Upload to DB';
     }
+}
+
+async function pollUploadToDB(btn) {
+    const POLL_INTERVAL = 3000;
+
+    async function poll() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage10/upload-progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                appendLog('success', `Upload complete: ${data.posted || 0} posted, ${data.failed || 0} failed, ${data.skipped || 0} skipped`);
+                document.getElementById('upload-result').style.display = 'block';
+                document.getElementById('upload-result').innerHTML = `
+                    <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+                        <div class="summary-stat-box highlight-green"><div class="sv">${data.posted || 0}</div><div class="sl">Posted</div></div>
+                        <div class="summary-stat-box highlight-red"><div class="sv">${data.failed || 0}</div><div class="sl">Failed</div></div>
+                        <div class="summary-stat-box"><div class="sv">${data.skipped || 0}</div><div class="sl">Skipped</div></div>
+                    </div>
+                `;
+                btn.textContent = 'Uploaded';
+                document.getElementById('stats-zip-btn').disabled = false;
+
+                // Auto-trigger local DB absorption
+                appendLog('info', 'Auto-absorbing into local DB + FAISS index...');
+                try {
+                    const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
+                    if (ar.success) {
+                        const ad = ar.data;
+                        appendLog('success', `Absorbed ${ad.absorbed || 0} entries to local DB, ${ad.embedded || 0} vectors to FAISS`);
+                        document.getElementById('absorb-result').style.display = 'block';
+                        document.getElementById('absorb-result').innerHTML = `
+                            <div style="font-size:12px; color:var(--success); margin-top:6px;">
+                                Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
+                            </div>
+                        `;
+                    } else {
+                        appendLog('warning', 'DB absorption failed: ' + (ar.error?.message || 'unknown'));
+                    }
+                } catch (ae) {
+                    appendLog('warning', 'DB absorption error: ' + ae.message);
+                }
+                document.getElementById('post-upload-actions').style.display = 'block';
+                return;
+            }
+            if (status === 'failed') {
+                appendLog('error', 'Upload failed: ' + (data.error || 'Unknown'));
+                btn.disabled = false;
+                btn.textContent = 'Upload to DB';
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            setTimeout(poll, POLL_INTERVAL);
+        }
+    }
+    setTimeout(poll, POLL_INTERVAL);
 }
 
 async function downloadAllStats() {

@@ -190,100 +190,85 @@ async function checkCredentials() {
     }
 }
 
+function showUploadResults(d) {
+    const btn = document.getElementById('upload-btn');
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    document.getElementById('results-content').innerHTML = `
+        <div class="stat-grid">
+            <div class="stat-box"><div class="stat-value">${d.uploaded || 0}</div><div class="stat-label">Uploaded</div></div>
+            <div class="stat-box"><div class="stat-value">${d.cached || 0}</div><div class="stat-label">Already Cached</div></div>
+            <div class="stat-box"><div class="stat-value">${d.replaced || 0}</div><div class="stat-label">Refs Replaced</div></div>
+            <div class="stat-box"><div class="stat-value">${d.files_modified || 0}</div><div class="stat-label">Files Modified</div></div>
+            <div class="stat-box"><div class="stat-value">${d.failed || 0}</div><div class="stat-label">Failed</div></div>
+        </div>
+    `;
+
+    const ab = document.getElementById('advance-btn');
+    if (ab) ab.disabled = false;
+    btn.textContent = 'Uploaded \u2713';
+    appendLog('success', `Upload complete: ${d.uploaded || 0} uploaded, ${d.cached || 0} cached, ${d.replaced || 0} refs replaced`);
+}
+
+async function pollUploadProgress() {
+    const btn = document.getElementById('upload-btn');
+    const POLL_INTERVAL = 3000;
+
+    async function poll() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage6/progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                showUploadResults(data);
+                return;
+            }
+            if (status === 'failed') {
+                appendLog('error', 'Upload failed: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.textContent = 'Upload Images';
+                document.getElementById('skip-btn').disabled = false;
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            setTimeout(poll, POLL_INTERVAL);
+        }
+    }
+    setTimeout(poll, POLL_INTERVAL);
+}
+
 async function uploadImages() {
     const btn = document.getElementById('upload-btn');
     btn.disabled = true;
     btn.textContent = 'Uploading...';
     document.getElementById('skip-btn').disabled = true;
-    appendLog('info', 'Starting image upload to CDN...');
+    appendLog('info', 'Starting image upload...');
 
     try {
         const r = await apiPost('/api/sessions/{{ session.id }}/stage6/upload');
-        if (r.success) {
-            const d = r.data;
-            const card = document.getElementById('results-card');
-            card.style.display = 'block';
-
-            if (d.error) {
-                document.getElementById('results-content').innerHTML =
-                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
-                appendLog('error', d.error);
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', r.data.error);
                 btn.disabled = false;
                 btn.textContent = 'Upload Images';
                 document.getElementById('skip-btn').disabled = false;
-            } else if (d.status === 'no_images') {
-                document.getElementById('results-content').innerHTML =
-                    '<div class="alert alert-info">' + escapeHtml(d.message) + '</div>';
-                appendLog('info', d.message);
-                const ab1 = document.getElementById('advance-btn');
-                if (ab1) ab1.disabled = false;
-            } else {
-                // Show stats grid
-                document.getElementById('results-content').innerHTML = `
-                    <div class="stat-grid">
-                        <div class="stat-box">
-                            <div class="stat-value">${d.uploaded || 0}</div>
-                            <div class="stat-label">Uploaded</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value">${d.cached || 0}</div>
-                            <div class="stat-label">Already Cached</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value">${d.replaced || 0}</div>
-                            <div class="stat-label">Refs Replaced</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value">${d.files_modified || 0}</div>
-                            <div class="stat-label">Files Modified</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value">${d.failed || 0}</div>
-                            <div class="stat-label">Failed</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value">${d.elapsed_s || 0}s</div>
-                            <div class="stat-label">Time</div>
-                        </div>
-                    </div>
-                `;
-
-                // Show sample CDN map entries
-                if (d.sample_entries && d.sample_entries.length > 0) {
-                    const samplesCard = document.getElementById('samples-card');
-                    samplesCard.style.display = 'block';
-                    let samplesHtml = '<table style="width:100%; font-size:12px; border-collapse:collapse;">';
-                    samplesHtml += '<tr style="border-bottom:1px solid var(--border);"><th style="text-align:left; padding:4px;">Local Ref</th><th style="text-align:left; padding:4px;">CDN URL</th><th style="padding:4px;">Dims</th></tr>';
-                    for (const e of d.sample_entries) {
-                        const shortUrl = e.cdn_url.length > 50 ? e.cdn_url.substring(0, 50) + '...' : e.cdn_url;
-                        samplesHtml += `<tr style="border-bottom:1px solid var(--border);">
-                            <td style="padding:4px; font-family:monospace; word-break:break-all;">${escapeHtml(e.src)}</td>
-                            <td style="padding:4px; font-family:monospace; word-break:break-all;">${escapeHtml(shortUrl)}</td>
-                            <td style="padding:4px; text-align:center;">${escapeHtml(e.dimensions)}</td>
-                        </tr>`;
-                    }
-                    samplesHtml += '</table>';
-                    document.getElementById('samples-content').innerHTML = samplesHtml;
-                }
-
-                // Show failed items if any
-                if (d.failed_items && d.failed_items.length > 0) {
-                    appendLog('warning', `${d.failed_items.length} uploads failed:`);
-                    for (const [src, err] of d.failed_items) {
-                        appendLog('error', `  ${src}: ${err}`);
-                    }
-                }
-
-                const ab2 = document.getElementById('advance-btn');
-                if (ab2) ab2.disabled = false;
-                btn.textContent = 'Uploaded ✓';
-                appendLog('success', `Upload complete: ${d.uploaded} uploaded, ${d.cached} cached, ${d.replaced} refs replaced in ${d.files_modified} files`);
+                return;
             }
-        } else {
-            appendLog('error', 'Upload failed: ' + (r.error?.message || 'Unknown'));
-            btn.disabled = false;
-            btn.textContent = 'Upload Images';
-            document.getElementById('skip-btn').disabled = false;
+            if (r.data.status === 'no_images') {
+                appendLog('info', r.data.message);
+                const ab = document.getElementById('advance-btn');
+                if (ab) ab.disabled = false;
+                return;
+            }
+            // Background task started — poll
+            appendLog('info', 'Upload running in background. Polling...');
+            pollUploadProgress();
         }
     } catch (e) {
         appendLog('error', 'Upload error: ' + e.message);

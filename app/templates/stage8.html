@@ -493,68 +493,74 @@ async function runAll() {
     btn.disabled = true;
     btn.textContent = 'Running...';
     _anyRunning = true;
-    document.getElementById('self-btn').disabled = true;
-    document.getElementById('cross-btn').disabled = true;
-    appendLog('info', 'Running both duplicate checks...');
+    document.getElementById('skip-btn').disabled = true;
+    appendLog('info', 'Running duplicate check (self + cross-DB)...');
 
     try {
         const threshold = getThreshold();
         const r = await apiPost('/api/sessions/{{ session.id }}/stage8/run-all?threshold=' + threshold);
-        if (r.success) {
-            const d = r.data;
-
-            if (d.self_check) showSelfResults(d.self_check);
-
-            if (d.cross_check) {
-                const card = document.getElementById('results-card');
-                card.style.display = 'block';
-                const c = d.cross_check;
-                let crossHtml = `
-                    <div class="stat-grid">
-                        <div class="stat-box"><div class="stat-value">${c.session_questions || 0}</div><div class="stat-label">Session Qs</div></div>
-                        <div class="stat-box"><div class="stat-value">${c.db_questions?.toLocaleString() || 0}</div><div class="stat-label">DB Questions</div></div>
-                        <div class="stat-box"><div class="stat-value">${c.pairs_checked?.toLocaleString() || 0}</div><div class="stat-label">Pairs Checked</div></div>
-                        <div class="stat-box"><div class="stat-value">${c.duplicates_found || 0}</div><div class="stat-label">Cross-Dupes</div></div>
-                    </div>
-                `;
-                crossHtml += '<div id="cross-results-pairs" style="margin-top: 12px;"></div>';
-                document.getElementById('cross-results-content').innerHTML = crossHtml;
-
-                if (c.duplicates && c.duplicates.length > 0) {
-                    renderDuplicatePairs(c.duplicates, 'cross-results-pairs', false);
-                }
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', r.data.error);
+                btn.disabled = false;
+                btn.textContent = 'Run Duplicate Check';
+                document.getElementById('skip-btn').disabled = false;
+                _anyRunning = false;
+                return;
             }
-
-            appendLog('success', `Total: ${d.total_duplicates || 0} duplicates found`);
-            document.getElementById('advance-btn').disabled = false;
-            _selfDone = true;
-            _crossDone = true;
-            btn.dataset.done = 'true';
-            btn.textContent = 'Completed \u2713';
-            document.getElementById('self-btn').disabled = true;
-            document.getElementById('self-btn').textContent = 'Checked \u2713';
-            document.getElementById('cross-btn').disabled = true;
-            document.getElementById('cross-btn').textContent = 'Checked \u2713';
-            document.getElementById('skip-btn').disabled = true;
-            document.getElementById('skip-btn').textContent = 'Skipped \u2713';
+            // Background task started — poll for completion
+            appendLog('info', 'Duplicate check running in background. Polling...');
+            pollDuplicateProgress(btn);
+            return;
         }
     } catch (e) {
-        appendLog('error', 'Run-all error: ' + e.message);
+        appendLog('error', 'Run error: ' + e.message);
     }
     _anyRunning = false;
-    if (!btn.dataset.done) {
-        btn.disabled = false;
-        btn.textContent = 'Run Both Checks';
-        // Re-enable individual buttons if they weren't already done
-        if (!document.getElementById('self-btn').dataset.done) {
-            document.getElementById('self-btn').disabled = false;
-            document.getElementById('self-btn').textContent = 'Self-Duplicate Check';
-        }
-        if (!document.getElementById('cross-btn').dataset.done && !document.getElementById('cross-btn').title) {
-            document.getElementById('cross-btn').disabled = false;
-            document.getElementById('cross-btn').textContent = 'Cross-DB Check';
+    btn.disabled = false;
+    btn.textContent = 'Run Duplicate Check';
+    document.getElementById('skip-btn').disabled = false;
+}
+
+async function pollDuplicateProgress(btn) {
+    const POLL_INTERVAL = 3000;
+
+    async function poll() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage8/progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                appendLog('success', 'Duplicate check complete');
+                document.getElementById('advance-btn').disabled = false;
+                _selfDone = true;
+                _crossDone = true;
+                _anyRunning = false;
+                btn.textContent = 'Completed \u2713';
+                btn.dataset.done = 'true';
+                document.getElementById('skip-btn').disabled = true;
+                // Reload page to show results (self/cross data is in checkpoint)
+                window.location.reload();
+                return;
+            }
+            if (status === 'failed') {
+                appendLog('error', 'Duplicate check failed: ' + (data.error || 'Unknown'));
+                btn.disabled = false;
+                btn.textContent = 'Run Duplicate Check';
+                document.getElementById('skip-btn').disabled = false;
+                _anyRunning = false;
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            setTimeout(poll, POLL_INTERVAL);
         }
     }
+    setTimeout(poll, POLL_INTERVAL);
 }
 
 function updateQuarantineCount() {

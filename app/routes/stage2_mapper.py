@@ -1,4 +1,9 @@
-"""Stage 2: LLM Mapper — routes with actual pipeline adapter."""
+"""Stage 2: LLM Mapper — routes with actual pipeline adapter.
+
+Extraction runs as a background asyncio task so the HTTP response returns
+immediately (prevents Render/proxy timeout on long Gemini calls).
+Frontend polls /progress for status updates.
+"""
 
 import asyncio
 import json
@@ -16,6 +21,8 @@ router = APIRouter()
 
 # Track running stage instances for stop support (keyed by session_id)
 _running_stages: Dict[str, "LLMMapperStage"] = {}
+# Track background extraction tasks
+_bg_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _get_session_or_404(session_id: str):
@@ -97,75 +104,107 @@ async def start_mapping(
     config["llm_provider"] = llm_provider
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
+    # If already running for this session, reject
+    if session_id in _bg_tasks and not _bg_tasks[session_id].done():
+        return APIResponse(data={"error": "Extraction already running for this session"})
+
     from app.pipeline.stage2_llm_mapper import LLMMapperStage
     stage = LLMMapperStage(session_id, session_dir)
-
-    # Register for stop support
     _running_stages[session_id] = stage
 
-    # Run in thread to avoid blocking
-    try:
-        result = await asyncio.to_thread(
-            stage.execute,
-            max_questions=max_questions,
-            llm_provider=llm_provider,
-            is_pyq=is_pyq,
-            prev_exam=prev_exam or "",
-            pyq_year_from=pyq_year_from,
-            pyq_year_to=pyq_year_to,
-            extra_context=extra_context or "",
-            resume=resume,
-            part=part,
-        )
-    except Exception as e:
-        _running_stages.pop(session_id, None)
-        return APIResponse(data={"error": f"Mapping failed: {e}"})
-    finally:
-        _running_stages.pop(session_id, None)
+    # Mark as running in checkpoint so frontend knows
+    from app.db import upsert_checkpoint
+    upsert_checkpoint(session_id, "stage2_mapping", "running", {
+        "provider": llm_provider, "max_questions": max_questions,
+    })
 
-    if "error" not in result:
-        update_session(session_id, current_stage="stage2_mapping")
-        from app.db import upsert_checkpoint, get_checkpoint
+    # Background runner — runs extraction, saves checkpoint on completion
+    async def _run_extraction():
+        try:
+            result = await asyncio.to_thread(
+                stage.execute,
+                max_questions=max_questions,
+                llm_provider=llm_provider,
+                is_pyq=is_pyq,
+                prev_exam=prev_exam or "",
+                pyq_year_from=pyq_year_from,
+                pyq_year_to=pyq_year_to,
+                extra_context=extra_context or "",
+                resume=resume,
+                part=part,
+            )
+        except Exception as e:
+            from app.db import upsert_checkpoint as _ucp, insert_log
+            _ucp(session_id, "stage2_mapping", "failed", {"error": str(e)})
+            insert_log(session_id, "stage2_mapping", "error", f"Extraction failed: {e}")
+            return
+        finally:
+            _running_stages.pop(session_id, None)
+            _bg_tasks.pop(session_id, None)
 
-        cp_data = {
-            "questions": result.get("questions", 0),
-            "triplets": result.get("triplets", 0),
-            "provider": result.get("provider", llm_provider),
-            "by_subject": result.get("by_subject", {}),
-        }
+        if "error" not in result:
+            update_session(session_id, current_stage="stage2_mapping")
+            from app.db import upsert_checkpoint as _ucp, get_checkpoint
 
-        if part:
-            # Multi-part mode: track per-part completion
-            existing_cp = get_checkpoint(session_id, "stage2_mapping") or {}
-            existing_data = existing_cp.get("data", {}) if isinstance(existing_cp, dict) else {}
-            parts_done = existing_data.get("parts_done", {})
-            parts_done[str(part)] = True
-            cp_data["part"] = part
-            cp_data["parts_done"] = parts_done
-            # Merge question counts from both parts
-            if existing_data.get("questions"):
-                cp_data["questions"] += existing_data["questions"]
-                cp_data["triplets"] += existing_data.get("triplets", 0)
-                # Merge by_subject
-                for subj, count in existing_data.get("by_subject", {}).items():
-                    cp_data["by_subject"][subj] = cp_data["by_subject"].get(subj, 0) + count
-            # Only mark completed if all parts done
-            all_done = len(parts_done) >= 2
-            status = "completed" if all_done else "partial"
+            cp_data = {
+                "questions": result.get("questions", 0),
+                "triplets": result.get("triplets", 0),
+                "provider": result.get("provider", llm_provider),
+                "by_subject": result.get("by_subject", {}),
+            }
+
+            if part:
+                existing_cp = get_checkpoint(session_id, "stage2_mapping") or {}
+                existing_data = existing_cp.get("data", {}) if isinstance(existing_cp, dict) else {}
+                parts_done = existing_data.get("parts_done", {})
+                parts_done[str(part)] = True
+                cp_data["part"] = part
+                cp_data["parts_done"] = parts_done
+                if existing_data.get("questions"):
+                    cp_data["questions"] += existing_data["questions"]
+                    cp_data["triplets"] += existing_data.get("triplets", 0)
+                    for subj, count in existing_data.get("by_subject", {}).items():
+                        cp_data["by_subject"][subj] = cp_data["by_subject"].get(subj, 0) + count
+                all_done = len(parts_done) >= 2
+                status = "completed" if all_done else "partial"
+            else:
+                status = "completed"
+
+            _ucp(session_id, "stage2_mapping", status, cp_data)
         else:
-            status = "completed"
+            from app.db import upsert_checkpoint as _ucp
+            _ucp(session_id, "stage2_mapping", "failed", result)
 
-        upsert_checkpoint(session_id, "stage2_mapping", status, cp_data)
+    # Spawn background task — returns immediately
+    task = asyncio.create_task(_run_extraction())
+    _bg_tasks[session_id] = task
 
-    return APIResponse(data=result)
+    return APIResponse(data={"status": "started", "message": "Extraction started in background. Poll /progress for updates."})
 
 
 @router.get("/progress")
 async def mapping_progress(session_id: str):
-    """Get mapping progress from checkpoint."""
+    """Get mapping progress from checkpoint + live task state."""
     from app.db import get_checkpoint
+    import json as _json
     cp = get_checkpoint(session_id, "stage2_mapping")
-    return APIResponse(data=cp or {"status": "not_started"})
+    if cp and isinstance(cp.get("data"), str):
+        try:
+            cp["data"] = _json.loads(cp["data"])
+        except Exception:
+            cp["data"] = {}
+    result = cp or {"status": "not_started"}
+
+    # Overlay live task state
+    is_running = session_id in _bg_tasks and not _bg_tasks[session_id].done()
+    if is_running:
+        result["bg_running"] = True
+    elif session_id in _bg_tasks:
+        # Task finished but not cleaned up yet
+        result["bg_running"] = False
+        _bg_tasks.pop(session_id, None)
+
+    return APIResponse(data=result)
 
 
 @router.get("/preview")

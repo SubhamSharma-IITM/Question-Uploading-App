@@ -338,49 +338,32 @@ async function startMapping(resume, part) {
 
     try {
         const r = await apiPost(url);
-        if (r.success && r.data && !r.data.error) {
-            showResults(r.data);
-            verifiedProviders[provider] = true;
-            stopBtn.style.display = 'none';
-            extractionRunning = false;
-            window._activeProcess = false;
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', 'Extraction failed: ' + r.data.error);
+                if (r.data.questions && r.data.questions > 0) {
+                    showResults(r.data);
+                    appendLog('info', `Partial results: ${r.data.questions} questions saved`);
+                }
+                btn.disabled = false;
+                btn.textContent = isPartMode ? `Process Part ${part}` : 'Start Extraction';
+                stopBtn.style.display = 'none';
+                freezeInputs(false);
+                extractionRunning = false;
+                window._activeProcess = false;
+                return;
+            }
 
-            if (isPartMode) {
-                partsDone[part] = true;
-                btn.textContent = `Part ${part} Done \u2713`;
-                appendLog('success', `Part ${part} extraction complete: ${r.data.questions || 0} questions`);
-                // Re-enable other part button if not done
-                const otherPart = part === 1 ? 2 : 1;
-                const otherBtn = document.getElementById(`start-part${otherPart}-btn`);
-                if (otherBtn && !partsDone[otherPart]) {
-                    otherBtn.disabled = false;
-                }
-                // Enable advance only when ALL parts are done
-                if (Object.keys(partsDone).length >= 2) {
-                    document.getElementById('advance-btn').disabled = false;
-                    appendLog('success', 'All parts extracted! Ready to advance.');
-                    extractionCompleted = true;
-                }
-            } else {
-                document.getElementById('advance-btn').disabled = false;
-                appendLog('success', `Extraction complete: ${r.data.questions || 0} questions, ${r.data.triplets || 0} triplets (${provider})`);
-                btn.textContent = 'Extracted \u2713';
-                extractionCompleted = true;
-            }
+            // Background task started — poll for completion
+            appendLog('info', 'Extraction running in background. Polling for progress...');
+            pollExtractionProgress(btn, stopBtn, provider, isPartMode, part);
             return;
-        } else {
-            const errMsg = r.data?.error || r.error?.message || 'Unknown error';
-            appendLog('error', 'Extraction failed: ' + errMsg);
-            if (r.data?.questions && r.data.questions > 0) {
-                showResults(r.data);
-                appendLog('info', `Partial results: ${r.data.questions} questions saved`);
-            }
         }
     } catch (e) {
         appendLog('error', 'Error: ' + e.message);
     }
 
-    // Re-enable on error/stop
+    // Re-enable on error
     btn.disabled = false;
     btn.textContent = isPartMode ? `Process Part ${part}` : 'Start Extraction';
     stopBtn.style.display = 'none';
@@ -488,6 +471,76 @@ function truncate(str, max) {
     return str.length > max ? str.substring(0, max) + '...' : str;
 }
 
+// Poll extraction progress until completion
+async function pollExtractionProgress(btn, stopBtn, provider, isPartMode, part) {
+    const POLL_INTERVAL = 3000;  // 3 seconds
+    let pollCount = 0;
+
+    async function poll() {
+        if (!extractionRunning) return;  // Stopped by user
+        pollCount++;
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage2/progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                // Extraction finished
+                showResults(data);
+                stopBtn.style.display = 'none';
+                extractionRunning = false;
+                window._activeProcess = false;
+
+                if (isPartMode) {
+                    partsDone[part] = true;
+                    btn.textContent = `Part ${part} Done \u2713`;
+                    appendLog('success', `Part ${part} extraction complete: ${data.questions || 0} questions`);
+                    const otherPart = part === 1 ? 2 : 1;
+                    const otherBtn = document.getElementById(`start-part${otherPart}-btn`);
+                    if (otherBtn && !partsDone[otherPart]) otherBtn.disabled = false;
+                    if (Object.keys(partsDone).length >= 2) {
+                        document.getElementById('advance-btn').disabled = false;
+                        appendLog('success', 'All parts extracted! Ready to advance.');
+                        extractionCompleted = true;
+                    }
+                } else {
+                    document.getElementById('advance-btn').disabled = false;
+                    appendLog('success', `Extraction complete: ${data.questions || 0} questions, ${data.triplets || 0} triplets (${provider})`);
+                    btn.textContent = 'Extracted \u2713';
+                    extractionCompleted = true;
+                }
+                return;
+            }
+
+            if (status === 'failed') {
+                appendLog('error', 'Extraction failed: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.textContent = isPartMode ? `Process Part ${part}` : 'Start Extraction';
+                stopBtn.style.display = 'none';
+                freezeInputs(false);
+                extractionRunning = false;
+                window._activeProcess = false;
+                return;
+            }
+
+            // Still running — update progress bar if we have data
+            if (data.total_extracted && pollCount % 5 === 0) {
+                appendLog('info', `Progress: ${data.total_extracted} questions extracted so far...`);
+            }
+
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            // Network error — keep polling
+            setTimeout(poll, POLL_INTERVAL);
+        }
+    }
+
+    setTimeout(poll, POLL_INTERVAL);
+}
+
 // beforeunload: warn if extraction is running, send beacon to stop
 window.addEventListener('beforeunload', (e) => {
     if (extractionRunning) {
@@ -497,20 +550,40 @@ window.addEventListener('beforeunload', (e) => {
     }
 });
 
-// Check for partial results on page load (resume support)
+// Check for partial results or active background task on page load
 async function checkForPartialResults() {
     try {
         const r = await apiGet('/api/sessions/{{ session.id }}/stage2/progress');
-        if (r.success && r.data && r.data.status === 'running' && r.data.data) {
-            const d = r.data.data;
-            if (d.total_extracted && d.total_extracted > 0) {
-                const card = document.getElementById('resume-card');
-                card.style.display = 'block';
-                document.getElementById('resume-info').innerHTML =
-                    `Found <strong>${d.total_extracted}</strong> questions from a previous extraction run ` +
-                    `(cursor at line ${d.cursor_line || '?'}).`;
-                appendLog('info', `Previous extraction found: ${d.total_extracted} questions. Resume or start fresh?`);
-            }
+        if (!r.success || !r.data) return;
+
+        const cp = r.data;
+        const data = cp.data || {};
+
+        // If background task is still running, resume polling
+        if (cp.bg_running) {
+            appendLog('info', 'Extraction is running in background. Resuming progress tracking...');
+            const btn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            btn.disabled = true;
+            btn.textContent = 'Extracting...';
+            stopBtn.style.display = 'inline-block';
+            document.getElementById('progress-section').style.display = 'block';
+            freezeInputs(true);
+            extractionRunning = true;
+            window._activeProcess = true;
+            window._activeStopUrl = `/api/sessions/{{ session.id }}/stage2/stop`;
+            pollExtractionProgress(btn, stopBtn, data.provider || 'gemini', false, null);
+            return;
+        }
+
+        // If running checkpoint but no background task (server restarted mid-extraction)
+        if (cp.status === 'running' && data.total_extracted && data.total_extracted > 0) {
+            const card = document.getElementById('resume-card');
+            card.style.display = 'block';
+            document.getElementById('resume-info').innerHTML =
+                `Found <strong>${data.total_extracted}</strong> questions from a previous extraction run ` +
+                `(cursor at line ${data.cursor_line || '?'}).`;
+            appendLog('info', `Previous extraction found: ${data.total_extracted} questions. Resume or start fresh?`);
         }
     } catch (e) {
         // Silently ignore

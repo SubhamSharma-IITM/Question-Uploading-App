@@ -1,8 +1,11 @@
-"""Stage 8: Duplicate Checking — routes for self-check, cross-check, reports, quarantine."""
+"""Stage 8: Duplicate Checking — routes for self-check, cross-check, reports, quarantine.
+
+run-all runs as background task to avoid Render proxy timeout.
+"""
 
 import asyncio
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -12,6 +15,7 @@ from app.db import get_session, update_session
 from app.models import APIResponse, ErrorDetail
 
 router = APIRouter()
+_bg_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _get_session_or_404(session_id: str):
@@ -212,18 +216,53 @@ async def skip_duplicates(session_id: str, reason: str = "manual"):
 
 @router.post("/run-all")
 async def run_all_checks(session_id: str, threshold: float = 0.85):
-    """Run both self-check and cross-check in sequence."""
+    """Run both self-check and cross-check — background task."""
     session, err = _get_session_or_404(session_id)
     if err:
         return err
 
+    if session_id in _bg_tasks and not _bg_tasks[session_id].done():
+        return APIResponse(data={"error": "Duplicate check already running for this session"})
+
     session_dir = Path(settings.sessions_dir) / session_id
 
-    from app.pipeline.stage8_duplicates import DuplicateCheckStage
-    stage = DuplicateCheckStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.execute, threshold=threshold)
+    from app.db import upsert_checkpoint
+    upsert_checkpoint(session_id, "stage8_duplicates", "running", {})
 
-    if "error" not in result.get("self_check", {}) and "error" not in result.get("cross_check", {}):
-        update_session(session_id, current_stage="stage8_duplicates")
+    async def _run_checks():
+        try:
+            from app.pipeline.stage8_duplicates import DuplicateCheckStage
+            stage = DuplicateCheckStage(session_id, session_dir)
+            result = await asyncio.to_thread(stage.execute, threshold=threshold)
+        except Exception as e:
+            from app.db import upsert_checkpoint as _ucp, insert_log
+            _ucp(session_id, "stage8_duplicates", "failed", {"error": str(e)})
+            insert_log(session_id, "stage8_duplicates", "error", f"Duplicate check failed: {e}")
+            return
+        finally:
+            _bg_tasks.pop(session_id, None)
 
+        if "error" not in result.get("self_check", {}) and "error" not in result.get("cross_check", {}):
+            update_session(session_id, current_stage="stage8_duplicates")
+
+    task = asyncio.create_task(_run_checks())
+    _bg_tasks[session_id] = task
+    return APIResponse(data={"status": "started", "message": "Duplicate check running in background."})
+
+
+@router.get("/progress")
+async def check_progress(session_id: str):
+    """Get duplicate check progress."""
+    from app.db import get_checkpoint
+    import json as _json
+    cp = get_checkpoint(session_id, "stage8_duplicates")
+    if cp and isinstance(cp.get("data"), str):
+        try:
+            cp["data"] = _json.loads(cp["data"])
+        except Exception:
+            cp["data"] = {}
+    result = cp or {"status": "not_started"}
+    is_running = session_id in _bg_tasks and not _bg_tasks[session_id].done()
+    if is_running:
+        result["bg_running"] = True
     return APIResponse(data=result)

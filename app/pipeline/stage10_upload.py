@@ -166,6 +166,8 @@ class UploadStage(BasePipelineStage):
         total_posted = 0
         total_failed = 0
         total_skipped = 0
+        posted_err1 = 0
+        posted_err2 = 0
         all_csv_rows = []
         upload_map = {}  # meta_qid → uploaded MongoDB _id
 
@@ -239,6 +241,10 @@ class UploadStage(BasePipelineStage):
                     if ok and uploaded_id:
                         posted += 1
                         total_posted += 1
+                        if error_val == 1:
+                            posted_err1 += 1
+                        else:
+                            posted_err2 += 1
                         upload_map[qid] = uploaded_id
                         base = QUESTION_EDIT_URL.get(qtype_key, "")
                         link = f"{base}{uploaded_id}" if base else "N/A"
