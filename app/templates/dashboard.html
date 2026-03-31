@@ -816,14 +816,23 @@ function renderTeamPanel(teamData, heartbeats) {
         const isAdmin = role === 'Admin' || role === 'Architect';
         const hb = hbMap[member.phone];
 
+        // UTC -> IST 12h AM/PM format
+        function fmtIST(utcStr) {
+            if (!utcStr) return '';
+            try {
+                const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
+                return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
+            } catch(e) { return utcStr.slice(0, 16).replace('T', ' '); }
+        }
+
         let activityCls = 'offline', activityText = 'Not logged in';
         if (hb && hb.last_ping) {
             const diffMin = (Date.now() - new Date(hb.last_ping).getTime()) / 60000;
             if (diffMin < 10) { activityCls = 'online'; activityText = 'Active now'; }
             else if (diffMin < 30) { activityCls = 'away'; activityText = Math.round(diffMin) + 'm ago'; }
-            else { activityText = member.last_login ? 'Last: ' + member.last_login.slice(0, 16).replace('T', ' ') : 'Offline'; }
+            else { activityText = member.last_login ? 'Last: ' + fmtIST(member.last_login) : 'Offline'; }
         } else if (member.last_login) {
-            activityText = 'Last: ' + member.last_login.slice(0, 16).replace('T', ' ');
+            activityText = 'Last: ' + fmtIST(member.last_login);
         }
 
         const roleBadge = '<span style="font-size:10px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +

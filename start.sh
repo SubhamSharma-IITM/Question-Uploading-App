@@ -61,6 +61,21 @@ echo "[BOOT] Persistent disk contents:"
 du -sh "$PERSISTENT"/* 2>/dev/null || echo "  (empty)"
 echo "------------------------------"
 
+# ── 2b. Verify env vars point to persistent disk ──
+echo "[BOOT] DATA_DIR=$DATA_DIR"
+echo "[BOOT] SESSIONS_DIR=$SESSIONS_DIR"
+echo "[BOOT] DB_PATH=$DB_PATH"
+echo "[BOOT] DB_INDEX_DIR=$DB_INDEX_DIR"
+
+# Quick Python check: where will app.db actually be created?
+python3 -c "
+from app.config import settings
+print(f'[BOOT] settings.data_dir     = {settings.data_dir}')
+print(f'[BOOT] settings.sessions_dir = {settings.sessions_dir}')
+print(f'[BOOT] settings.db_path      = {settings.db_path}')
+print(f'[BOOT] app.db will be at     = {settings.data_dir}/app.db')
+" 2>&1 || echo "[BOOT] WARNING: Could not verify settings"
+
 # ── 3. Clear Python bytecode cache ──
 find /opt/render/project/src/app -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 echo "[BOOT] Cleared __pycache__"

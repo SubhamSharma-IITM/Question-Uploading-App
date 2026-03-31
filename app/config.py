@@ -9,14 +9,23 @@ if _env_path.exists():
     load_dotenv(_env_path)
 
 
+def _default_data_dir() -> str:
+    """Use /data (Render persistent disk) if it exists, else local data/ dir."""
+    render_disk = Path("/data")
+    if render_disk.exists() and render_disk.is_dir():
+        return str(render_disk)
+    return str(Path(__file__).parent.parent / "data")
+
+
 class Settings(BaseSettings):
     # ── Server ──
     host: str = "0.0.0.0"
     port: int = 8000
 
     # ── Paths ──
-    data_dir: str = str(Path(__file__).parent.parent / "data")
-    sessions_dir: str = str(Path(__file__).parent.parent / "data" / "sessions")
+    # Auto-detect Render persistent disk at /data, fall back to local data/
+    data_dir: str = _default_data_dir()
+    sessions_dir: str = str(Path(_default_data_dir()) / "sessions")
 
     # ── MathPIX ──
     mathpix_app_id: str = ""
@@ -48,12 +57,10 @@ class Settings(BaseSettings):
     aws_s3_region: str = "ap-south-1"
 
     # ── Reference database (for duplicate check + Stage 10 absorption) ──
-    # Bundled in repo: data/allque030326.json (tracked via Git LFS)
-    db_path: str = str(Path(__file__).parent.parent / "data" / "allque030326.json")
+    db_path: str = str(Path(_default_data_dir()) / "allque030326.json")
 
     # ── Global FAISS index cache (shared across sessions) ──
-    # Bundled in repo: data/db_index_cache/ (faiss.index tracked via Git LFS)
-    db_index_dir: str = str(Path(__file__).parent.parent / "data" / "db_index_cache")
+    db_index_dir: str = str(Path(_default_data_dir()) / "db_index_cache")
 
     # ── Tagging modules (Stage 7) ──
     # Bundled in repo: data/tagging_modules/{subject}_tagging_module/
