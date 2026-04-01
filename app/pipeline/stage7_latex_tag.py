@@ -375,8 +375,8 @@ def _load_faiss_for_subject(subject: str):
     if not index_path.exists():
         raise FileNotFoundError(f"FAISS index not found: {index_path}")
 
-    log.info(f"Loading FAISS index for {subject} from {module_dir}...")
-    index = faiss.read_index(str(index_path))
+    log.info(f"Loading FAISS index for {subject} from {module_dir} (mmap)...")
+    index = faiss.read_index(str(index_path), faiss.IO_FLAG_MMAP)
 
     with open(chunks_path, "r", encoding="utf-8") as f:
         chunk_data = json.load(f)
@@ -564,7 +564,7 @@ class LatexTagStage(BasePipelineStage):
     # Replace with direct Unicode characters for maximum compatibility.
     _HEX_ENTITY_MAP = {
         "&#x0003D;": "=", "&#x0002B;": "+", "&#x02212;": "\u2212",
-        "&#x0003C;": "<", "&#x0003E;": ">",
+        "&#x0003C;": "&lt;", "&#x0003E;": "&gt;",
         "&#x00028;": "(", "&#x00029;": ")",
         "&#x0005B;": "[", "&#x0005D;": "]",
         "&#x0007B;": "{", "&#x0007D;": "}",
@@ -958,29 +958,40 @@ class LatexTagStage(BasePipelineStage):
                 entry_success = 0
                 entry_fail = 0
 
-                # Convert both question and solution fields
-                for field in ["question", "solution"]:
-                    html = qdata.get(field, "")
+                # Convert LaTeX in all text fields
+                def _convert_field(container, field_name):
+                    nonlocal file_modified, entry_success, entry_fail
+                    html = container.get(field_name, "")
                     if not html:
-                        continue
-
-                    # Step A: Convert LaTeX tabular blocks to HTML tables FIRST
-                    # (these can't go through latex2mathml)
+                        return
                     html, tables_converted = _convert_tabular_blocks(html)
                     if tables_converted > 0:
-                        qdata[field] = html
+                        container[field_name] = html
                         file_modified = True
                         entry_success += tables_converted
-
-                    # Step B: Convert remaining LaTeX to MathML
                     latex_count = self._count_latex_blocks(html)
                     if latex_count > 0:
                         converted, s, f_cnt = self._convert_latex_to_mathml(html)
                         entry_success += s
                         entry_fail += f_cnt
                         if s > 0:
-                            qdata[field] = converted
+                            container[field_name] = converted
                             file_modified = True
+
+                if qtype == "passageQuestion":
+                    # Traverse passage + sub-questions
+                    _convert_field(qdata, "passage")
+                    _convert_field(qdata, "solution")
+                    for sq in qdata.get("questions", []):
+                        if isinstance(sq, dict):
+                            for sk in ("scq", "mcq", "integerQuestion"):
+                                so = sq.get(sk)
+                                if isinstance(so, dict):
+                                    _convert_field(so, "question")
+                                    _convert_field(so, "solution")
+                else:
+                    for field in ["question", "solution"]:
+                        _convert_field(qdata, field)
 
                 if entry_success > 0 or entry_fail > 0:
                     questions_with_latex += 1
@@ -1080,9 +1091,28 @@ class LatexTagStage(BasePipelineStage):
                 subject = entry.get("subject", "Unknown")
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
-                question_text = qdata.get("question", "")
-                solution_text = qdata.get("solution", "")
-                answer = entry.get("answer", entry.get(qtype, {}).get("answer", ""))
+
+                # Extract text for tagging — handle passageQuestion nested structure
+                if qtype == "passageQuestion":
+                    passage_text = qdata.get("passage", "")
+                    # Combine passage + all sub-question texts for tagging context
+                    sub_texts = []
+                    sub_answers = []
+                    for sq in qdata.get("questions", []):
+                        if isinstance(sq, dict):
+                            for sk in ("scq", "mcq", "integerQuestion"):
+                                so = sq.get(sk)
+                                if isinstance(so, dict):
+                                    sub_texts.append(so.get("question", ""))
+                                    sub_answers.append(so.get("answer", ""))
+                                    break
+                    question_text = passage_text + "\n" + "\n".join(sub_texts)
+                    solution_text = qdata.get("solution", "")
+                    answer = ", ".join(a for a in sub_answers if a)
+                else:
+                    question_text = qdata.get("question", "")
+                    solution_text = qdata.get("solution", "")
+                    answer = entry.get("answer", qdata.get("answer", ""))
 
                 if entry.get("chapter") == "TBD":
                     tagging_entries.append({
@@ -1196,7 +1226,19 @@ class LatexTagStage(BasePipelineStage):
                 qid = entry.get("qid", "unknown")
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
-                question_text = qdata.get("question", "")
+
+                # Collect all text fields for LaTeX check
+                if qtype == "passageQuestion":
+                    all_texts = [qdata.get("passage", ""), qdata.get("solution", "")]
+                    for sq in qdata.get("questions", []):
+                        if isinstance(sq, dict):
+                            for sk in ("scq", "mcq", "integerQuestion"):
+                                so = sq.get(sk)
+                                if isinstance(so, dict):
+                                    all_texts.extend([so.get("question", ""), so.get("solution", "")])
+                    question_text = "\n".join(t for t in all_texts if t)
+                else:
+                    question_text = qdata.get("question", "")
 
                 # LaTeX conversion --ONLY for QIDs that failed local MathML conversion
                 # If no failed_qids file exists, fall back to checking for LaTeX blocks
@@ -1208,11 +1250,27 @@ class LatexTagStage(BasePipelineStage):
 
                 if needs_latex:
                     # Send question + solution as structured JSON (production format)
-                    solution_text = qdata.get("solution", "")
-                    input_json = json.dumps({
-                        "question": _one_line_html(question_text),
-                        "solution": _one_line_html(solution_text),
-                    }, ensure_ascii=False)
+                    if qtype == "passageQuestion":
+                        # For passages, send passage + all sub-question content
+                        solution_text = qdata.get("solution", "")
+                        combined_q = qdata.get("passage", "")
+                        for sq in qdata.get("questions", []):
+                            if isinstance(sq, dict):
+                                for sk in ("scq", "mcq", "integerQuestion"):
+                                    so = sq.get(sk)
+                                    if isinstance(so, dict):
+                                        combined_q += "\n" + so.get("question", "")
+                                        solution_text += "\n" + so.get("solution", "")
+                        input_json = json.dumps({
+                            "question": _one_line_html(combined_q),
+                            "solution": _one_line_html(solution_text),
+                        }, ensure_ascii=False)
+                    else:
+                        solution_text = qdata.get("solution", "")
+                        input_json = json.dumps({
+                            "question": _one_line_html(question_text),
+                            "solution": _one_line_html(solution_text),
+                        }, ensure_ascii=False)
 
                     user_content = (
                         f"{LATEX_GUARD_SPEC}\n\n"
@@ -1647,28 +1705,47 @@ class LatexTagStage(BasePipelineStage):
                                             q_part = parts[0].replace("QUESTION:", "", 1).strip()
                                             s_part = parts[1].strip()
 
-                                    if q_part:
-                                        qdata["question"] = q_part
+                                    # Write back based on question type
+                                    if qtype == "passageQuestion":
+                                        # For passages, batch sent combined text -- write to passage field
+                                        if q_part:
+                                            qdata["passage"] = q_part
+                                            converted_q, sq, fq = self._convert_latex_to_mathml(q_part)
+                                            if sq > 0:
+                                                qdata["passage"] = converted_q
+                                                mathml_converted += sq
+                                            if fq > 0:
+                                                still_failed_qids.append(qid)
+                                        if s_part:
+                                            qdata["solution"] = s_part
+                                            converted_s, ss, fs = self._convert_latex_to_mathml(s_part)
+                                            if ss > 0:
+                                                qdata["solution"] = converted_s
+                                                mathml_converted += ss
+                                            if fs > 0 and qid not in still_failed_qids:
+                                                still_failed_qids.append(qid)
+                                    else:
+                                        if q_part:
+                                            qdata["question"] = q_part
+                                        # Also do MathML conversion locally on question
+                                        converted_q, sq, fq = self._convert_latex_to_mathml(q_part)
+                                        if sq > 0:
+                                            qdata["question"] = converted_q
+                                            mathml_converted += sq
+                                        if fq > 0:
+                                            still_failed_qids.append(qid)
+
+                                        # Process solution if we got one back
+                                        if s_part:
+                                            qdata["solution"] = s_part
+                                            converted_s, ss, fs = self._convert_latex_to_mathml(s_part)
+                                            if ss > 0:
+                                                qdata["solution"] = converted_s
+                                                mathml_converted += ss
+                                            if fs > 0 and qid not in still_failed_qids:
+                                                still_failed_qids.append(qid)
                                     latex_merged += 1
                                     modified = True
-
-                                    # Also do MathML conversion locally on question
-                                    converted_q, sq, fq = self._convert_latex_to_mathml(q_part)
-                                    if sq > 0:
-                                        qdata["question"] = converted_q
-                                        mathml_converted += sq
-                                    if fq > 0:
-                                        still_failed_qids.append(qid)
-
-                                    # Process solution if we got one back
-                                    if s_part:
-                                        qdata["solution"] = s_part
-                                        converted_s, ss, fs = self._convert_latex_to_mathml(s_part)
-                                        if ss > 0:
-                                            qdata["solution"] = converted_s
-                                            mathml_converted += ss
-                                        if fs > 0 and qid not in still_failed_qids:
-                                            still_failed_qids.append(qid)
 
                         if modified:
                             with open(f, "w", encoding="utf-8") as fh:

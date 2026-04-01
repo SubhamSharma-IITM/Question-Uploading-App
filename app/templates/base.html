@@ -228,9 +228,12 @@
                 body: JSON.stringify(payload),
             }).catch(() => {});
         }
-        // Send immediately on page load, then every 5 min
+        // Send immediately on page load, every 3 min, and on tab focus
         sendHeartbeat();
-        setInterval(sendHeartbeat, 5 * 60 * 1000);
+        setInterval(sendHeartbeat, 3 * 60 * 1000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) sendHeartbeat();
+        });
     })();
     </script>
 

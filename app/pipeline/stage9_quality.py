@@ -1023,14 +1023,37 @@ class QualityVerifierStage(BasePipelineStage):
                     qtype = entry.get("questionType", "")
                     qdata = entry.get(qtype, {}) if qtype else {}
 
+                    # Extract question/answer/solution -- handle passageQuestion nesting
+                    if qtype == "passageQuestion":
+                        passage_text = qdata.get("passage", "") or ""
+                        sub_q_texts = []
+                        sub_answers = []
+                        sub_solutions = []
+                        for sq in qdata.get("questions", []):
+                            if isinstance(sq, dict):
+                                for sk in ("scq", "mcq", "integerQuestion"):
+                                    so = sq.get(sk)
+                                    if isinstance(so, dict):
+                                        sub_q_texts.append(so.get("question", ""))
+                                        sub_answers.append(so.get("answer", ""))
+                                        sub_solutions.append(so.get("solution", ""))
+                                        break
+                        q_text = passage_text + "\n" + "\n".join(sub_q_texts)
+                        a_text = ", ".join(a for a in sub_answers if a)
+                        s_text = (qdata.get("solution", "") or "") + "\n" + "\n".join(sub_solutions)
+                    else:
+                        q_text = qdata.get("question", "") or ""
+                        a_text = qdata.get("answer", "")
+                        s_text = qdata.get("solution", "") or ""
+
                     request = {
                         "custom_id": f"qa-{pass_key}-{qid}",
                         "qid": qid,
                         "subject": entry.get("subject", ""),
                         "questionType": qtype,
-                        "question": (qdata.get("question", "") or ""),
-                        "answer": qdata.get("answer", ""),
-                        "solution": (qdata.get("solution", "") or ""),
+                        "question": q_text,
+                        "answer": a_text,
+                        "solution": s_text,
                         "chapter": entry.get("chapter", ""),
                         "concept": entry.get("concept", ""),
                         "subConcept": entry.get("subConcept", ""),
@@ -1174,6 +1197,22 @@ ADDITIONAL CONTEXT FROM USER
                     for j in range(ss, se):
                         parts.append(f"L{j+1}: {mmd_lines[j]}")
                     break
+
+        # For passageQuestion: also extract sub-question solution regions
+        sub_questions = mapper_entry.get("sub_questions", [])
+        for idx, sq in enumerate(sub_questions):
+            sq_sol_start = sq.get("sol_line_start")
+            sq_sol_end = sq.get("sol_line_end")
+            if sq_sol_start is not None and sq_sol_end is not None:
+                try:
+                    sqs, sqe = int(sq_sol_start), int(sq_sol_end)
+                    ss = max(0, sqs - 3)
+                    se = min(total, sqe + 3 + 1)
+                    parts.append(f"\n--- SOURCE: Sub-Q{idx+1} solution (lines {ss+1}-{se}) ---")
+                    for i in range(ss, se):
+                        parts.append(f"L{i+1}: {mmd_lines[i]}")
+                except (ValueError, TypeError):
+                    pass
 
         return "\n".join(parts)
 

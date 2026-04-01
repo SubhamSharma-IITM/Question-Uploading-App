@@ -317,6 +317,8 @@ class DuplicateCheckStage(BasePipelineStage):
                             obj = entry.get(qt)
                             if isinstance(obj, dict):
                                 q_html = obj.get("question", obj.get("ques", ""))
+                                if not q_html and qt == "passageQuestion":
+                                    q_html = obj.get("passage", "")
                                 if q_html:
                                     break
                         flags["question_html"] = q_html[:2000] if q_html else ""
@@ -473,9 +475,9 @@ class DuplicateCheckStage(BasePipelineStage):
         # 1. Try session-local
         index_dir = self._get_index_dir() / name
         if (index_dir / "faiss.index").exists():
-            index = faiss.read_index(str(index_dir / "faiss.index"))
+            index = faiss.read_index(str(index_dir / "faiss.index"), faiss.IO_FLAG_MMAP)
             metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
-            self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors")
+            self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors (mmap)")
             return index, metadata["id_map"], metadata["text_map"]
 
         # 2. Try global cache
@@ -483,9 +485,9 @@ class DuplicateCheckStage(BasePipelineStage):
         if global_dir:
             global_index_dir = global_dir / name
             if (global_index_dir / "faiss.index").exists():
-                index = faiss.read_index(str(global_index_dir / "faiss.index"))
+                index = faiss.read_index(str(global_index_dir / "faiss.index"), faiss.IO_FLAG_MMAP)
                 metadata = json.loads((global_index_dir / "metadata.json").read_text(encoding="utf-8"))
-                self.log("info", f"Loaded global FAISS index '{name}': {index.ntotal} vectors")
+                self.log("info", f"Loaded global FAISS index '{name}': {index.ntotal} vectors (mmap)")
                 return index, metadata["id_map"], metadata["text_map"]
 
         return None, None, None
@@ -512,6 +514,8 @@ class DuplicateCheckStage(BasePipelineStage):
                     obj = q.get(qt)
                     if isinstance(obj, dict):
                         q_html = obj.get("question", obj.get("ques", ""))
+                        if not q_html and qt == "passageQuestion":
+                            q_html = obj.get("passage", "")
                         if q_html:
                             html_map[qid] = q_html[:2000]
                             break
@@ -722,6 +726,9 @@ class DuplicateCheckStage(BasePipelineStage):
                     obj = entry.get(qt)
                     if isinstance(obj, dict):
                         q_html = obj.get("question", obj.get("ques", ""))
+                        # For passageQuestion, use passage field
+                        if not q_html and qt == "passageQuestion":
+                            q_html = obj.get("passage", "")
                         if q_html:
                             sess_html_map[qid] = q_html[:2000]
                             break
@@ -782,6 +789,8 @@ class DuplicateCheckStage(BasePipelineStage):
             for d in duplicates:
                 flags = db_flags.get(d["db_qid"], {})
                 d["db_flags"] = flags
+                # Copy DB question HTML into pair for preview rendering
+                d["db_html"] = flags.get("question_html", "")
 
         return {
             "session_questions": len(entries),

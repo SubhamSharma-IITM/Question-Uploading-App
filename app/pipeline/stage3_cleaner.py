@@ -547,6 +547,20 @@ def _clean_question_entry(entry: Dict) -> Dict:
     if "passage_content" in entry and entry["passage_content"]:
         cleaned["passage_content"] = _clean_text(entry["passage_content"], is_solution=False)
 
+    # Clean sub_questions for passageQuestion items
+    if "sub_questions" in entry and isinstance(entry["sub_questions"], list):
+        cleaned_subs = []
+        for sq in entry["sub_questions"]:
+            csq = dict(sq)
+            if sq.get("question_content"):
+                csq["question_content"] = _clean_text(sq["question_content"], is_solution=False)
+            if sq.get("solution_content"):
+                csq["solution_content"] = _clean_text(sq["solution_content"], is_solution=True)
+            if sq.get("answer_key"):
+                csq["answer_key"] = _strip_answer_number(sq["answer_key"])
+            cleaned_subs.append(csq)
+        cleaned["sub_questions"] = cleaned_subs
+
     # Clean hint if present (legacy format)
     if "hint" in entry:
         cleaned["hint"] = _clean_text(entry.get("hint", ""), is_solution=True)

@@ -98,7 +98,7 @@ class Settings(BaseSettings):
             self.db_index_dir = str(base / "db_index_cache")
         return self
 
-    model_config = {"env_file": ".env", "env_prefix": ""}
+    model_config = {"env_file": ".env", "env_prefix": "", "extra": "ignore"}
 
 
 settings = Settings()

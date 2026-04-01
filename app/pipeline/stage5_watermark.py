@@ -1014,10 +1014,22 @@ class WatermarkStage(BasePipelineStage):
                     obj = q.get(qt)
                     if not obj or not isinstance(obj, dict):
                         continue
-                    for field in ("question", "ques", "solution", "sol"):
+                    for field in ("question", "ques", "solution", "sol", "passage"):
                         val = str(obj.get(field, "") or "")
                         for match in img_src_re.finditer(val):
                             mapping[match.group(1)] = qid
+                    # Traverse passageQuestion sub-questions
+                    if qt == "passageQuestion":
+                        for sub_q in obj.get("questions", []):
+                            if not isinstance(sub_q, dict):
+                                continue
+                            for sub_key in ("scq", "mcq", "integerQuestion"):
+                                sub_obj = sub_q.get(sub_key)
+                                if isinstance(sub_obj, dict):
+                                    for field in ("question", "ques", "solution", "sol"):
+                                        val = str(sub_obj.get(field, "") or "")
+                                        for match in img_src_re.finditer(val):
+                                            mapping[match.group(1)] = qid
 
         return mapping
 
@@ -1088,12 +1100,26 @@ class WatermarkStage(BasePipelineStage):
                     obj = q.get(qt)
                     if not obj or not isinstance(obj, dict):
                         continue
-                    for field_key in ["question", "ques", "solution", "sol"]:
+                    for field_key in ["question", "ques", "solution", "sol", "passage"]:
                         val = str(obj.get(field_key, "") or "")
                         tags = _SMILES_TAG_RE.findall(val)
                         if tags:
                             total_smiles += len(tags)
                             found_smiles = True
+                    # Traverse passageQuestion sub-questions for SMILES
+                    if qt == "passageQuestion":
+                        for sub_q in obj.get("questions", []):
+                            if not isinstance(sub_q, dict):
+                                continue
+                            for sub_key in ("scq", "mcq", "integerQuestion"):
+                                sub_obj = sub_q.get(sub_key)
+                                if isinstance(sub_obj, dict):
+                                    for field_key in ["question", "ques", "solution", "sol"]:
+                                        val = str(sub_obj.get(field_key, "") or "")
+                                        tags = _SMILES_TAG_RE.findall(val)
+                                        if tags:
+                                            total_smiles += len(tags)
+                                            found_smiles = True
 
                 if found_smiles:
                     entries_with_smiles += 1
@@ -1164,21 +1190,34 @@ class WatermarkStage(BasePipelineStage):
                     obj = q.get(qt)
                     if not obj or not isinstance(obj, dict):
                         continue
-                    for field_key in ["question", "ques", "solution", "sol"]:
-                        val = obj.get(field_key)
-                        if not val or not isinstance(val, str):
-                            continue
-                        if "<smiles>" not in val.lower():
-                            continue
 
-                        new_val, sc, fc = replace_smiles_in_html(val)
-                        obj[field_key] = new_val
-                        entry_success += sc
-                        entry_fail += fc
-                        total_success += sc
-                        total_fail += fc
-                        if sc > 0 or fc > 0:
-                            entry_modified = True
+                    def _replace_smiles_in_fields(container, fields):
+                        nonlocal entry_success, entry_fail, total_success, total_fail, entry_modified
+                        for fk in fields:
+                            val = container.get(fk)
+                            if not val or not isinstance(val, str):
+                                continue
+                            if "<smiles>" not in val.lower():
+                                continue
+                            new_val, sc, fc = replace_smiles_in_html(val)
+                            container[fk] = new_val
+                            entry_success += sc
+                            entry_fail += fc
+                            total_success += sc
+                            total_fail += fc
+                            if sc > 0 or fc > 0:
+                                entry_modified = True
+
+                    _replace_smiles_in_fields(obj, ["question", "ques", "solution", "sol", "passage"])
+                    # Traverse passageQuestion sub-questions for SMILES
+                    if qt == "passageQuestion":
+                        for sub_q in obj.get("questions", []):
+                            if not isinstance(sub_q, dict):
+                                continue
+                            for sub_key in ("scq", "mcq", "integerQuestion"):
+                                sub_obj = sub_q.get(sub_key)
+                                if isinstance(sub_obj, dict):
+                                    _replace_smiles_in_fields(sub_obj, ["question", "ques", "solution", "sol"])
 
                 # If ALL SMILES tags failed (zero success, some failures),
                 # quarantine this question — it has unrenderable chemical structures

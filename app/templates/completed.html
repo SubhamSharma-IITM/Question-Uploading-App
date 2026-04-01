@@ -500,8 +500,14 @@ async function downloadAllStats() {
 
     try {
         const url = `/api/sessions/{{ session.id }}/stage10/download-stats-zip`;
-        const response = await fetch(url);
-        if (!response.ok) { appendLog('error', 'Stats ZIP not available'); btn.disabled = false; btn.textContent = 'Download All Stats (ZIP)'; return; }
+        let response = await fetch(url);
+        // Retry once after 3s if server returned non-OK (e.g., OOM restart in progress)
+        if (!response.ok) {
+            appendLog('warning', `Stats ZIP returned ${response.status} -- retrying in 3s...`);
+            await new Promise(r => setTimeout(r, 3000));
+            response = await fetch(url);
+        }
+        if (!response.ok) { appendLog('error', 'Stats ZIP not available (server may be restarting)'); btn.disabled = false; btn.textContent = 'Download All Stats (ZIP)'; return; }
 
         const blob = await response.blob();
         const a = document.createElement('a');

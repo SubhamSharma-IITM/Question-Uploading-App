@@ -575,6 +575,28 @@ class UploadStage(BasePipelineStage):
             self.log("warning", f"Global FAISS index not found at {index_path} — skipping")
             return 0
 
+        # Check available memory before loading ~940MB index into RAM
+        # On Render (2GB cgroup), this is the OOM trigger
+        try:
+            mem_limit_path = "/sys/fs/cgroup/memory.max"
+            mem_usage_path = "/sys/fs/cgroup/memory.current"
+            import os as _os
+            if _os.path.exists(mem_limit_path) and _os.path.exists(mem_usage_path):
+                limit = int(open(mem_limit_path).read().strip())
+                current = int(open(mem_usage_path).read().strip())
+                available_mb = (limit - current) / (1024 * 1024)
+                index_size_mb = index_path.stat().st_size / (1024 * 1024)
+                self.log("info", f"Memory: {available_mb:.0f}MB free, index: {index_size_mb:.0f}MB")
+                needed_mb = index_size_mb * 1.5 + 200  # 1.5x index + 200MB headroom
+                if available_mb < needed_mb:
+                    self.log("warning",
+                        f"Skipping FAISS absorption -- insufficient memory "
+                        f"({available_mb:.0f}MB free, need {needed_mb:.0f}MB = 1.5x index + headroom). "
+                        f"Index will be updated on next manual rebuild.")
+                    return 0
+        except Exception:
+            pass  # not on cgroup system, proceed normally
+
         self.log("info", "Loading global FAISS index for update...")
         index = faiss.read_index(str(index_path))
         with open(meta_path, "r", encoding="utf-8") as f:

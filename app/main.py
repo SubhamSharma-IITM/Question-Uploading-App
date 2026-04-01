@@ -37,6 +37,79 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _task_semaphore: Optional[asyncio.Semaphore] = None
 
 
+def _recover_orphan_sessions(sessions_dir: str) -> None:
+    """Scan session directories and re-register any that are missing from SQLite.
+
+    OOM crashes can destroy SQLite WAL records while session files survive on
+    persistent disk. This recovers those orphaned sessions on startup.
+    """
+    from app.db import get_session, create_session
+    import json as _json
+
+    sdir = Path(sessions_dir)
+    if not sdir.exists():
+        return
+
+    recovered = 0
+    for d in sorted(sdir.iterdir()):
+        if not d.is_dir():
+            continue
+        session_id = d.name
+        if get_session(session_id) is not None:
+            continue  # already in DB
+
+        # Orphan found -- reconstruct from disk files
+        config = None
+        name = session_id[:8]
+        config_path = d / "session_config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = _json.load(f)
+                name = config.get("pdf_filename", name)
+                if name.endswith(".pdf"):
+                    name = name[:-4]
+            except Exception:
+                pass
+
+        # Detect current stage from checkpoint files / directory structure
+        stage = "stage1_upload"
+        upload_logs_dir = d / "upload_logs"
+        if (upload_logs_dir / "combined_upload_log.csv").exists():
+            stage = "completed"
+        elif (d / "quality_check" / "vote_summary.json").exists():
+            stage = "stage10_upload"
+        elif (d / "quality_check" / "qa_config.json").exists():
+            stage = "stage9_quality"
+        elif (d / "duplicate_reports" / "cross_duplicates.json").exists():
+            stage = "stage8_duplicates"
+        elif any((d / "batch_files").glob("*.jsonl")) if (d / "batch_files").exists() else False:
+            stage = "stage7_latex_tag"
+        elif (d / "metadata_v2").exists() and any((d / "metadata_v2").glob("*.json")):
+            stage = "stage5_watermark"
+        elif any((d / "cleaned_output").glob("*.json")) if (d / "cleaned_output").exists() else False:
+            stage = "stage3_cleaning"
+        elif any((d / "mapped_output").glob("*_mapped.json")) if (d / "mapped_output").exists() else False:
+            stage = "stage2_mapping"
+
+        # Use directory mtime as creation time
+        import datetime
+        created_at = datetime.datetime.fromtimestamp(
+            d.stat().st_mtime, tz=datetime.timezone.utc
+        ).isoformat()
+
+        try:
+            create_session(session_id, name, created_at, config=config,
+                           initial_stage=stage, created_by="")
+            recovered += 1
+            _safe_print(f"[RECOVERY] Restored orphan session: {session_id} ({name}) at {stage}")
+        except Exception as e:
+            _safe_print(f"[RECOVERY] Failed to restore {session_id}: {e}")
+
+    if recovered:
+        _safe_print(f"[RECOVERY] Restored {recovered} orphan session(s)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: init DB, create dirs. Shutdown: cleanup."""
@@ -59,6 +132,10 @@ async def lifespan(app: FastAPI):
     # Ensure session directories exist
     Path(settings.sessions_dir).mkdir(parents=True, exist_ok=True)
     _safe_print(f"[OK] Sessions dir: {settings.sessions_dir}")
+
+    # Recover orphan sessions (directories on disk but not in SQLite)
+    # Prevents data loss from OOM crashes that kill SQLite WAL
+    _recover_orphan_sessions(settings.sessions_dir)
 
     # Concurrency limiter
     _task_semaphore = asyncio.Semaphore(settings.max_concurrent_tasks)
@@ -158,8 +235,9 @@ async def heartbeat(request: Request):
     if not phone:
         return JSONResponse(status_code=401, content={"success": False})
     body = await request.json()
-    from app.db import update_heartbeat
+    from app.db import update_heartbeat, update_user_last_active
     update_heartbeat(phone, body.get("session_id"), body.get("stage"))
+    update_user_last_active(phone)
     return {"success": True}
 
 
@@ -193,24 +271,21 @@ async def dashboard_stats(request: Request, days: int = 7):
     # Aggregate stats from checkpoint data (all-time truth)
     cp_stats = get_checkpoint_upload_stats()
 
-    # Session counts
-    all_sessions = list_sessions()
-    active_sessions = [s for s in all_sessions if s["current_stage"] != "completed"]
-    completed_sessions = [s for s in all_sessions if s["current_stage"] == "completed"]
+    # Session counts — PERSONAL (filtered by user)
+    from app.db import list_sessions_by_user
+    my_sessions_all = list_sessions_by_user(phone) if phone else []
+    my_active = [s for s in my_sessions_all if s["current_stage"] != "completed"]
+    my_completed = [s for s in my_sessions_all if s["current_stage"] == "completed"]
 
-    total_in_process = 0
-    for s in active_sessions:
+    my_in_process = 0
+    for s in my_active:
         st = get_session_stats(s["id"])
-        total_in_process += st.get("total", 0)
+        my_in_process += st.get("total", 0)
 
     # Last session for this user
-    my_sessions = sorted(
-        [s for s in all_sessions if s.get("created_by") == phone],
-        key=lambda s: s["created_at"], reverse=True,
-    )
     last_session = None
-    if my_sessions:
-        ls = my_sessions[0]
+    if my_sessions_all:
+        ls = my_sessions_all[0]  # already sorted by created_at DESC from DB
         last_session = {
             "name": ls["name"],
             "id": ls["id"],
@@ -223,9 +298,9 @@ async def dashboard_stats(request: Request, days: int = 7):
         "range": my_range,
         "range_days": days,
         "role": role,
-        "active_sessions": len(active_sessions),
-        "completed_sessions": len(completed_sessions),
-        "in_process": total_in_process,
+        "active_sessions": len(my_active),
+        "completed_sessions": len(my_completed),
+        "in_process": my_in_process,
         "last_session": last_session,
         "all_time": {
             "err1": cp_stats["total_err1"],
@@ -237,6 +312,7 @@ async def dashboard_stats(request: Request, days: int = 7):
     # Admin: team stats from upload_log (date-filtered)
     if role in ("Admin", "Architect"):
         all_users = list_users()
+        all_sessions = list_sessions()  # platform-wide needed for per-user breakdown
         # Per-user upload_log stats for selected range
         team_merged = []
         for u in all_users:
@@ -249,7 +325,7 @@ async def dashboard_stats(request: Request, days: int = 7):
                 "err2": max(u_yesterday_full["err2"] - u_today["err2"], 0),
             }
 
-            # Session counts
+            # Session counts per user
             user_sessions = [s for s in all_sessions if s.get("created_by") == p]
             user_active = [s for s in user_sessions if s["current_stage"] != "completed"]
             user_completed = [s for s in user_sessions if s["current_stage"] == "completed"]

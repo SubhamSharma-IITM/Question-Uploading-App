@@ -26,7 +26,25 @@ def _get_conn() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
+        _conn.execute("PRAGMA busy_timeout=5000")   # wait 5s on lock instead of failing
+        _conn.execute("PRAGMA synchronous=NORMAL")   # flush on checkpoint, not every commit (faster + WAL-safe)
+        _conn.execute("PRAGMA wal_autocheckpoint=50") # checkpoint every 50 pages (~200KB) to keep WAL small
     return _conn
+
+
+def force_wal_checkpoint() -> None:
+    """Force WAL checkpoint — flushes all WAL data to main DB file.
+
+    Call after critical writes (session create, stage advance, upload complete)
+    to ensure data survives OOM kills. On OOM, uncommitted WAL pages are lost
+    but checkpointed data is safe in the main .db file.
+    """
+    try:
+        with _lock:
+            conn = _get_conn()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass  # non-fatal, WAL will checkpoint eventually
 
 
 def init_db() -> None:
@@ -165,6 +183,7 @@ def create_session(session_id: str, name: str, created_at: str,
             (session_id, name, initial_stage, created_by, created_at, created_at, json.dumps(config) if config else None),
         )
         conn.commit()
+    force_wal_checkpoint()  # flush to survive OOM
 
 
 def get_session(session_id: str) -> Optional[Dict]:
@@ -208,6 +227,9 @@ def update_session(session_id: str, **kwargs) -> None:
         conn = _get_conn()
         conn.execute(f"UPDATE sessions SET {set_clause} WHERE id = ?", values)
         conn.commit()
+    # Checkpoint on stage advances (critical state change)
+    if "current_stage" in kwargs:
+        force_wal_checkpoint()
 
 
 def delete_session(session_id: str) -> None:
@@ -482,6 +504,16 @@ def update_user_login(phone: str) -> None:
     with _lock:
         conn = _get_conn()
         conn.execute("UPDATE users SET last_login = ? WHERE phone = ?",
+                      (now_iso(), phone))
+        conn.commit()
+
+
+def update_user_last_active(phone: str) -> None:
+    """Update last_active timestamp for a user (called on every heartbeat)."""
+    from app.utils import now_iso
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE users SET last_active = ? WHERE phone = ?",
                       (now_iso(), phone))
         conn.commit()
 

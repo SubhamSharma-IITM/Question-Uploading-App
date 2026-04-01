@@ -13,6 +13,12 @@ async function apiCall(method, url, body = null) {
         opts.body = JSON.stringify(body);
     }
     const resp = await fetch(url, opts);
+    // Guard against HTML error pages (502, OOM restart, proxy errors)
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+        const text = (await resp.text()).slice(0, 120);
+        return { success: false, error: { code: 'NON_JSON', message: `Server returned ${resp.status} (${text})` } };
+    }
     return resp.json();
 }
 

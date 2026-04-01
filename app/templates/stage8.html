@@ -349,7 +349,7 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         // Get full HTML content for rich preview (MathML renders properly)
         // For self-check: html_a/html_b; for cross-check: session_html + db flags
         const htmlA = dup.html_a || dup.session_html || '';
-        const htmlB = dup.html_b || (flags.question_html) || '';
+        const htmlB = dup.html_b || dup.db_html || (flags.question_html) || '';
         // Determine if this is a cross-check (has db_qid/db_oid)
         const isCrossCheck = !!dup.db_qid || !!dup.db_oid;
         const labelA = isCrossCheck ? 'Current Document' : 'Question A';
@@ -458,7 +458,7 @@ async function crossCheck() {
                         <div class="stat-box"><div class="stat-value">${d.session_questions}</div><div class="stat-label">Session Qs</div></div>
                         <div class="stat-box"><div class="stat-value">${d.db_questions?.toLocaleString() || 0}</div><div class="stat-label">DB Questions</div></div>
                         <div class="stat-box"><div class="stat-value">${d.pairs_checked?.toLocaleString() || 0}</div><div class="stat-label">Pairs Checked</div></div>
-                        <div class="stat-box"><div class="stat-value">${d.duplicates_found}</div><div class="stat-label">Cross-Dupes</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.duplicates_found}</div><div class="stat-label">Duplicate Pairs</div></div>
                     </div>
                 `;
                 crossHtml += '<div id="cross-results-pairs" style="margin-top: 12px;"></div>';
@@ -543,8 +543,8 @@ async function pollDuplicateProgress(btn) {
                 btn.textContent = 'Completed \u2713';
                 btn.dataset.done = 'true';
                 document.getElementById('skip-btn').disabled = true;
-                // Reload page to show results (self/cross data is in checkpoint)
-                window.location.reload();
+                // Load and render results inline (no page reload -- preserves state)
+                await loadResultsInline(data);
                 return;
             }
             if (status === 'failed') {
@@ -561,6 +561,67 @@ async function pollDuplicateProgress(btn) {
         }
     }
     setTimeout(poll, POLL_INTERVAL);
+}
+
+async function loadResultsInline(checkpointData) {
+    /* Fetch saved reports and render them inline — replaces window.location.reload().
+       Called after poll completion AND on checkpoint restore (DOMContentLoaded). */
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    // Load self-check report
+    try {
+        const selfR = await apiGet('/api/sessions/{{ session.id }}/stage8/report?report_type=self');
+        if (selfR.success && selfR.data && !selfR.data.error) {
+            const report = selfR.data;
+            const selfCount = report.duplicates_found || 0;
+            const selfQids = report.unique_qids_affected || 0;
+            document.getElementById('self-results-summary').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${report.total_questions || 0}</div><div class="stat-label">Questions</div></div>
+                    <div class="stat-box"><div class="stat-value">${report.pairs_checked || 0}</div><div class="stat-label">Pairs Checked</div></div>
+                    <div class="stat-box"><div class="stat-value">${selfCount}</div><div class="stat-label">Duplicate Pairs</div></div>
+                    <div class="stat-box"><div class="stat-value">${selfQids}</div><div class="stat-label">QIDs Affected</div></div>
+                </div>`;
+            const selfDupes = report.duplicates || [];
+            _selfDuplicates = selfDupes;
+            if (selfDupes.length > 0) {
+                renderDuplicatePairs(selfDupes, 'self-results-table', false);
+            } else {
+                document.getElementById('self-results-table').innerHTML =
+                    '<div class="alert alert-info">No self-duplicates found.</div>';
+            }
+        }
+    } catch (e) { appendLog('warning', 'Could not load self-check report: ' + e.message); }
+
+    // Load cross-check report
+    try {
+        const crossR = await apiGet('/api/sessions/{{ session.id }}/stage8/report?report_type=cross');
+        if (crossR.success && crossR.data && !crossR.data.error) {
+            const report = crossR.data;
+            const crossDupes = report.duplicates || [];
+            let crossHtml = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${report.session_questions || 0}</div><div class="stat-label">Session Qs</div></div>
+                    <div class="stat-box"><div class="stat-value">${(report.db_questions || 0).toLocaleString()}</div><div class="stat-label">DB Questions</div></div>
+                    <div class="stat-box"><div class="stat-value">${report.duplicates_found || 0}</div><div class="stat-label">Duplicate Pairs</div></div>
+                    <div class="stat-box"><div class="stat-value">${report.unique_qids_affected || 0}</div><div class="stat-label">QIDs Affected</div></div>
+                </div>
+                <div id="cross-results-pairs" style="margin-top: 12px;"></div>`;
+            document.getElementById('cross-results-content').innerHTML = crossHtml;
+            if (crossDupes.length > 0) {
+                renderDuplicatePairs(crossDupes, 'cross-results-pairs', false);
+            }
+        }
+    } catch (e) { appendLog('warning', 'Could not load cross-check report: ' + e.message); }
+
+    // Show quarantine card if ANY duplicates found (self or cross)
+    const hasAnyDupes = document.querySelectorAll('.dup-checkbox').length > 0;
+    if (hasAnyDupes) {
+        document.getElementById('quarantine-card').style.display = 'block';
+        document.getElementById('quarantine-content').innerHTML =
+            '<div style="font-size: 12px; color: var(--text-muted);">Select duplicate QIDs above (checkboxes) then click "Quarantine Selected". Protected DB entries (PYQ, Positive/Negative Pick, Solved Example) are auto-selected and cannot be unchecked.</div>';
+    }
 }
 
 function updateQuarantineCount() {
@@ -681,6 +742,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const el = document.getElementById(id);
             if (el) el.disabled = true;
         });
+        // Enable advance button
+        { const _ab = document.getElementById('advance-btn'); if (_ab) _ab.disabled = false; }
         if (d.skipped) {
             document.getElementById('skip-btn').textContent = 'Skipped \u2713';
             const card = document.getElementById('results-card');
@@ -689,18 +752,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 '<div class="alert alert-info">Duplicate checking was skipped.</div>';
         } else {
             document.getElementById('run-all-btn').textContent = 'Completed \u2713';
-            // Show results card with summary from checkpoint
-            const card = document.getElementById('results-card');
-            card.style.display = 'block';
-            let summaryHtml = '<div class="stat-grid">';
-            if (d.self_duplicates !== undefined) {
-                summaryHtml += `<div class="stat-box"><div class="stat-value">${d.self_duplicates}</div><div class="stat-label">Self-Duplicates</div></div>`;
-            }
-            if (d.cross_duplicates !== undefined) {
-                summaryHtml += `<div class="stat-box"><div class="stat-value">${d.cross_duplicates}</div><div class="stat-label">Cross-Duplicates</div></div>`;
-            }
-            summaryHtml += '</div>';
-            document.getElementById('self-results-summary').innerHTML = summaryHtml;
+            // Load full reports and render pairs + quarantine card
+            await loadResultsInline(d);
         }
     }
 });
@@ -733,7 +786,7 @@ async function loadFullReport(reportType) {
                     let html = `<div class="stat-grid" style="margin-bottom: 12px;">
                         <div class="stat-box"><div class="stat-value">${report.session_questions || 0}</div><div class="stat-label">Session Qs</div></div>
                         <div class="stat-box"><div class="stat-value">${(report.db_questions || 0).toLocaleString()}</div><div class="stat-label">DB Questions</div></div>
-                        <div class="stat-box"><div class="stat-value">${report.duplicates_found || 0}</div><div class="stat-label">Cross-Dupes</div></div>
+                        <div class="stat-box"><div class="stat-value">${report.duplicates_found || 0}</div><div class="stat-label">Duplicate Pairs</div></div>
                     </div>`;
                     document.getElementById('cross-results-content').innerHTML = html;
                     // Build a container for the duplicate pairs list
@@ -741,13 +794,17 @@ async function loadFullReport(reportType) {
                     pairsDiv.id = 'cross-results-pairs';
                     document.getElementById('cross-results-content').appendChild(pairsDiv);
                     renderDuplicatePairs(dupes, 'cross-results-pairs', true);
+                    // Show quarantine card when rendering cross-check pairs
+                    document.getElementById('quarantine-card').style.display = 'block';
+                    document.getElementById('quarantine-content').innerHTML =
+                        '<div style="font-size: 12px; color: var(--text-muted);">Select duplicate QIDs above (checkboxes) then click "Quarantine Selected". Protected DB entries (PYQ, Positive/Negative Pick, Solved Example) are auto-selected and cannot be unchecked.</div>';
                 } else {
                     document.getElementById('cross-results-content').innerHTML =
                         '<div class="alert alert-info">No cross-DB duplicates in report.</div>';
                 }
             }
         } else {
-            appendLog('warning', r.data?.error || 'No report available — run the check first');
+            appendLog('warning', r.data?.error || 'No report available -- run the check first');
         }
     } catch (e) {
         appendLog('error', 'Report error: ' + e.message);

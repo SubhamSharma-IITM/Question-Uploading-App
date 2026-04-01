@@ -42,14 +42,7 @@
                             -->
                         </select>
                     </div>
-                    <div class="form-group" style="max-width: 140px;">
-                        <label>Difficulty</label>
-                        <select id="difficulty" class="form-select">
-                            <option value="EASY">Easy</option>
-                            <option value="MEDIUM" selected>Medium</option>
-                            <option value="HARD">Hard</option>
-                        </select>
-                    </div>
+                    <!-- Difficulty is now auto-classified per-question by Stage 2 LLM -->
                     <button class="btn btn-primary" onclick="convertMetadata()" id="convert-btn">
                         Convert to Metadata V2
                     </button>
@@ -172,15 +165,13 @@ async function convertMetadata() {
     const source = document.getElementById('source-name').value;
     const code = document.getElementById('test-code').value;
     const taggedBy = document.getElementById('tagged-by').value;
-    const difficulty = document.getElementById('difficulty').value;
     btn.disabled = true;
     btn.textContent = 'Converting...';
-    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ', difficulty: ' + difficulty + ')...');
+    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ', difficulty: per-question by LLM)...');
 
     let url = '/api/sessions/{{ session.id }}/stage4/convert?source=' +
         encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
-        '&tagged_by=' + encodeURIComponent(taggedBy) +
-        '&difficulty=' + encodeURIComponent(difficulty);
+        '&tagged_by=' + encodeURIComponent(taggedBy);
 
     // Auto-inject PYQ params from Stage 2 session config (no manual selection needed here)
     if (window._sessionConfig && window._sessionConfig.is_pyq) {

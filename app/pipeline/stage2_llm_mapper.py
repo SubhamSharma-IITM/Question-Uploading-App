@@ -345,6 +345,13 @@ EOF DETECTION:
 - Do NOT try to re-extract questions from earlier in the document. If the start line is past the questions section, return EOF.
 - Only return EOF if you are CERTAIN no new questions remain. Do not return EOF if you simply cannot find {batch_size} questions — return whatever new questions you find.
 
+DIFFICULTY CLASSIFICATION:
+Assign a difficulty level to each question based on these JEE/NEET criteria:
+- "EASY": Direct formula application, single-concept, NCERT-level, definition-based, 1-step solution
+- "MEDIUM": Multi-concept, 2-3 step reasoning, moderate calculation, standard exam level
+- "HARD": Multi-step derivation, tricky/non-standard approach, integration of 3+ concepts, competition-level, lengthy calculation
+For passage sub-questions, classify each sub-question independently.
+
 OUTPUT FORMAT (JSON):
 - If questions found, return JSON array:
 [
@@ -352,10 +359,39 @@ OUTPUT FORMAT (JSON):
         "subject": "Physics",
         "type": "scq",
         "answer_key": "B",
+        "level": "MEDIUM",
         "question": {{"start": 45, "end": 52}},
         "solution": {{"start": 530, "end": 545}}
     }}
 ]
+
+- For PASSAGE / COMPREHENSION questions (type="passageQuestion"):
+  Return ONE entry per passage group. The passage stem and its sub-questions are bundled together.
+  Each sub-question can be "scq", "mcq", or "integerQuestion".
+  Do NOT return the passage stem or sub-questions as separate top-level entries.
+  {{
+      "subject": "Physics",
+      "type": "passageQuestion",
+      "passage": {{"start": 100, "end": 110}},
+      "sub_questions": [
+          {{
+              "type": "integerQuestion",
+              "answer_key": "42",
+              "level": "HARD",
+              "question": {{"start": 111, "end": 115}},
+              "solution": {{"start": 600, "end": 610}}
+          }},
+          {{
+              "type": "scq",
+              "answer_key": "B",
+              "level": "MEDIUM",
+              "question": {{"start": 116, "end": 120}},
+              "solution": {{"start": 611, "end": 620}}
+          }}
+      ]
+  }}
+  NOTE: "passage" holds the shared text/stem line range. Each sub_question has its own question/solution ranges and type.
+  The passage entry counts as 1 + len(sub_questions) towards the batch count.
 
 - If NO questions remain (end of document), return:
 {{"eof": true, "last_content_line": 1234}}
@@ -690,16 +726,175 @@ def _process_item(
     processed_uids.add(uid)
     accepted_ranges.append((q_start, q_end))
 
+    # Normalize difficulty
+    level = (item.get("level") or "MEDIUM").upper()
+    if level not in ("EASY", "MEDIUM", "HARD"):
+        level = "MEDIUM"
+
     return {
         "subject": subject,
         "questionType": item.get("type", "scq"),
         "answer_key": answer_key,
+        "level": level,
         "question_content": q_content,
         "solution_content": s_content,
         "line_start": q_start,
         "line_end": q_end,
         "sol_line_start": s_start if s_content else None,
         "sol_line_end": s_end if s_content else None,
+    }
+
+
+def _process_passage_item(
+    item: Dict,
+    raw_lines: List[str],
+    processed_uids: set,
+    accepted_ranges: List[Tuple[int, int]],
+    cursor_line: int,
+) -> Optional[Dict]:
+    """Process a passageQuestion LLM item into nested output format.
+
+    Expected LLM output for passages:
+    {
+        "type": "passageQuestion",
+        "subject": "Physics",
+        "passage": {"start": 100, "end": 110},
+        "sub_questions": [
+            {"type": "integerQuestion", "answer_key": "42",
+             "question": {"start": 111, "end": 115},
+             "solution": {"start": 600, "end": 610}},
+            ...
+        ]
+    }
+
+    Produces:
+    {
+        "questionType": "passageQuestion",
+        "passage_content": "...",
+        "sub_questions": [
+            {"questionType": "integerQuestion", "question_content": "...",
+             "solution_content": "...", "answer_key": "42",
+             "line_start": 111, "line_end": 115, ...}
+        ],
+        "line_start": ..., "line_end": ...
+    }
+    """
+    p_range = item.get("passage", {})
+    p_start = p_range.get("start")
+    p_end = p_range.get("end")
+    if p_start is None or p_end is None:
+        return None
+
+    p_start = int(p_start) if isinstance(p_start, (int, float, str)) else 0
+    p_end = int(p_end) if isinstance(p_end, (int, float, str)) else 0
+    p_start = max(0, p_start)
+    p_end = min(p_end, len(raw_lines) - 1)
+
+    # Dedup by passage start line
+    uid = f"PL{p_start}"
+    if uid in processed_uids:
+        return None
+
+    # Backward sanity
+    if p_start < cursor_line - SAFETY_OVERLAP_LINES - 10:
+        return None
+
+    # Slice passage stem content
+    passage_content = _slice_content(raw_lines, p_start, p_end)
+    if not passage_content or len(passage_content.strip()) < 10:
+        return None
+
+    # Process sub-questions
+    sub_questions_raw = item.get("sub_questions", [])
+    if not sub_questions_raw or not isinstance(sub_questions_raw, list):
+        return None  # passage with no sub-questions is useless
+
+    sub_questions = []
+    overall_end = p_end
+
+    for sq in sub_questions_raw:
+        sq_range = sq.get("question", {})
+        sq_start = sq_range.get("start")
+        sq_end = sq_range.get("end")
+        if sq_start is None or sq_end is None:
+            continue
+
+        sq_start = int(sq_start) if isinstance(sq_start, (int, float, str)) else 0
+        sq_end = int(sq_end) if isinstance(sq_end, (int, float, str)) else 0
+        sq_start = max(0, sq_start)
+        sq_end = min(sq_end, len(raw_lines) - 1)
+
+        q_content = _slice_content(raw_lines, sq_start, sq_end)
+        if not q_content or _is_garbage(q_content):
+            continue
+
+        # Sub-question solution
+        ss_range = sq.get("solution") or {}
+        s_content = None
+        ss_start = ss_range.get("start")
+        ss_end = ss_range.get("end")
+        if ss_start is not None and ss_end is not None:
+            ss_start = int(ss_start) if isinstance(ss_start, (int, float, str)) else None
+            ss_end = int(ss_end) if isinstance(ss_end, (int, float, str)) else None
+            if ss_start is not None and ss_end is not None:
+                s_content = _slice_content(raw_lines, ss_start, ss_end)
+                if ss_end > overall_end:
+                    overall_end = ss_end
+
+        # Sub-question type (must be scq/mcq/integerQuestion)
+        sq_type = sq.get("type", "integerQuestion")
+        if sq_type not in ("scq", "mcq", "integerQuestion"):
+            sq_type = "integerQuestion"
+
+        # Normalize answer
+        answer_key = sq.get("answer_key")
+        if answer_key is not None:
+            answer_key = str(answer_key).strip() or None
+
+        # Sub-question difficulty
+        sq_level = (sq.get("level") or "MEDIUM").upper()
+        if sq_level not in ("EASY", "MEDIUM", "HARD"):
+            sq_level = "MEDIUM"
+
+        sub_questions.append({
+            "questionType": sq_type,
+            "question_content": q_content,
+            "solution_content": s_content,
+            "answer_key": answer_key,
+            "level": sq_level,
+            "line_start": sq_start,
+            "line_end": sq_end,
+            "sol_line_start": ss_start if s_content else None,
+            "sol_line_end": ss_end if s_content else None,
+        })
+
+        if sq_end > overall_end:
+            overall_end = sq_end
+
+    if not sub_questions:
+        return None  # no valid sub-questions parsed
+
+    # Normalize subject
+    subject = _normalize_subject(item.get("subject"))
+    if subject is None:
+        return None
+
+    processed_uids.add(uid)
+    # Register the full passage range (passage stem through last sub-question)
+    accepted_ranges.append((p_start, overall_end))
+
+    return {
+        "subject": subject,
+        "questionType": "passageQuestion",
+        "passage_content": passage_content,
+        "sub_questions": sub_questions,
+        "answer_key": None,  # passage itself has no single answer
+        "question_content": None,  # passage uses passage_content instead
+        "solution_content": None,
+        "line_start": p_start,
+        "line_end": overall_end,
+        "sol_line_start": None,
+        "sol_line_end": None,
     }
 
 
@@ -998,7 +1193,8 @@ class LLMMapperStage(BasePipelineStage):
                     for q in partial_data:
                         subj = q.get("subject")
                         if subj and subj in by_subject:
-                            uid = f"L{q.get('line_start', 0)}"
+                            prefix = "PL" if q.get("questionType") == "passageQuestion" else "L"
+                            uid = f"{prefix}{q.get('line_start', 0)}"
                             processed_uids.add(uid)
                             by_subject[subj][uid] = q
                             ls = q.get("line_start")
@@ -1116,19 +1312,28 @@ class LLMMapperStage(BasePipelineStage):
             highest_end_line = cursor_line
             new_count = 0
 
-            # Sort by question start line
-            batch_data.sort(key=lambda x: (x.get("question") or {}).get("start", 999999))
+            # Sort by question/passage start line
+            def _sort_key(x):
+                if x.get("type") == "passageQuestion" and "passage" in x:
+                    return (x.get("passage") or {}).get("start", 999999)
+                return (x.get("question") or {}).get("start", 999999)
+            batch_data.sort(key=_sort_key)
 
             for item in batch_data:
                 if total_extracted + new_count >= max_q:
                     break
 
-                result = _process_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
+                # Route passageQuestion items to the nested handler
+                if item.get("type") == "passageQuestion" and "passage" in item:
+                    result = _process_passage_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
+                else:
+                    result = _process_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
                 if result is None:
                     continue
 
                 subject = result["subject"]
-                temp_qid = f"TEMP_L{result['line_start']}"
+                prefix = "PL" if result.get("questionType") == "passageQuestion" else "L"
+                temp_qid = f"TEMP_{prefix}{result['line_start']}"
                 result["qid"] = temp_qid
                 result["source"] = test_code
 
@@ -1255,12 +1460,29 @@ class LLMMapperStage(BasePipelineStage):
 
         # ── Summary stats ──────────────────────────────────────────────────
         total = len(all_questions)
-        triplets = sum(
-            1 for q in all_questions
-            if q.get("question_content") and q.get("answer_key") and q.get("solution_content")
-        )
-        with_answer = sum(1 for q in all_questions if q.get("answer_key"))
-        with_solution = sum(1 for q in all_questions if q.get("solution_content"))
+
+        def _is_triplet(q):
+            if q.get("questionType") == "passageQuestion":
+                subs = q.get("sub_questions", [])
+                return len(subs) > 0 and all(
+                    sq.get("question_content") and sq.get("answer_key") and sq.get("solution_content")
+                    for sq in subs
+                )
+            return q.get("question_content") and q.get("answer_key") and q.get("solution_content")
+
+        def _has_answer(q):
+            if q.get("questionType") == "passageQuestion":
+                return any(sq.get("answer_key") for sq in q.get("sub_questions", []))
+            return bool(q.get("answer_key"))
+
+        def _has_solution(q):
+            if q.get("questionType") == "passageQuestion":
+                return any(sq.get("solution_content") for sq in q.get("sub_questions", []))
+            return bool(q.get("solution_content"))
+
+        triplets = sum(1 for q in all_questions if _is_triplet(q))
+        with_answer = sum(1 for q in all_questions if _has_answer(q))
+        with_solution = sum(1 for q in all_questions if _has_solution(q))
 
         by_subj_counts = {}
         for q in all_questions:

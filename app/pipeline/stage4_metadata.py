@@ -196,7 +196,7 @@ def _detect_question_type(entry: Dict) -> str:
     """Detect question type from entry data."""
     # If explicitly set by LLM mapper
     qt = entry.get("questionType", "")
-    if qt in ("scq", "mcq", "integerQuestion"):
+    if qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
         return qt
 
     # Legacy format detection
@@ -266,7 +266,6 @@ def _build_metadata_v2(
     source_name: str,
     test_code: str,
     tagged_by: str = "AITAI",
-    difficulty: str = "MEDIUM",
     is_pyq: bool = False,
     prev_exam: Optional[str] = None,
     pyq_year: Optional[int] = None,
@@ -297,8 +296,50 @@ def _build_metadata_v2(
     if not qid or qid.startswith("TEMP_"):
         qid = f"{prefix}_{test_short}_Q{qnum}"
 
-    question_html = _build_question_html(entry)
-    solution_html = _build_solution_html(entry)
+    # Build the active question type container
+    if qtype == "passageQuestion":
+        # Build nested passage structure matching Stage 6's expected schema
+        passage_raw = entry.get("passage_content", "")
+        if passage_raw:
+            passage_raw, _ = _replace_md_images_with_img(passage_raw)
+        passage_html = _wrap_h3(passage_raw)
+
+        sub_questions_out = []
+        for sq in entry.get("sub_questions", []):
+            sq_type = sq.get("questionType", "integerQuestion")
+            sq_answer = _normalize_answer(
+                sq.get("answer_key", sq.get("answer", "")),
+                sq_type,
+            )
+            sq_question_html = _build_question_html(sq)
+            sq_solution_html = _build_solution_html(sq)
+            sub_questions_out.append({
+                sq_type: {
+                    "question": sq_question_html,
+                    "solution": sq_solution_html,
+                    "answer": sq_answer,
+                    "quesImages": [],
+                    "solutionImages": [],
+                }
+            })
+
+        active_container = {
+            "passage": passage_html,
+            "solution": "<h3></h3>",  # overall solution (usually empty for JEE)
+            "questions": sub_questions_out,
+        }
+        # No single answer for passage — answers are per sub-question
+        answer = ""
+    else:
+        question_html = _build_question_html(entry)
+        solution_html = _build_solution_html(entry)
+        active_container = {
+            "question": question_html,
+            "solution": solution_html,
+            "answer": answer,
+            "quesImages": [],
+            "solutionImages": [],
+        }
 
     # Determine isNEET from taggedBy
     is_neet = tagged_by in ("NIT", "NITAI", "NITRAI")
@@ -319,18 +360,12 @@ def _build_metadata_v2(
         "chapter": "TBD",
         "concept": "TBD",
         "subConcept": "TBD",
-        qtype: {
-            "question": question_html,
-            "solution": solution_html,
-            "answer": answer,
-            "quesImages": [],
-            "solutionImages": [],
-        },
+        qtype: active_container,
         # Empty type slots
         **{t: {} for t in ("scq", "mcq", "integerQuestion", "matchQuestion",
                            "subjective", "passageQuestion") if t != qtype},
         "class": 12,
-        "level": difficulty,
+        "level": entry.get("level", "MEDIUM").upper(),
         "addedByAi": True,
         "taggedBy": tagged_by,
         "tagSubConcept": [],
@@ -409,7 +444,6 @@ class MetadataMapperStage(BasePipelineStage):
         source_name = kwargs.get("source", "")
         test_code = kwargs.get("test_code", "") or self._get_default_test_code()
         tagged_by = kwargs.get("tagged_by", "AITAI")
-        difficulty = kwargs.get("difficulty", "MEDIUM")
         is_pyq = kwargs.get("is_pyq", False)
         prev_exam = kwargs.get("prev_exam", None)
         pyq_year_from = kwargs.get("pyq_year_from", None)
@@ -449,7 +483,6 @@ class MetadataMapperStage(BasePipelineStage):
                 meta = _build_metadata_v2(
                     entry, source_name, test_code,
                     tagged_by=tagged_by,
-                    difficulty=difficulty,
                     is_pyq=is_pyq,
                     prev_exam=prev_exam,
                     pyq_year=pyq_year,
@@ -460,22 +493,28 @@ class MetadataMapperStage(BasePipelineStage):
                 # Log entry summary
                 qid = meta["qid"]
                 qtype = meta["questionType"]
-                has_q = bool(meta[qtype].get("question", "").replace("<h3></h3>", ""))
-                has_a = bool(meta[qtype].get("answer", ""))
-                has_s = bool(meta[qtype].get("solution", "").replace("<h3></h3>", ""))
+                container = meta.get(qtype, {})
 
-                status = []
-                if has_q:
-                    status.append("Q")
-                if has_a:
-                    status.append("A")
-                if has_s:
-                    status.append("S")
-
-                self.log("info",
-                    f"  {qid}: {'+'.join(status)} | {qtype} | "
-                    f"ans={meta[qtype].get('answer', '?')}"
-                )
+                if qtype == "passageQuestion":
+                    n_subs = len(container.get("questions", []))
+                    has_p = bool(container.get("passage", "").replace("<h3></h3>", ""))
+                    status = [f"P({'Y' if has_p else 'N'})", f"{n_subs}sub"]
+                    self.log("info", f"  {qid}: {'+'.join(status)} | {qtype}")
+                else:
+                    has_q = bool(container.get("question", "").replace("<h3></h3>", ""))
+                    has_a = bool(container.get("answer", ""))
+                    has_s = bool(container.get("solution", "").replace("<h3></h3>", ""))
+                    status = []
+                    if has_q:
+                        status.append("Q")
+                    if has_a:
+                        status.append("A")
+                    if has_s:
+                        status.append("S")
+                    self.log("info",
+                        f"  {qid}: {'+'.join(status)} | {qtype} | "
+                        f"ans={container.get('answer', '?')}"
+                    )
 
             # Save metadata_v2 file
             # Derive output name from input filename
@@ -496,38 +535,72 @@ class MetadataMapperStage(BasePipelineStage):
 
         # Update question tracking
         from app.db import upsert_question
+
+        def _meta_has_answer(m):
+            qtype = m["questionType"]
+            if qtype == "passageQuestion":
+                subs = m.get(qtype, {}).get("questions", [])
+                return any(sq.get(list(sq.keys())[0], {}).get("answer", "") for sq in subs if sq)
+            return bool(m.get(qtype, {}).get("answer", ""))
+
+        def _meta_has_solution(m):
+            qtype = m["questionType"]
+            if qtype == "passageQuestion":
+                subs = m.get(qtype, {}).get("questions", [])
+                return any(
+                    sq.get(list(sq.keys())[0], {}).get("solution", "").replace("<h3></h3>", "")
+                    for sq in subs if sq
+                )
+            return bool(m.get(qtype, {}).get("solution", "").replace("<h3></h3>", ""))
+
+        def _meta_is_triplet(m):
+            qtype = m["questionType"]
+            if qtype == "passageQuestion":
+                pq = m.get(qtype, {})
+                has_p = bool(pq.get("passage", "").replace("<h3></h3>", ""))
+                subs = pq.get("questions", [])
+                if not has_p or not subs:
+                    return False
+                for sq in subs:
+                    if not sq:
+                        return False
+                    sq_type = list(sq.keys())[0]
+                    sq_data = sq[sq_type]
+                    if not (sq_data.get("question", "").replace("<h3></h3>", "")
+                            and sq_data.get("answer", "")):
+                        return False
+                return True
+            qdata = m.get(qtype, {})
+            return (bool(qdata.get("question", "").replace("<h3></h3>", ""))
+                    and bool(qdata.get("answer", ""))
+                    and bool(qdata.get("solution", "").replace("<h3></h3>", "")))
+
         for meta in all_metadata:
-            qtype = meta["questionType"]
             upsert_question(
                 self.session_id, meta["qid"],
                 subject=meta["subject"],
-                question_type=qtype,
+                question_type=meta["questionType"],
                 current_stage="stage4_metadata",
-                has_answer=bool(meta[qtype].get("answer", "")),
-                has_solution=bool(meta[qtype].get("solution", "").replace("<h3></h3>", "")),
+                has_answer=_meta_has_answer(meta),
+                has_solution=_meta_has_solution(meta),
             )
 
-        triplets = sum(
-            1 for m in all_metadata
-            if m[m["questionType"]].get("question", "").replace("<h3></h3>", "")
-            and m[m["questionType"]].get("answer", "")
-            and m[m["questionType"]].get("solution", "").replace("<h3></h3>", "")
-        )
+        triplets = sum(1 for m in all_metadata if _meta_is_triplet(m))
 
         # Quarantine non-triplets (missing Q, A, or S)
         from app.db import quarantine_question
         non_triplet_qids = []
         for m in all_metadata:
-            qtype = m["questionType"]
-            qdata = m.get(qtype, {})
-            has_q = bool(qdata.get("question", "").replace("<h3></h3>", ""))
-            has_a = bool(qdata.get("answer", ""))
-            has_s = bool(qdata.get("solution", "").replace("<h3></h3>", ""))
-            if not (has_q and has_a and has_s):
-                missing = []
-                if not has_q: missing.append("question")
-                if not has_a: missing.append("answer")
-                if not has_s: missing.append("solution")
+            if not _meta_is_triplet(m):
+                qtype = m["questionType"]
+                if qtype == "passageQuestion":
+                    missing = ["sub-question completeness"]
+                else:
+                    qdata = m.get(qtype, {})
+                    missing = []
+                    if not qdata.get("question", "").replace("<h3></h3>", ""): missing.append("question")
+                    if not qdata.get("answer", ""): missing.append("answer")
+                    if not qdata.get("solution", "").replace("<h3></h3>", ""): missing.append("solution")
                 non_triplet_qids.append(m["qid"])
                 quarantine_question(
                     self.session_id, m["qid"], "stage4_metadata",
