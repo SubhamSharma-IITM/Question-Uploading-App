@@ -38,6 +38,28 @@ WHITESPACE_RE = re.compile(r'\s+')
 IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 
 
+def _safe_truncate_html(html: str, max_len: int = 3000) -> str:
+    """Truncate HTML without cutting inside tags or MathML blocks.
+
+    Finds the last complete tag boundary before max_len.
+    Prevents 'math input error' from broken <math>...</math> blocks.
+    """
+    if not html or len(html) <= max_len:
+        return html
+    # Find the last '>' before or at max_len
+    cut = html.rfind('>', 0, max_len)
+    if cut == -1:
+        return html[:max_len]
+    truncated = html[:cut + 1]
+    # If we cut inside a <math> block, find the last complete </math> before cut
+    open_math = truncated.rfind('<math')
+    close_math = truncated.rfind('</math>')
+    if open_math > close_math:
+        # Unclosed <math> — cut before it
+        truncated = truncated[:open_math]
+    return truncated
+
+
 # ── Text helpers ─────────────────────────────────────────────────────────
 
 def _mathml_to_latex_text(html_text: str) -> str:
@@ -321,7 +343,7 @@ class DuplicateCheckStage(BasePipelineStage):
                                     q_html = obj.get("passage", "")
                                 if q_html:
                                     break
-                        flags["question_html"] = q_html[:2000] if q_html else ""
+                        flags["question_html"] = q_html if q_html else ""
                         flags_map[matched_key] = flags
                         remaining.discard(matched_key)
         except Exception:
@@ -517,7 +539,7 @@ class DuplicateCheckStage(BasePipelineStage):
                         if not q_html and qt == "passageQuestion":
                             q_html = obj.get("passage", "")
                         if q_html:
-                            html_map[qid] = q_html[:2000]
+                            html_map[qid] = q_html
                             break
         self.log("info", f"Extracted {len(texts)} question texts ({len(questions) - len(texts)} skipped)")
 
@@ -730,7 +752,7 @@ class DuplicateCheckStage(BasePipelineStage):
                         if not q_html and qt == "passageQuestion":
                             q_html = obj.get("passage", "")
                         if q_html:
-                            sess_html_map[qid] = q_html[:2000]
+                            sess_html_map[qid] = q_html
                             break
 
         # Try to reuse session embeddings from self-check (avoids double API cost)
