@@ -823,21 +823,27 @@ function renderTeamPanel(teamData, heartbeats) {
 
         // UTC -> IST 12h AM/PM format
         function fmtIST(utcStr) {
-            if (!utcStr) return '';
+            if (!utcStr || utcStr.length < 10) return '';
             try {
                 const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
+                if (isNaN(d.getTime())) return '';
                 return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
-            } catch(e) { return utcStr.slice(0, 16).replace('T', ' '); }
+            } catch(e) { return ''; }
         }
 
-        let activityCls = 'offline', activityText = 'Not logged in';
+        let activityCls = 'offline', activityText = 'Never logged in';
         if (hb && hb.last_ping) {
-            const diffMin = (Date.now() - new Date(hb.last_ping).getTime()) / 60000;
+            const pingTime = new Date(hb.last_ping.endsWith('Z') ? hb.last_ping : hb.last_ping + 'Z');
+            const diffMin = isNaN(pingTime.getTime()) ? 9999 : (Date.now() - pingTime.getTime()) / 60000;
             if (diffMin < 10) { activityCls = 'online'; activityText = 'Active now'; }
             else if (diffMin < 30) { activityCls = 'away'; activityText = Math.round(diffMin) + 'm ago'; }
-            else { activityText = member.last_login ? 'Last: ' + fmtIST(member.last_login) : 'Offline'; }
+            else {
+                const lastFmt = fmtIST(member.last_login);
+                activityText = lastFmt ? 'Last: ' + lastFmt : 'Offline';
+            }
         } else if (member.last_login) {
-            activityText = 'Last: ' + fmtIST(member.last_login);
+            const lastFmt = fmtIST(member.last_login);
+            activityText = lastFmt ? 'Last: ' + lastFmt : 'Offline';
         }
 
         const roleBadge = '<span style="font-size:10px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +

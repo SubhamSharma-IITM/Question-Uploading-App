@@ -4,7 +4,7 @@
 {% block content %}
 <div class="stage-header">
     <h1>5. Watermark Removal</h1>
-    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+    <button class="btn btn-primary" onclick="advanceWithAutoQuarantine('{{ session.id }}')" id="advance-btn" disabled>
         Advance to Stage 6
     </button>
 </div>
@@ -614,11 +614,47 @@ async function renderSmiles() {
 // ── Advance gate ──
 
 function checkAdvanceGate() {
-    // Advance only when: watermark done + quarantine done + SMILES done (or not needed)
-    if (_watermarkDone && _quarantineDone && (_smilesDone || !_smilesNeeded)) {
+    // Advance when: watermark done + SMILES done (or not needed)
+    // Quarantine is optional — auto-triggered on advance if skipped (like Stage 8)
+    if (_watermarkDone && (_smilesDone || !_smilesNeeded)) {
         document.getElementById('advance-btn').disabled = false;
-        appendLog('info', 'All steps complete -- ready to advance to Stage 6');
+        if (_quarantineDone) {
+            appendLog('info', 'All steps complete -- ready to advance to Stage 6');
+        } else {
+            appendLog('info', 'Ready to advance -- unreviewed images will be auto-confirmed on advance');
+        }
     }
+}
+
+async function advanceWithAutoQuarantine(sessionId) {
+    // If quarantine wasn't done, auto-trigger it (same as Stage 8 pattern)
+    if (!_quarantineDone && _watermarkDone) {
+        const unchecked = document.querySelectorAll('.wm-checkbox:not(:checked)');
+        if (unchecked.length > 0) {
+            // Has unselected images — ask user like Stage 8 does
+            const qids = [];
+            unchecked.forEach(cb => { if (cb.dataset.qid) qids.push(cb.dataset.qid); });
+            if (qids.length > 0 && !confirm(`${qids.length} image(s) unselected will be quarantined. Proceed?`)) {
+                return;
+            }
+        }
+        // Auto-confirm review (quarantine unselected + mark done)
+        appendLog('info', 'Auto-confirming image review before advancing...');
+        try {
+            await removeUnselected();
+        } catch (e) {
+            appendLog('warning', 'Auto-quarantine error: ' + e.message);
+        }
+        // Even if removeUnselected had issues, proceed
+        if (!_quarantineDone) {
+            // Force-complete quarantine step via API
+            try {
+                await apiPost(`${API_BASE}/confirm_review`);
+                _quarantineDone = true;
+            } catch (e) { /* proceed anyway */ }
+        }
+    }
+    advanceStage(sessionId);
 }
 
 // ── Restore state on revisit ──

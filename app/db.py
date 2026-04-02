@@ -574,7 +574,9 @@ def get_upload_stats(user_phone: Optional[str] = None,
     """
     with _lock:
         conn = _get_conn()
-        date_filter = f"date(uploaded_at) >= date('now', '-{days} days')"
+        # IST offset (+5:30) so "today" boundaries align with Indian midnight, not UTC
+        _IST = "'+5 hours', '+30 minutes'"
+        date_filter = f"date(uploaded_at, {_IST}) >= date('now', {_IST}, '-{days} days')"
         user_filter = "AND user_phone = ?" if user_phone else ""
         params = (user_phone,) if user_phone else ()
 
@@ -606,10 +608,10 @@ def get_upload_stats(user_phone: Optional[str] = None,
         # By day
         by_day = []
         rows = conn.execute(f"""
-            SELECT date(uploaded_at) as day, error_level, SUM(count) as total
+            SELECT date(uploaded_at, {_IST}) as day, error_level, SUM(count) as total
             FROM upload_log WHERE {date_filter} {user_filter}
-            GROUP BY date(uploaded_at), error_level
-            ORDER BY date(uploaded_at)
+            GROUP BY date(uploaded_at, {_IST}), error_level
+            ORDER BY date(uploaded_at, {_IST})
         """, params).fetchall()
         day_map = {}
         for r in rows:
@@ -634,7 +636,8 @@ def get_all_users_stats(days: int = 7) -> List[Dict]:
     """Get upload stats per user over N days (for admin panel)."""
     with _lock:
         conn = _get_conn()
-        date_filter = f"date(uploaded_at) >= date('now', '-{days} days')"
+        _IST = "'+5 hours', '+30 minutes'"
+        date_filter = f"date(uploaded_at, {_IST}) >= date('now', {_IST}, '-{days} days')"
         rows = conn.execute(f"""
             SELECT user_phone, error_level, SUM(count) as total
             FROM upload_log WHERE {date_filter}
