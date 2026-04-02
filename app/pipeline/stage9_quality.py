@@ -953,10 +953,24 @@ class QualityVerifierStage(BasePipelineStage):
                 "message": "No previous progress --start from scan"}
 
     def scan(self) -> Dict[str, Any]:
-        """Scan metadata and determine if QA is needed."""
-        entries = self._load_all_metadata()
-        if not entries:
+        """Scan metadata and determine if QA is needed.
+
+        Stats are derived from live metadata files (source of truth):
+        - total_questions: live entries (quarantined excluded)
+        - quarantined: count from quarantine table
+        - total_triplets: total_questions + quarantined (pre-quarantine total)
+        """
+        # Get ground truth from metadata stats utility
+        from app.pipeline.metadata_stats import compute_live_stats
+        from app.db import get_quarantined_qids
+        quarantined_qids = get_quarantined_qids(self.session_id)
+        live_stats = compute_live_stats(self.session_dir, quarantined_qids)
+
+        if live_stats["total"] == 0:
             return {"error": "No metadata_v2 files found -- run Stage 4 first"}
+
+        # Load live entries for taggedBy analysis (excludes quarantined)
+        entries = self._load_all_metadata()
 
         tagged_by_counts = {}
         needs_qa = 0
@@ -977,23 +991,22 @@ class QualityVerifierStage(BasePipelineStage):
         has_openai = bool(settings.openai_api_key)
         has_gemini = bool(settings.gemini_api_key)
 
-        by_subject = {}
-        for entry in entries:
-            subj = entry.get("subject", "Unknown")
-            by_subject[subj] = by_subject.get(subj, 0) + 1
-
-        self.log("info", f"Scanned {len(entries)} questions: {needs_qa} need QA, {skip_qa} skip QA")
+        self.log("info", f"Scanned {live_stats['live']} live questions ({live_stats['quarantined']} quarantined): {needs_qa} need QA, {skip_qa} skip QA")
         return {
-            "total_questions": len(entries),
+            "total_questions": live_stats["live"],
+            "total_triplets": live_stats["total"],
+            "quarantined": live_stats["quarantined"],
             "needs_qa": needs_qa,
             "skip_qa": skip_qa,
             "tagged_by": tagged_by_counts,
-            "by_subject": by_subject,
+            "by_subject": {s: v["live"] for s, v in live_stats["by_subject"].items()},
             "existing_ledgers": len(existing_ledgers),
             "qa_needed": needs_qa > 0,
             "can_skip": needs_qa == 0,
             "credentials": {"openai": has_openai, "gemini": has_gemini},
             "pass_models": PASS_MODELS,
+            "err1": live_stats["err1"],
+            "err2": live_stats["err2"],
         }
 
     def build_qa_batch(self, extra_context: str = "", strict_mode: bool = False,

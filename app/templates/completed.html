@@ -182,7 +182,30 @@ const STAGE_NAMES = {
 
 const _sessionName = "{{ session.name }}".replace(/[^\w\-]/g, '_');
 
-document.addEventListener('DOMContentLoaded', loadSummary);
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadSummary();
+
+    // Check if upload already completed (e.g., user navigated away during upload)
+    const cp = (_checkpoints || []).find(c => c.stage === 'stage10_upload');
+    if (cp && cp.status === 'completed' && cp.data) {
+        const data = typeof cp.data === 'string' ? JSON.parse(cp.data) : cp.data;
+        if (data.posted > 0) {
+            appendLog('success', 'Upload already completed: ' + (data.posted || 0) + ' posted (' + (data.posted_err1 || 0) + ' err=1, ' + (data.posted_err2 || 0) + ' err=2)');
+            document.getElementById('upload-result').style.display = 'block';
+            document.getElementById('upload-result').innerHTML = `
+                <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="summary-stat-box highlight-green"><div class="sv">${data.posted || 0}</div><div class="sl">Posted</div></div>
+                    <div class="summary-stat-box highlight-red"><div class="sv">${data.failed || 0}</div><div class="sl">Failed</div></div>
+                    <div class="summary-stat-box"><div class="sv">${data.skipped || 0}</div><div class="sl">Skipped</div></div>
+                </div>
+            `;
+            const uploadBtn = document.getElementById('upload-db-btn');
+            if (uploadBtn) { uploadBtn.textContent = 'Uploaded'; uploadBtn.disabled = true; }
+            document.getElementById('stats-zip-btn').disabled = false;
+            document.getElementById('post-upload-actions').style.display = 'block';
+        }
+    }
+});
 
 async function loadSummary() {
     appendLog('info', 'Loading pipeline summary...');
@@ -355,14 +378,20 @@ async function scanUpload() {
         if (!r.success) { appendLog('error', r.error?.message || 'Scan failed'); return; }
 
         const d = r.data;
-        const e1 = d.error_breakdown?.[1] || 0;
-        const e2 = d.error_breakdown?.[2] || 0;
+        const e1 = d.err1_count || 0;
+        const e2 = d.err2_count || 0;
         document.getElementById('upload-scan-info').innerHTML = `
             <strong>${d.upload_ready || 0}</strong> questions ready for upload
-            <span style="font-size:12px; color:var(--text-muted);">(${e1} clean + ${e2} review)</span>
+            <span style="font-size:12px;">
+                (<span style="color:var(--success);font-weight:600;">${e1} err=1</span> +
+                 <span style="color:var(--warning);font-weight:600;">${e2} err=2</span>)
+            </span>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                Total triplets: ${d.total_questions || 0} = ${d.total_live || 0} live + ${d.quarantined_count || 0} quarantined
+            </div>
         `;
         document.getElementById('upload-db-btn').disabled = false;
-        appendLog('success', `Scan: ${d.upload_ready} ready, ${d.total_questions} total, ${d.quarantined_count} quarantined`);
+        appendLog('success', `Scan: ${d.upload_ready} ready (${e1} err=1 + ${e2} err=2), ${d.quarantined_count} quarantined`);
     } catch (e) {
         appendLog('error', 'Scan error: ' + e.message);
     }
@@ -404,6 +433,7 @@ async function uploadToDB() {
     const btn = document.getElementById('upload-db-btn');
     btn.disabled = true;
     btn.textContent = 'Uploading...';
+    window._activeProcess = true;  // Nav guard: warn user on dashboard click
     appendLog('info', 'Uploading to database...');
 
     try {
@@ -476,10 +506,12 @@ async function pollUploadToDB(btn) {
                     appendLog('warning', 'DB absorption error: ' + ae.message);
                 }
                 document.getElementById('post-upload-actions').style.display = 'block';
+                window._activeProcess = false;  // Upload done, clear nav guard
                 return;
             }
             if (status === 'failed') {
                 appendLog('error', 'Upload failed: ' + (data.error || 'Unknown'));
+                window._activeProcess = false;
                 btn.disabled = false;
                 btn.textContent = 'Upload to DB';
                 return;

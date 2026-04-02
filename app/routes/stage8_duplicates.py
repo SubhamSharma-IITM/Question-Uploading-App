@@ -59,7 +59,8 @@ async def self_duplicate_check(session_id: str, threshold: float = 0.85):
     stage = DuplicateCheckStage(session_id, session_dir)
 
     try:
-        result = await asyncio.to_thread(stage.self_check, threshold=threshold)
+        from app.utils import guarded_thread
+        result = await guarded_thread(stage.self_check, threshold=threshold)
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -92,7 +93,8 @@ async def cross_duplicate_check(session_id: str, threshold: float = 0.85):
     stage = DuplicateCheckStage(session_id, session_dir)
 
     try:
-        result = await asyncio.to_thread(stage.cross_check, threshold=threshold)
+        from app.utils import guarded_thread
+        result = await guarded_thread(stage.cross_check, threshold=threshold)
     except Exception as e:
         return JSONResponse(
             status_code=500,

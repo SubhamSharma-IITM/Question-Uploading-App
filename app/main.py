@@ -137,8 +137,9 @@ async def lifespan(app: FastAPI):
     # Prevents data loss from OOM crashes that kill SQLite WAL
     _recover_orphan_sessions(settings.sessions_dir)
 
-    # Concurrency limiter
-    _task_semaphore = asyncio.Semaphore(settings.max_concurrent_tasks)
+    # Concurrency limiter -- prevents OOM from concurrent heavy operations
+    from app.utils import init_semaphore
+    init_semaphore(settings.max_concurrent_tasks)
     _safe_print(f"[OK] Max concurrent tasks: {settings.max_concurrent_tasks}")
 
     # Capture event loop for thread-safe SSE emit
@@ -246,51 +247,56 @@ async def heartbeat(request: Request):
 async def dashboard_stats(request: Request, days: int = 7):
     """Get dashboard stats for the logged-in user.
 
-    days=1 (today), days=2 (yesterday+today), days=7, days=14, days=9999 (all-time)
+    Architecture: personal stats = upload_log WHERE user_phone.
+    Team stats = server-side aggregation of each user's upload_log.
+    No global data storage. Global = derived from personal.
     """
     user = getattr(request.state, "user", {})
     phone = user.get("phone", "")
     role = user.get("role", "Team")
 
     from app.db import (
-        get_upload_stats, get_all_users_stats, list_sessions,
-        get_session_stats, get_heartbeats, list_users,
-        get_checkpoint_upload_stats,
+        get_upload_stats, get_heartbeats, list_users,
+        list_sessions_by_user,
     )
 
-    # Personal stats: today, yesterday, and selected range
+    # Personal stats from upload_log -- filtered by user_phone only
     my_today = get_upload_stats(user_phone=phone, days=1)
     my_yesterday = get_upload_stats(user_phone=phone, days=2)
-    # Subtract today from yesterday+today to get yesterday only
     my_yesterday_only = {
         "err1": max(my_yesterday["err1"] - my_today["err1"], 0),
         "err2": max(my_yesterday["err2"] - my_today["err2"], 0),
+        "by_subject": {},
     }
+    # Compute per-subject yesterday-only
+    for subj, vals in my_yesterday.get("by_subject", {}).items():
+        today_subj = my_today.get("by_subject", {}).get(subj, {"err1": 0, "err2": 0})
+        my_yesterday_only["by_subject"][subj] = {
+            "err1": max(vals["err1"] - today_subj["err1"], 0),
+            "err2": max(vals["err2"] - today_subj["err2"], 0),
+        }
     my_range = get_upload_stats(user_phone=phone, days=days)
+    my_all_time = get_upload_stats(user_phone=phone, days=9999)
 
-    # Aggregate stats from checkpoint data (all-time truth)
-    cp_stats = get_checkpoint_upload_stats()
-
-    # Session counts — PERSONAL (filtered by user)
-    from app.db import list_sessions_by_user
+    # Session counts -- PERSONAL only
     my_sessions_all = list_sessions_by_user(phone) if phone else []
     my_active = [s for s in my_sessions_all if s["current_stage"] != "completed"]
     my_completed = [s for s in my_sessions_all if s["current_stage"] == "completed"]
 
+    # In-process question count (from metadata files of active sessions)
+    from app.pipeline.metadata_stats import compute_live_stats
     my_in_process = 0
     for s in my_active:
-        st = get_session_stats(s["id"])
-        my_in_process += st.get("total", 0)
+        session_dir = Path(settings.sessions_dir) / s["id"]
+        if session_dir.exists():
+            st = compute_live_stats(session_dir)
+            my_in_process += st.get("total", 0)
 
     # Last session for this user
     last_session = None
     if my_sessions_all:
-        ls = my_sessions_all[0]  # already sorted by created_at DESC from DB
-        last_session = {
-            "name": ls["name"],
-            "id": ls["id"],
-            "stage": ls["current_stage"],
-        }
+        ls = my_sessions_all[0]
+        last_session = {"name": ls["name"], "id": ls["id"], "stage": ls["current_stage"]}
 
     result = {
         "today": my_today,
@@ -303,32 +309,32 @@ async def dashboard_stats(request: Request, days: int = 7):
         "in_process": my_in_process,
         "last_session": last_session,
         "all_time": {
-            "err1": cp_stats["total_err1"],
-            "err2": cp_stats["total_err2"],
-            "sessions_uploaded": len(cp_stats["by_session"]),
+            "err1": my_all_time["err1"],
+            "err2": my_all_time["err2"],
+            "by_subject": my_all_time.get("by_subject", {}),
+            "sessions_uploaded": len(my_completed),
         },
     }
 
-    # Admin: team stats from upload_log (date-filtered)
+    # Admin: team stats -- per-user aggregation from upload_log, NO global data fetch
     if role in ("Admin", "Architect"):
         all_users = list_users()
-        all_sessions = list_sessions()  # platform-wide needed for per-user breakdown
-        # Per-user upload_log stats for selected range
         team_merged = []
         for u in all_users:
             p = u["phone"]
-            u_range = get_upload_stats(user_phone=p, days=days)
             u_today = get_upload_stats(user_phone=p, days=1)
             u_yesterday_full = get_upload_stats(user_phone=p, days=2)
             u_yesterday_only = {
                 "err1": max(u_yesterday_full["err1"] - u_today["err1"], 0),
                 "err2": max(u_yesterday_full["err2"] - u_today["err2"], 0),
             }
+            u_range = get_upload_stats(user_phone=p, days=days)
+            u_all_time = get_upload_stats(user_phone=p, days=9999)
 
-            # Session counts per user
-            user_sessions = [s for s in all_sessions if s.get("created_by") == p]
-            user_active = [s for s in user_sessions if s["current_stage"] != "completed"]
-            user_completed = [s for s in user_sessions if s["current_stage"] == "completed"]
+            # Session counts per user -- each user's own sessions only
+            u_sessions = list_sessions_by_user(p)
+            u_active = [s for s in u_sessions if s["current_stage"] != "completed"]
+            u_completed = [s for s in u_sessions if s["current_stage"] == "completed"]
 
             team_merged.append({
                 "phone": p,
@@ -337,13 +343,17 @@ async def dashboard_stats(request: Request, days: int = 7):
                 "last_login": u.get("last_login") or "",
                 "today_err1": u_today["err1"],
                 "today_err2": u_today["err2"],
+                "today_by_subject": u_today.get("by_subject", {}),
                 "yesterday_err1": u_yesterday_only["err1"],
                 "yesterday_err2": u_yesterday_only["err2"],
                 "range_err1": u_range["err1"],
                 "range_err2": u_range["err2"],
-                "active_sessions": len(user_active),
-                "completed_sessions": len(user_completed),
-                "total_sessions": len(user_sessions),
+                "all_time_err1": u_all_time["err1"],
+                "all_time_err2": u_all_time["err2"],
+                "all_time_by_subject": u_all_time.get("by_subject", {}),
+                "active_sessions": len(u_active),
+                "completed_sessions": len(u_completed),
+                "total_sessions": len(u_sessions),
             })
         result["team"] = team_merged
         result["heartbeats"] = get_heartbeats()

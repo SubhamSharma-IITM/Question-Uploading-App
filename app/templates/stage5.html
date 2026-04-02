@@ -226,15 +226,38 @@ async function scanImages() {
         const r = await apiGet(`${API_BASE}/scan`);
         if (r.success) {
             const d = r.data;
+            let subjHtml = '';
+            if (d.by_subject) {
+                subjHtml = '<div style="margin-top:6px;font-size:11px;color:var(--text-muted);">Subjects: ' +
+                    Object.entries(d.by_subject).map(([s,c]) => '<strong>' + s + '</strong>: ' + c).join(' | ') + '</div>';
+            }
             document.getElementById('scan-result').innerHTML = `
                 <div class="stat-grid">
                     <div class="stat-box">
-                        <div class="stat-value">${d.total_images}</div>
-                        <div class="stat-label">Total Images</div>
+                        <div class="stat-value">${d.live_questions || 0}</div>
+                        <div class="stat-label">Live Questions</div>
                     </div>
-                </div>`;
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_images}</div>
+                        <div class="stat-label">Disk Images</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.questions_with_images || 0}</div>
+                        <div class="stat-label">With Images</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.with_smiles || 0}</div>
+                        <div class="stat-label">SMILES</div>
+                    </div>
+                    <div class="stat-box" style="${d.quarantined > 0 ? 'border-color:var(--error);' : ''}">
+                        <div class="stat-value" style="${d.quarantined > 0 ? 'color:var(--error);' : ''}">${d.quarantined || 0}</div>
+                        <div class="stat-label">Quarantined</div>
+                    </div>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);">Total triplets: ${d.total_triplets || 0} = ${d.live_questions || 0} live + ${d.quarantined || 0} quarantined</div>
+                ${subjHtml}`;
             document.getElementById('controls').style.display = 'block';
-            appendLog('success', `Found ${d.total_images} images`);
+            appendLog('success', `Found ${d.total_images} images, ${d.live_questions || 0} live questions`);
             if (d.total_images === 0) {
                 appendLog('warning', 'No images found -- you can skip this stage');
             }

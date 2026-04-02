@@ -90,7 +90,8 @@ async def upload_to_db(session_id: str):
         try:
             from app.pipeline.stage10_upload import UploadStage
             stage = UploadStage(session_id, session_dir)
-            result = await asyncio.to_thread(stage.upload, dry_run=False)
+            from app.utils import guarded_thread
+            result = await guarded_thread(stage.upload, dry_run=False)
         except Exception as e:
             from app.db import upsert_checkpoint as _ucp, insert_log
             _ucp(session_id, "stage10_upload", "failed", {"error": str(e)})
@@ -157,7 +158,8 @@ async def absorb_to_local_db(session_id: str):
 
     from app.pipeline.stage10_upload import UploadStage
     stage = UploadStage(session_id, session_dir)
-    result = await asyncio.to_thread(stage.absorb_to_local_db)
+    from app.utils import guarded_thread
+    result = await guarded_thread(stage.absorb_to_local_db)
 
     if "error" not in result:
         from app.db import insert_log

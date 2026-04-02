@@ -467,13 +467,13 @@
             <!-- Quick Stats Card -->
             <div class="glass-card" style="margin-top:16px;">
                 <div class="card-header">
-                    <h2>Platform Totals</h2>
+                    <h2>My All-Time Stats</h2>
                     <button class="btn btn-xs" id="refresh-btn" onclick="refreshPlatformTotals(this)" title="Refresh">Refresh</button>
                 </div>
                 <div class="card-body">
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         <div style="display:flex;justify-content:space-between;font-size:12px;">
-                            <span style="color:var(--text-secondary);">Total sessions</span>
+                            <span style="color:var(--text-secondary);">My sessions</span>
                             <span style="font-weight:700;" id="pt-total">{{ sessions|length }}</span>
                         </div>
                         <div style="display:flex;justify-content:space-between;font-size:12px;">
@@ -494,6 +494,8 @@
                                 <span style="font-weight:700;color:var(--warning);" id="pt-alltime-err2">--</span>
                             </div>
                         </div>
+                        <!-- All-time subject breakdown -->
+                        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;" id="pt-alltime-subjects"></div>
                         <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
                             <div style="font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">Last Session</div>
                             <div id="pt-last-session" style="font-size:12px;color:var(--text-secondary);">--</div>
@@ -690,13 +692,39 @@ async function loadStats(days) {
         renderSparkline(r.by_day || []);
         renderSubjects(r.by_subject || {});
 
-        // All-time (checkpoint data)
+        // My all-time stats (personal upload_log)
         if (d.all_time) {
             const el1 = document.getElementById('pt-alltime-err1');
             const el2 = document.getElementById('pt-alltime-err2');
             if (el1) el1.textContent = (d.all_time.err1 || 0).toLocaleString();
             if (el2) el2.textContent = (d.all_time.err2 || 0).toLocaleString();
+
+            // Subject breakdown
+            const subjContainer = document.getElementById('pt-alltime-subjects');
+            if (subjContainer && d.all_time.by_subject) {
+                const entries = Object.entries(d.all_time.by_subject).sort((a,b) => (b[1].err1||0) - (a[1].err1||0));
+                if (entries.length) {
+                    let sh = '<div style="font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">By Subject</div>';
+                    entries.forEach(([name, vals]) => {
+                        sh += '<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;">' +
+                            '<span style="color:var(--text-secondary);">' + name + '</span>' +
+                            '<span><span style="color:var(--success);font-weight:600;">' + (vals.err1||0) + '</span>' +
+                            ' <span style="color:var(--text-muted);">/</span> ' +
+                            '<span style="color:var(--warning);font-weight:600;">' + (vals.err2||0) + '</span></span>' +
+                        '</div>';
+                    });
+                    subjContainer.innerHTML = sh;
+                }
+            }
         }
+
+        // Update session counts from API (personal only)
+        const ptTotal = document.getElementById('pt-total');
+        const ptCompleted = document.getElementById('pt-completed');
+        const ptActive = document.getElementById('pt-active');
+        if (ptTotal) ptTotal.textContent = (d.active_sessions || 0) + (d.completed_sessions || 0);
+        if (ptCompleted) ptCompleted.textContent = d.completed_sessions || 0;
+        if (ptActive) ptActive.textContent = d.active_sessions || 0;
 
         // Last session
         if (d.last_session) {
@@ -798,7 +826,7 @@ function renderSubjects(bySubject) {
     });
 }
 
-// ── Admin: Team Panel ──
+// ── Admin: Team Panel (professional table with headers) ──
 function renderTeamPanel(teamData, heartbeats) {
     const body = document.getElementById('team-panel-body');
     if (!body) return;
@@ -811,83 +839,141 @@ function renderTeamPanel(teamData, heartbeats) {
         return;
     }
 
-    // Sort: highest range_err1 first
-    teamData.sort((a, b) => (b.range_err1 || 0) - (a.range_err1 || 0));
+    // Sort: highest today_err1 first
+    teamData.sort((a, b) => (b.today_err1 || 0) - (a.today_err1 || 0));
 
-    let html = '';
+    function fmtIST(utcStr) {
+        if (!utcStr || utcStr.length < 10) return '';
+        try {
+            const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
+        } catch(e) { return ''; }
+    }
+
+    function getActivity(member) {
+        const hb = hbMap[member.phone];
+        if (hb && hb.last_ping) {
+            const pingTime = new Date(hb.last_ping.endsWith('Z') ? hb.last_ping : hb.last_ping + 'Z');
+            const diffMin = isNaN(pingTime.getTime()) ? 9999 : (Date.now() - pingTime.getTime()) / 60000;
+            if (diffMin < 10) return {cls: 'online', text: 'Active now'};
+            if (diffMin < 30) return {cls: 'away', text: Math.round(diffMin) + 'm ago'};
+        }
+        const lastFmt = fmtIST(member.last_login);
+        return {cls: 'offline', text: lastFmt ? 'Last: ' + lastFmt : 'Never logged in'};
+    }
+
+    // Collect all subjects across team for subject breakdown
+    const allSubjects = new Set();
+    teamData.forEach(m => {
+        const subjs = m.today_by_subject || m.all_time_by_subject || {};
+        Object.keys(subjs).forEach(s => allSubjects.add(s));
+    });
+    // Normalize Biology -> Botany + Zoology display
+    const subjectList = Array.from(allSubjects).sort();
+
+    // ── Main table with header row ──
+    let html = '<table style="width:100%;border-collapse:separate;border-spacing:0 2px;font-size:12px;">';
+    html += '<thead><tr style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text-muted);">' +
+        '<th style="text-align:left;padding:6px 8px;">Member</th>' +
+        '<th style="text-align:center;padding:6px 4px;color:var(--success);">Today E1</th>' +
+        '<th style="text-align:center;padding:6px 4px;color:var(--warning);">Today E2</th>' +
+        '<th style="text-align:center;padding:6px 4px;">Yday E1</th>' +
+        '<th style="text-align:center;padding:6px 4px;color:var(--accent);">' + _currentDays + 'd E1</th>' +
+        '<th style="text-align:center;padding:6px 4px;color:var(--warning);">' + _currentDays + 'd E2</th>' +
+        '<th style="text-align:center;padding:6px 4px;">Sessions</th>' +
+        '<th style="text-align:center;padding:6px 4px;">Status</th>' +
+    '</tr></thead><tbody>';
+
+    let totTodayE1 = 0, totTodayE2 = 0, totYdayE1 = 0, totRangeE1 = 0, totRangeE2 = 0, totActive = 0, totDone = 0;
+
     teamData.forEach(member => {
         const name = member.name || 'Unknown';
         const role = member.role || 'Team';
         const isAdmin = role === 'Admin' || role === 'Architect';
-        const hb = hbMap[member.phone];
+        const act = getActivity(member);
 
-        // UTC -> IST 12h AM/PM format
-        function fmtIST(utcStr) {
-            if (!utcStr || utcStr.length < 10) return '';
-            try {
-                const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
-                if (isNaN(d.getTime())) return '';
-                return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
-            } catch(e) { return ''; }
-        }
+        totTodayE1 += (member.today_err1 || 0);
+        totTodayE2 += (member.today_err2 || 0);
+        totYdayE1 += (member.yesterday_err1 || 0);
+        totRangeE1 += (member.range_err1 || 0);
+        totRangeE2 += (member.range_err2 || 0);
+        totActive += (member.active_sessions || 0);
+        totDone += (member.completed_sessions || 0);
 
-        let activityCls = 'offline', activityText = 'Never logged in';
-        if (hb && hb.last_ping) {
-            const pingTime = new Date(hb.last_ping.endsWith('Z') ? hb.last_ping : hb.last_ping + 'Z');
-            const diffMin = isNaN(pingTime.getTime()) ? 9999 : (Date.now() - pingTime.getTime()) / 60000;
-            if (diffMin < 10) { activityCls = 'online'; activityText = 'Active now'; }
-            else if (diffMin < 30) { activityCls = 'away'; activityText = Math.round(diffMin) + 'm ago'; }
-            else {
-                const lastFmt = fmtIST(member.last_login);
-                activityText = lastFmt ? 'Last: ' + lastFmt : 'Offline';
-            }
-        } else if (member.last_login) {
-            const lastFmt = fmtIST(member.last_login);
-            activityText = lastFmt ? 'Last: ' + lastFmt : 'Offline';
-        }
+        const roleBadge = '<span style="font-size:9px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +
+            ';background:' + (isAdmin ? 'rgba(79,125,249,0.1)' : 'transparent') +
+            ';padding:0 4px;border-radius:2px;">' + role + '</span>';
 
-        const roleBadge = '<span style="font-size:10px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +
-            ';background:' + (isAdmin ? 'rgba(79,125,249,0.1)' : 'rgba(92,98,128,0.15)') +
-            ';padding:1px 6px;border-radius:3px;margin-left:6px;">' + role + '</span>';
-
-        html += '<div class="team-row">' +
-            '<div class="team-name">' +
-                '<div class="team-avatar ' + (isAdmin ? 'admin' : 'team') + '">' + name[0] + '</div>' +
-                '<div><div style="font-size:13px;font-weight:600;">' + name + roleBadge + '</div>' +
-                    '<div style="font-size:10px;color:var(--text-muted);">' +
-                        '<span class="activity-dot ' + activityCls + '"></span>' + activityText +
-                    '</div></div>' +
-            '</div>' +
-            '<div class="team-stats-mini">' +
-                '<div class="ts-item"><span class="ts-val" style="color:var(--success);">' + (member.today_err1 || 0) + '</span><span class="ts-label">Today</span></div>' +
-                '<div class="ts-item"><span class="ts-val" style="color:var(--text-secondary);">' + (member.yesterday_err1 || 0) + '</span><span class="ts-label">Yday</span></div>' +
-                '<div class="ts-item"><span class="ts-val" style="color:var(--accent);">' + (member.range_err1 || 0) + '</span><span class="ts-label">' + _currentDays + 'd E1</span></div>' +
-                '<div class="ts-item"><span class="ts-val" style="color:var(--warning);">' + (member.range_err2 || 0) + '</span><span class="ts-label">' + _currentDays + 'd E2</span></div>' +
-                '<div class="ts-item"><span class="ts-val">' + (member.active_sessions || 0) + '/' + (member.completed_sessions || 0) + '</span><span class="ts-label">Act/Done</span></div>' +
-            '</div>' +
-        '</div>';
+        html += '<tr style="background:var(--bg-card);">' +
+            '<td style="padding:8px;border-radius:6px 0 0 6px;">' +
+                '<div style="display:flex;align-items:center;gap:8px;">' +
+                    '<div class="team-avatar ' + (isAdmin ? 'admin' : 'team') + '" style="width:28px;height:28px;font-size:11px;">' + name[0] + '</div>' +
+                    '<div><div style="font-weight:600;font-size:12px;">' + name + ' ' + roleBadge + '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</td>' +
+            '<td style="text-align:center;font-weight:700;font-family:monospace;font-size:14px;color:var(--success);">' + (member.today_err1 || 0) + '</td>' +
+            '<td style="text-align:center;font-weight:600;font-family:monospace;color:var(--warning);">' + (member.today_err2 || 0) + '</td>' +
+            '<td style="text-align:center;font-family:monospace;color:var(--text-secondary);">' + (member.yesterday_err1 || 0) + '</td>' +
+            '<td style="text-align:center;font-weight:600;font-family:monospace;color:var(--accent);">' + (member.range_err1 || 0) + '</td>' +
+            '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + (member.range_err2 || 0) + '</td>' +
+            '<td style="text-align:center;font-family:monospace;">' + (member.active_sessions || 0) + '<span style="color:var(--text-muted);"> / </span>' + (member.completed_sessions || 0) + '</td>' +
+            '<td style="text-align:center;border-radius:0 6px 6px 0;">' +
+                '<span class="activity-dot ' + act.cls + '"></span>' +
+                '<span style="font-size:10px;color:var(--text-muted);">' + act.text + '</span>' +
+            '</td>' +
+        '</tr>';
     });
 
-    // Totals row — sum all members
-    let totToday = 0, totYday = 0, totRangeE1 = 0, totRangeE2 = 0, totActive = 0, totDone = 0;
-    teamData.forEach(m => {
-        totToday += (m.today_err1 || 0);
-        totYday += (m.yesterday_err1 || 0);
-        totRangeE1 += (m.range_err1 || 0);
-        totRangeE2 += (m.range_err2 || 0);
-        totActive += (m.active_sessions || 0);
-        totDone += (m.completed_sessions || 0);
-    });
-    html += '<div class="team-row" style="border-top:2px solid var(--border);margin-top:8px;padding-top:10px;font-weight:700;">' +
-        '<div class="team-name"><div style="font-size:13px;font-weight:700;padding-left:8px;">TOTALS</div></div>' +
-        '<div class="team-stats-mini">' +
-            '<div class="ts-item"><span class="ts-val" style="color:var(--success);font-weight:700;">' + totToday + '</span><span class="ts-label">Today</span></div>' +
-            '<div class="ts-item"><span class="ts-val" style="color:var(--text-secondary);font-weight:700;">' + totYday + '</span><span class="ts-label">Yday</span></div>' +
-            '<div class="ts-item"><span class="ts-val" style="color:var(--accent);font-weight:700;">' + totRangeE1 + '</span><span class="ts-label">' + _currentDays + 'd E1</span></div>' +
-            '<div class="ts-item"><span class="ts-val" style="color:var(--warning);font-weight:700;">' + totRangeE2 + '</span><span class="ts-label">' + _currentDays + 'd E2</span></div>' +
-            '<div class="ts-item"><span class="ts-val" style="font-weight:700;">' + totActive + '/' + totDone + '</span><span class="ts-label">Act/Done</span></div>' +
-        '</div>' +
-    '</div>';
+    // Totals row
+    html += '<tr style="font-weight:700;border-top:2px solid var(--border);">' +
+        '<td style="padding:10px 8px;font-size:12px;border-radius:6px 0 0 6px;">TOTALS</td>' +
+        '<td style="text-align:center;font-family:monospace;font-size:14px;color:var(--success);">' + totTodayE1 + '</td>' +
+        '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + totTodayE2 + '</td>' +
+        '<td style="text-align:center;font-family:monospace;color:var(--text-secondary);">' + totYdayE1 + '</td>' +
+        '<td style="text-align:center;font-family:monospace;color:var(--accent);">' + totRangeE1 + '</td>' +
+        '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + totRangeE2 + '</td>' +
+        '<td style="text-align:center;font-family:monospace;">' + totActive + ' / ' + totDone + '</td>' +
+        '<td style="border-radius:0 6px 6px 0;"></td>' +
+    '</tr>';
+
+    html += '</tbody></table>';
+
+    // ── Subject breakdown section ──
+    if (subjectList.length > 0) {
+        html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">' +
+            '<div style="font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Subject Breakdown (Today)</div>';
+
+        html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+        html += '<thead><tr style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text-muted);">' +
+            '<th style="text-align:left;padding:4px 6px;">Member</th>';
+        subjectList.forEach(s => {
+            // Shorten long subject names
+            const short = s.length > 8 ? s.slice(0, 7) + '.' : s;
+            html += '<th style="text-align:center;padding:4px 3px;" title="' + s + '">' + short + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
+        teamData.forEach(member => {
+            const subjs = member.today_by_subject || {};
+            html += '<tr><td style="padding:3px 6px;font-weight:600;">' + (member.name || '?') + '</td>';
+            subjectList.forEach(s => {
+                const sv = subjs[s] || {};
+                const e1 = sv.err1 || 0;
+                const e2 = sv.err2 || 0;
+                if (e1 + e2 > 0) {
+                    html += '<td style="text-align:center;font-family:monospace;"><span style="color:var(--success);">' + e1 + '</span>' +
+                        '<span style="color:var(--text-muted);"> / </span><span style="color:var(--warning);">' + e2 + '</span></td>';
+                } else {
+                    html += '<td style="text-align:center;color:var(--text-muted);">-</td>';
+                }
+            });
+            html += '</tr>';
+        });
+
+        html += '</tbody></table></div>';
+    }
 
     body.innerHTML = html;
 }

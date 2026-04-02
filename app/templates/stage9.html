@@ -125,11 +125,7 @@
             <div class="card-header"><h2>QA Results</h2></div>
             <div class="card-body">
                 <div id="results-content"></div>
-                <div id="csv-buttons" style="margin-top: 10px; display: none;">
-                    <a class="btn btn-sm" id="csv-3of3-link" style="margin-right: 6px;">Download 3/3 CSV</a>
-                    <a class="btn btn-sm" id="csv-2of3-link" style="margin-right: 6px;">Download 2/3 CSV</a>
-                    <a class="btn btn-sm btn-primary" href="/api/sessions/{{ session.id }}/stage9/csv-zip">Download All Stats (ZIP)</a>
-                </div>
+                <!-- CSV downloads available in Stage 10 ZIP -->
             </div>
         </div>
 
@@ -396,10 +392,16 @@ async function scanQA() {
 
             document.getElementById('scan-result').innerHTML = `
                 <div class="stat-grid">
-                    <div class="stat-box"><div class="stat-value">${d.total_questions}</div><div class="stat-label">Total Questions</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.total_questions}</div><div class="stat-label">Live Questions</div></div>
                     <div class="stat-box"><div class="stat-value">${d.needs_qa}</div><div class="stat-label">Need QA</div></div>
-                    <div class="stat-box"><div class="stat-value">${d.skip_qa}</div><div class="stat-label">Skip QA</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.skip_qa}</div><div class="stat-label">Skip QA (AIT/NIT)</div></div>
+                    <div class="stat-box" style="border-color:var(--error);"><div class="stat-value" style="color:var(--error);">${d.quarantined || 0}</div><div class="stat-label">Quarantined</div></div>
                     <div class="stat-box"><div class="stat-value">${d.error_types_checked || 14}</div><div class="stat-label">Error Types</div></div>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                    Total triplets: ${d.total_triplets || 0} = ${d.total_questions} live + ${d.quarantined || 0} quarantined
+                    ${d.err1 > 0 ? ' | <span style="color:var(--success);">err=1: ' + d.err1 + '</span>' : ''}
+                    ${d.err2 > 0 ? ' | <span style="color:var(--warning);">err=2: ' + d.err2 + '</span>' : ''}
                 </div>
                 ${subjectHtml}${tagHtml}${credHtml}
             `;
@@ -538,6 +540,7 @@ async function submitAll() {
     }
 
     _submittingAll = true;
+    window._activeProcess = true;  // Nav guard: batch processing active
     const submitAllBtn = document.getElementById('submit-all-btn');
     submitAllBtn.disabled = true;
     submitAllBtn.textContent = 'Submitting...';
@@ -674,6 +677,7 @@ async function pollPasses(silent) {
             } else {
                 stopAutoPoll();
                 setQARunning(false);
+                window._activeProcess = false;  // Clear nav guard
                 updateSubmitAllState();
             }
 
@@ -768,13 +772,9 @@ async function mergeVotes() {
                     </div>
                 `;
 
-                // Show CSV download links
-                const csvBtns = document.getElementById('csv-buttons');
-                csvBtns.style.display = 'block';
-                document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
-                document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
-
                 appendLog('success', `Votes merged: ${res.approved_3of3 || 0} clean, ${res.review_2of3 || 0} review, ${quarantinedCount} quarantined`);
+                // Refresh live stats bar to show updated err1/err2 counts
+                refreshSidebarStats();
                 // Update sidebar quarantine count
                 if (quarantinedCount > 0) {
                     updateSidebarQuarantineCount(quarantinedCount);
@@ -882,11 +882,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="vote-box vote-fix"><div class="vote-value">${resumeQuarantined}</div><div class="vote-label">Quarantined</div></div>
                 </div>
             `;
-            // Show CSV links
-            const csvBtns = document.getElementById('csv-buttons');
-            csvBtns.style.display = 'block';
-            document.getElementById('csv-3of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=3of3';
-            document.getElementById('csv-2of3-link').href = '/api/sessions/{{ session.id }}/stage9/csv?category=2of3';
+            // CSV downloads available in Stage 10 ZIP (backend still generates them)
         }
         // Mark all pass indicators as complete
         ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {

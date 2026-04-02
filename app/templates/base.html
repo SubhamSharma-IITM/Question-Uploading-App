@@ -77,7 +77,7 @@
 
                 <div class="sidebar-section">
                     <div class="sidebar-label">NAVIGATION</div>
-                    <a href="/" class="sidebar-item">
+                    <a href="/" class="sidebar-item" id="nav-dashboard-link" onclick="return checkNavGuard(event)">
                         <span class="stage-indicator"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1L1 6H3V12H6V9H8V12H11V6H13L7 1Z" fill="currentColor"/></svg></span>
                         <span class="stage-text">Dashboard</span>
                     </a>
@@ -132,6 +132,24 @@
     document.addEventListener('DOMContentLoaded', () => {
         _syncThemeUI(document.documentElement.getAttribute('data-theme') || 'dark');
     });
+
+    // Navigation guard: warn if active background process (upload, batch)
+    // Stages set window._activeProcess = true when a background task is running
+    window._activeProcess = false;
+    function checkNavGuard(event) {
+        if (!window._activeProcess) return true;
+        event.preventDefault();
+        const choice = confirm(
+            'A background process is currently running (upload/batch).\n\n' +
+            'If you leave, the process continues server-side but you may lose the progress view.\n\n' +
+            'Click OK to open Dashboard in a new tab (recommended).\n' +
+            'Click Cancel to stay on this page.'
+        );
+        if (choice) {
+            window.open('/', '_blank');
+        }
+        return false;
+    }
     </script>
 
     <script src="/static/js/sse_client.js"></script>
@@ -165,50 +183,54 @@
                 if (advBtn) advBtn.disabled = false;
             }
 
-            // Populate triplets from checkpoint data (Stage 4 or Stage 2)
+            // Populate sidebar stats from live metadata (single source of truth)
             const tripletEl = document.getElementById('sidebar-triplets');
             const liveEl = document.getElementById('sidebar-live-count');
-            let tripletCount = 0;
-            // Stage 4 checkpoint has authoritative triplet count
-            const s4cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
-            if (s4cp && s4cp.data && s4cp.data.triplets) {
-                tripletCount = s4cp.data.triplets;
-            } else {
-                // Fallback: Stage 2 checkpoint
-                const s2cp = _checkpoints.find(c => c.stage === 'stage2_mapping');
-                if (s2cp && s2cp.data && s2cp.data.triplets) {
-                    tripletCount = s2cp.data.triplets;
-                }
-            }
-            if (tripletEl && tripletCount > 0) {
-                tripletEl.textContent = tripletCount;
-            }
-
-            // Fetch live quarantine count from DB to keep sidebar accurate
             const qEl = document.getElementById('sidebar-quarantine-count');
-            if (qEl) {
-                apiGet('/api/sessions/{{ session.id }}/quarantine-count').then(r => {
-                    if (r.success && r.data && typeof r.data.count === 'number') {
-                        qEl.textContent = r.data.count;
-                        // Update live count = triplets - quarantined
-                        if (liveEl && tripletCount > 0) {
-                            liveEl.textContent = Math.max(0, tripletCount - r.data.count);
-                        }
-                    }
-                }).catch(() => {});
+            // Store globally so stages can read current counts
+            window._liveStats = null;
+
+            function updateSidebarFromStats(stats) {
+                window._liveStats = stats;
+                if (tripletEl) tripletEl.textContent = stats.total || 0;
+                if (qEl) qEl.textContent = stats.quarantined || 0;
+                if (liveEl) liveEl.textContent = stats.live || 0;
             }
 
-            // Global helper for stages to update quarantine count after operations
+            // Fetch live stats from metadata files
+            apiGet('/api/sessions/{{ session.id }}/live-stats').then(r => {
+                if (r.success && r.data) {
+                    updateSidebarFromStats(r.data);
+                }
+            }).catch(() => {
+                // Fallback: checkpoint-derived count if metadata not available yet
+                const s4cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
+                const s2cp = _checkpoints.find(c => c.stage === 'stage2_mapping');
+                let tripletCount = (s4cp && s4cp.data && s4cp.data.triplets) || (s2cp && s2cp.data && s2cp.data.triplets) || 0;
+                if (tripletEl && tripletCount > 0) tripletEl.textContent = tripletCount;
+            });
+
+            // Global helper for stages to update sidebar after quarantine operations
             window.updateSidebarQuarantineCount = function(delta) {
                 if (qEl) {
                     const current = parseInt(qEl.textContent) || 0;
-                    const updated = current + delta;
+                    const updated = Math.max(0, current + delta);
                     qEl.textContent = updated;
-                    if (liveEl && tripletCount > 0) {
-                        liveEl.textContent = Math.max(0, tripletCount - updated);
+                    if (liveEl) {
+                        const total = parseInt(tripletEl?.textContent) || 0;
+                        liveEl.textContent = Math.max(0, total - updated);
                     }
                 }
             };
+
+            // Global: refresh sidebar stats (call after any metadata-modifying operation)
+            window.refreshSidebarStats = function() {
+                apiGet('/api/sessions/{{ session.id }}/live-stats').then(r => {
+                    if (r.success && r.data) updateSidebarFromStats(r.data);
+                }).catch(() => {});
+            };
+
+            // renderLiveStatsBar removed — stats wired through backend scan endpoints
         });
     </script>
     {% endif %}

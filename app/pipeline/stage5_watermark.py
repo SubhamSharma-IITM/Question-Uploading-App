@@ -641,7 +641,11 @@ class WatermarkStage(BasePipelineStage):
         return d
 
     def scan_images(self) -> Dict[str, Any]:
-        """Scan for images in the session and return stats."""
+        """Scan for images in the session and return stats.
+
+        Includes both disk image count and metadata-derived counts (triplets,
+        questions with images, SMILES) from compute_live_stats().
+        """
         img_dir = self._get_image_dir()
         exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 
@@ -655,10 +659,25 @@ class WatermarkStage(BasePipelineStage):
                         "path": str(f),
                     })
 
+        # Metadata ground truth from live files
+        from app.pipeline.metadata_stats import compute_live_stats
+        from app.db import get_quarantined_qids
+        quarantined_qids = get_quarantined_qids(self.session_id)
+        live = compute_live_stats(self.session_dir, quarantined_qids)
+
         return {
             "total_images": len(images),
             "images": images,
             "dir": str(img_dir),
+            # Metadata-derived counts (source of truth)
+            "total_triplets": live["total"],
+            "live_questions": live["live"],
+            "quarantined": live["quarantined"],
+            "questions_with_images": live["with_images"],
+            "metadata_total_images": live["total_images"],
+            "with_smiles": live["with_smiles"],
+            "total_smiles_tags": live["total_smiles_tags"],
+            "by_subject": {s: v["live"] for s, v in live["by_subject"].items()},
         }
 
     def preview_samples(self, count: int = 7, cleaned: bool = False) -> Dict[str, Any]:

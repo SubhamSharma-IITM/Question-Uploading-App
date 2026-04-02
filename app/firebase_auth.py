@@ -72,7 +72,7 @@ USER_REGISTRY: Dict[str, dict] = {
         "pin_hash": _hash_pin("143143"),
     },
     "+917644045760": {
-        "name": "Raushan Yadav",
+        "name": "Raushan Kumar",
         "role": "Team",
         "pin_hash": _hash_pin("143143"),
     },

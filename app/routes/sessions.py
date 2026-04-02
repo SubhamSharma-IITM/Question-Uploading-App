@@ -189,6 +189,32 @@ async def get_quarantine_count(session_id: str):
     return APIResponse(data={"count": len(records)})
 
 
+@router.get("/api/sessions/{session_id}/live-stats")
+async def get_live_stats(session_id: str):
+    """Get live stats from metadata files -- single source of truth.
+
+    Returns per-subject counts of triplets, images, SMILES, error levels,
+    quarantine status -- all computed from the current metadata_v2 files.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return JSONResponse(
+            status_code=404,
+            content=APIResponse(
+                success=False,
+                error=ErrorDetail(code="NOT_FOUND", message="Session not found"),
+            ).model_dump(),
+        )
+
+    from app.db import get_quarantined_qids
+    from app.pipeline.metadata_stats import compute_live_stats
+
+    session_dir = Path(settings.sessions_dir) / session_id
+    quarantined = get_quarantined_qids(session_id)
+    stats = compute_live_stats(session_dir, quarantined)
+    return APIResponse(data=stats)
+
+
 @router.get("/api/sessions/{session_id}/logs/history")
 async def get_log_history(session_id: str, stage: str = None):
     """Get historical log entries from DB for a session (persisted across navigation)."""

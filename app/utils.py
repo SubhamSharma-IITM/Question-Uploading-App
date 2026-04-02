@@ -1,10 +1,35 @@
-"""Shared utilities: safe print, JSON helpers, logging formatters."""
+"""Shared utilities: safe print, JSON helpers, logging formatters, concurrency."""
 
+import asyncio
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# ── Concurrency guard for memory-intensive operations ──
+# Prevents OOM from concurrent FAISS/embedding operations on 2GB Render.
+# Initialized by lifespan in main.py, used by routes.
+_task_semaphore: asyncio.Semaphore = None  # type: ignore
+
+
+def init_semaphore(max_tasks: int = 3) -> None:
+    """Called at startup to initialize the global semaphore."""
+    global _task_semaphore
+    _task_semaphore = asyncio.Semaphore(max_tasks)
+
+
+async def guarded_thread(func, *args, **kwargs):
+    """Run a blocking function in a thread, guarded by the global semaphore.
+
+    Limits concurrent memory-intensive operations (FAISS, embeddings, large
+    metadata processing). Prevents OOM on 2GB instances when multiple users
+    trigger heavy operations simultaneously.
+    """
+    if _task_semaphore is None:
+        return await asyncio.to_thread(func, *args, **kwargs)
+    async with _task_semaphore:
+        return await asyncio.to_thread(func, *args, **kwargs)
 
 
 def _safe_print(text: str) -> None:

@@ -97,47 +97,66 @@ class UploadStage(BasePipelineStage):
         return file_groups, total
 
     def scan(self) -> Dict[str, Any]:
-        """Scan what's ready for upload."""
-        file_groups, total = self._load_all_metadata()
-        if total == 0:
+        """Scan what's ready for upload.
+
+        All counts derived from live metadata files via compute_live_stats().
+        upload_ready = err1 + err2 (both get uploaded).
+        A + B + C = total_triplets:
+          A = err1 (3/3 approved, ready to upload)
+          B = err2 (2/3 approved, upload with review flag)
+          C = quarantined + err3/4 (not uploaded)
+        """
+        from app.pipeline.metadata_stats import compute_live_stats
+
+        quarantined_qids = self._load_quarantined_qids()
+        live = compute_live_stats(self.session_dir, quarantined_qids)
+
+        if live["total"] == 0:
             return {"error": "No metadata_v2 files found"}
 
-        quarantined = self._load_quarantined_qids()
+        # upload_ready = err1 + err2 (both are uploaded)
+        upload_ready = live["err1"] + live["err2"]
 
-        # Count upload-ready questions
-        ready = 0
+        # Per-subject breakdown for upload-ready (err1+err2 only)
         by_subject = {}
-        by_type = {}
-        error_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        for subj, sv in live["by_subject"].items():
+            subj_ready = sv["err1"] + sv["err2"]
+            if subj_ready > 0:
+                by_subject[subj] = subj_ready
 
+        # Question type breakdown (need to iterate for this)
+        by_type = {}
+        file_groups, _ = self._load_all_metadata()
         for _, entries in file_groups:
             for entry in entries:
                 qid = entry.get("qid", "")
+                if qid in quarantined_qids:
+                    continue
                 error_val = entry.get("error", 2)
-
-                if qid in quarantined:
-                    continue
                 if isinstance(error_val, int) and error_val >= 3:
-                    error_counts[error_val] = error_counts.get(error_val, 0) + 1
                     continue
-
-                ready += 1
-                subj = entry.get("subject", "Unknown")
-                by_subject[subj] = by_subject.get(subj, 0) + 1
                 qtype = entry.get("questionType", "unknown")
                 by_type[qtype] = by_type.get(qtype, 0) + 1
-                if isinstance(error_val, int):
-                    error_counts[error_val] = error_counts.get(error_val, 0) + 1
 
-        self.log("info", f"Upload scan: {total} total, {ready} ready, {len(quarantined)} quarantined")
+        self.log("info",
+                 f"Upload scan: {live['total']} triplets, {live['live']} live, "
+                 f"{upload_ready} ready (err1={live['err1']}, err2={live['err2']}), "
+                 f"{live['quarantined']} quarantined")
         return {
-            "total_questions": total,
-            "upload_ready": ready,
-            "quarantined_count": len(quarantined),
-            "error_3_4_count": error_counts.get(3, 0) + error_counts.get(4, 0),
+            "total_questions": live["total"],
+            "total_live": live["live"],
+            "upload_ready": upload_ready,
+            "quarantined_count": live["quarantined"],
+            "err1_count": live["err1"],
+            "err2_count": live["err2"],
+            "error_3_4_count": live["err_other"],
             "by_subject": by_subject,
+            "by_subject_detail": live["by_subject"],
             "by_type": by_type,
-            "error_breakdown": error_counts,
+            "error_breakdown": {
+                1: live["err1"], 2: live["err2"],
+                "other": live["err_other"],
+            },
             "files_count": len(file_groups),
         }
 
@@ -163,13 +182,18 @@ class UploadStage(BasePipelineStage):
         if qa_ledger:
             self.log("info", f"Loaded QA ledger for {len(qa_ledger)} questions")
 
+        # Resume: load previously uploaded QIDs to skip re-upload
+        prev_map = self._load_upload_map()
+        if prev_map:
+            self.log("info", f"Resuming: {len(prev_map)} questions already uploaded, will skip them")
+
         total_posted = 0
         total_failed = 0
         total_skipped = 0
         posted_err1 = 0
         posted_err2 = 0
         all_csv_rows = []
-        upload_map = {}  # meta_qid → uploaded MongoDB _id
+        upload_map = dict(prev_map)  # Start with previous uploads for absorption
 
         for filepath, entries in file_groups:
             file_name = filepath.stem
@@ -233,6 +257,30 @@ class UploadStage(BasePipelineStage):
                 uploaded_id = None
                 link = "N/A"
 
+                # Resume: skip already-uploaded questions
+                if qid in prev_map:
+                    uploaded_id = prev_map[qid]
+                    total_posted += 1
+                    posted += 1
+                    if error_val == 1:
+                        posted_err1 += 1
+                    else:
+                        posted_err2 += 1
+                    base = QUESTION_EDIT_URL.get(qtype_key, "")
+                    link = f"{base}{uploaded_id}" if base else "N/A"
+                    view_link = f"{QUESTION_VIEW_URL}{uploaded_id}"
+                    csv_rows.append({
+                        "Question META ID": qid,
+                        "UploadedQuestionID": uploaded_id,
+                        "Subject": subject,
+                        "Question Type": qtype,
+                        "View Link": view_link,
+                        "Question Link": link,
+                        "Error Level": error_val,
+                        "IMAGE": "TRUE" if has_img else "FALSE",
+                    })
+                    continue
+
                 if dry_run:
                     status = "DRY_RUN"
                 else:
@@ -250,6 +298,9 @@ class UploadStage(BasePipelineStage):
                         link = f"{base}{uploaded_id}" if base else "N/A"
                         view_link = f"{QUESTION_VIEW_URL}{uploaded_id}"
                         status = uploaded_id
+                        # Incremental save for resume (every 10 uploads)
+                        if total_posted % 10 == 0:
+                            self._save_upload_map(upload_map)
                         # Stream progress to frontend
                         if total_posted % 5 == 0 or total_posted <= 3:
                             self.log("info", f"Uploaded {total_posted}/{total - len(quarantined)}: {qid} -> {uploaded_id[:12]}...")
@@ -587,7 +638,10 @@ class UploadStage(BasePipelineStage):
                 available_mb = (limit - current) / (1024 * 1024)
                 index_size_mb = index_path.stat().st_size / (1024 * 1024)
                 self.log("info", f"Memory: {available_mb:.0f}MB free, index: {index_size_mb:.0f}MB")
-                needed_mb = index_size_mb * 1.5 + 200  # 1.5x index + 200MB headroom
+                # Need 2.5x index (load + modify + write back) + 300MB headroom
+                # for embedding generation + Python overhead. The 1.5x was too tight
+                # (1912MB free vs 939MB index caused OOM on write)
+                needed_mb = index_size_mb * 2.5 + 300
                 if available_mb < needed_mb:
                     self.log("warning",
                         f"Skipping FAISS absorption -- insufficient memory "
