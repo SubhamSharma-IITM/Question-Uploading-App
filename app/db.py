@@ -575,8 +575,9 @@ def get_upload_stats(user_phone: Optional[str] = None,
     with _lock:
         conn = _get_conn()
         # IST offset (+5:30) so "today" boundaries align with Indian midnight, not UTC
+        # days=1 means "today only", days=2 means "yesterday+today", etc.
         _IST = "'+5 hours', '+30 minutes'"
-        date_filter = f"date(uploaded_at, {_IST}) >= date('now', {_IST}, '-{days} days')"
+        date_filter = f"date(uploaded_at, {_IST}) >= date('now', {_IST}, '-{days - 1} days')"
         user_filter = "AND user_phone = ?" if user_phone else ""
         params = (user_phone,) if user_phone else ()
 
