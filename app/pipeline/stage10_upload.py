@@ -385,12 +385,30 @@ class UploadStage(BasePipelineStage):
         })
 
         # Write upload_log entries for dashboard stats tracking (per subject)
+        # Clear first to prevent double-counting on resume runs
         if not dry_run and total_posted > 0:
             try:
-                from app.db import log_upload, get_session
+                from app.db import log_upload, clear_upload_log, get_session
                 session = get_session(self.session_id)
                 user_phone = (session or {}).get("created_by", "")
-                if user_phone:
+                if not user_phone:
+                    # Fallback: read from session_config.json on disk
+                    cfg_path = self.session_dir / "session_config.json"
+                    if cfg_path.exists():
+                        import json as _json
+                        try:
+                            with open(cfg_path, "r", encoding="utf-8") as f:
+                                cfg = _json.load(f)
+                            user_phone = cfg.get("created_by", "")
+                        except Exception:
+                            pass
+                if not user_phone:
+                    self.log("warning", "No user_phone for upload_log -- session has no owner")
+                else:
+                    # Idempotent: clear old rows before re-inserting
+                    cleared = clear_upload_log(self.session_id)
+                    if cleared:
+                        self.log("info", f"Cleared {cleared} old upload_log rows (resume re-log)")
                     logged = 0
                     for subj, counts in subject_counts.items():
                         if counts[1] > 0:

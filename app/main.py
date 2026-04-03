@@ -61,6 +61,7 @@ def _recover_orphan_sessions(sessions_dir: str) -> None:
         # Orphan found -- reconstruct from disk files
         config = None
         name = session_id[:8]
+        created_by = ""
         config_path = d / "session_config.json"
         if config_path.exists():
             try:
@@ -69,6 +70,7 @@ def _recover_orphan_sessions(sessions_dir: str) -> None:
                 name = config.get("pdf_filename", name)
                 if name.endswith(".pdf"):
                     name = name[:-4]
+                created_by = config.get("created_by", "")
             except Exception:
                 pass
 
@@ -100,7 +102,7 @@ def _recover_orphan_sessions(sessions_dir: str) -> None:
 
         try:
             create_session(session_id, name, created_at, config=config,
-                           initial_stage=stage, created_by="")
+                           initial_stage=stage, created_by=created_by)
             recovered += 1
             _safe_print(f"[RECOVERY] Restored orphan session: {session_id} ({name}) at {stage}")
         except Exception as e:
@@ -108,6 +110,108 @@ def _recover_orphan_sessions(sessions_dir: str) -> None:
 
     if recovered:
         _safe_print(f"[RECOVERY] Restored {recovered} orphan session(s)")
+
+
+def _backfill_upload_log(sessions_dir: str) -> None:
+    """Backfill upload_log for completed sessions that have no stats rows.
+
+    Reads combined_upload_log.csv from each completed session's upload_logs/
+    directory. Only runs for sessions with zero upload_log entries in SQLite.
+    """
+    import csv
+    from app.db import list_sessions, log_upload, clear_upload_log
+
+    sdir = Path(sessions_dir)
+    sessions = list_sessions()
+    backfilled = 0
+
+    for s in sessions:
+        if s["current_stage"] != "completed":
+            continue
+
+        sid = s["id"] if "id" in s else s.get("session_id", "")
+        if not sid:
+            continue
+
+        # Check if upload_log already has entries for this session
+        from app.db import _get_conn, _lock
+        with _lock:
+            conn = _get_conn()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM upload_log WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+
+        if count > 0:
+            continue  # Already has stats
+
+        # Find combined_upload_log.csv on disk
+        csv_path = sdir / sid / "upload_logs" / "combined_upload_log.csv"
+        if not csv_path.exists():
+            continue
+
+        # Get user phone from session
+        user_phone = s.get("created_by", "")
+        if not user_phone:
+            # Try session_config.json
+            cfg_path = sdir / sid / "session_config.json"
+            if cfg_path.exists():
+                try:
+                    import json as _json
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = _json.load(f)
+                    user_phone = cfg.get("created_by", "")
+                except Exception:
+                    pass
+            # Also fix the DB record so future lookups work
+            if user_phone:
+                with _lock:
+                    conn = _get_conn()
+                    conn.execute("UPDATE sessions SET created_by = ? WHERE id = ?",
+                                 (user_phone, sid))
+                    conn.commit()
+                _safe_print(f"[BACKFILL] Fixed created_by for {sid[:8]} -> {user_phone[-4:]}")
+        if not user_phone:
+            continue  # Cannot attribute
+
+        # Parse CSV and aggregate per subject + error level
+        try:
+            subject_counts = {}  # {subject: {1: count, 2: count}}
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    status = row.get("UploadedQuestionID", "")
+                    if status in ("QUARANTINED", "FAILED", "DRY_RUN") or status.startswith("SKIPPED"):
+                        continue
+                    if not status or len(status) < 10:
+                        continue  # Not a valid OID
+                    el = int(row.get("Error Level", 2))
+                    subj = row.get("Subject", "Unknown")
+                    if subj not in subject_counts:
+                        subject_counts[subj] = {1: 0, 2: 0}
+                    subject_counts[subj][el] += 1
+
+            if not subject_counts:
+                continue
+
+            # Clear any partial rows and re-insert
+            clear_upload_log(sid)
+            total = 0
+            for subj, counts in subject_counts.items():
+                if counts[1] > 0:
+                    log_upload(sid, user_phone, 1, subj, counts[1])
+                    total += counts[1]
+                if counts[2] > 0:
+                    log_upload(sid, user_phone, 2, subj, counts[2])
+                    total += counts[2]
+
+            backfilled += 1
+            _safe_print(f"[BACKFILL] {sid[:8]} ({s.get('name', '?')}): {total} entries logged for {user_phone[-4:]}")
+
+        except Exception as e:
+            _safe_print(f"[BACKFILL] Failed for {sid[:8]}: {e}")
+
+    if backfilled:
+        _safe_print(f"[BACKFILL] Filled upload_log for {backfilled} session(s)")
 
 
 @asynccontextmanager
@@ -136,6 +240,9 @@ async def lifespan(app: FastAPI):
     # Recover orphan sessions (directories on disk but not in SQLite)
     # Prevents data loss from OOM crashes that kill SQLite WAL
     _recover_orphan_sessions(settings.sessions_dir)
+
+    # Backfill upload_log for completed sessions missing stats
+    _backfill_upload_log(settings.sessions_dir)
 
     # Concurrency limiter -- prevents OOM from concurrent heavy operations
     from app.utils import init_semaphore

@@ -46,6 +46,12 @@ async def create_new_session(req: CreateSessionRequest, request: Request):
     ]:
         (session_dir / subdir).mkdir(parents=True, exist_ok=True)
 
+    # Persist created_by to disk so orphan recovery can attribute the session
+    import json as _json
+    config_path = session_dir / "session_config.json"
+    disk_config = {"created_by": created_by, "session_name": req.name}
+    config_path.write_text(_json.dumps(disk_config, ensure_ascii=False), encoding="utf-8")
+
     # Insert into DB — start at stage1_upload so sidebar highlights Step 1
     # and first "Advance" goes to stage2 (not back to stage1)
     create_session(session_id, req.name, created_at, req.config,

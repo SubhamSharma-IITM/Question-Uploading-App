@@ -553,6 +553,17 @@ def list_users(role: Optional[str] = None) -> List[Dict]:
 # ── Upload log (daily stats tracking) ──
 
 
+def clear_upload_log(session_id: str) -> int:
+    """Delete all upload_log entries for a session (idempotent re-log)."""
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute(
+            "DELETE FROM upload_log WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
 def log_upload(session_id: str, user_phone: str, error_level: int,
                subject: str, count: int) -> None:
     """Record an upload event for daily stats tracking."""
