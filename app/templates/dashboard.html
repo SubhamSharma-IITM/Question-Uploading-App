@@ -845,7 +845,11 @@ function renderTeamPanel(teamData, heartbeats) {
     function fmtIST(utcStr) {
         if (!utcStr || utcStr.length < 10) return '';
         try {
-            const d = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
+            // now_iso() returns +00:00 suffix; normalize to Z for Date parser
+            let s = utcStr;
+            if (s.endsWith('+00:00')) s = s.slice(0, -6) + 'Z';
+            else if (!s.endsWith('Z')) s = s + 'Z';
+            const d = new Date(s);
             if (isNaN(d.getTime())) return '';
             return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
         } catch(e) { return ''; }
@@ -854,7 +858,10 @@ function renderTeamPanel(teamData, heartbeats) {
     function getActivity(member) {
         const hb = hbMap[member.phone];
         if (hb && hb.last_ping) {
-            const pingTime = new Date(hb.last_ping.endsWith('Z') ? hb.last_ping : hb.last_ping + 'Z');
+            let pp = hb.last_ping;
+            if (pp.endsWith('+00:00')) pp = pp.slice(0, -6) + 'Z';
+            else if (!pp.endsWith('Z')) pp = pp + 'Z';
+            const pingTime = new Date(pp);
             const diffMin = isNaN(pingTime.getTime()) ? 9999 : (Date.now() - pingTime.getTime()) / 60000;
             if (diffMin < 10) return {cls: 'online', text: 'Active now'};
             if (diffMin < 30) return {cls: 'away', text: Math.round(diffMin) + 'm ago'};

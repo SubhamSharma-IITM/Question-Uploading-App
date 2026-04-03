@@ -1150,6 +1150,13 @@ class WatermarkStage(BasePipelineStage):
                  f"SMILES scan: {entries_with_smiles} entries with {total_smiles} tags"
                  if has else "SMILES scan: no <smiles> tags found")
 
+        # When no SMILES found and quarantine is done, mark stage completed
+        # so the advance gate passes on the backend checkpoint check.
+        if not has:
+            cp_data = self._load_checkpoint_data()
+            if cp_data.get("quarantine_step") == "completed":
+                self.save_checkpoint("completed", cp_data)
+
         return {
             "has_smiles": has,
             "rdkit_available": HAS_RDKIT,
