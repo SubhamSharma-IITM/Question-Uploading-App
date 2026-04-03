@@ -249,6 +249,23 @@ def _build_system_instruction(extra_context: str = "") -> str:
     return base
 
 
+def _build_difficulty_exam_note(prev_exam: str) -> str:
+    """Return an exam-specific note for the difficulty classification prompt."""
+    ex = (prev_exam or "").upper()
+    if "ADVANCED" in ex:
+        return (
+            "Note (JEE Advanced): The baseline is higher -- a standard multi-step problem "
+            "that would be MEDIUM in Mains is EASY here. Reserve HARD for truly non-standard, "
+            "paragraph-decode, or proof-style problems.\n"
+        )
+    if "NEET" in ex:
+        return (
+            "Note (NEET): For Biology, direct NCERT line recall or single-fact = EASY. "
+            "For Physics/Chemistry numericals, use the same student-feel scale above.\n"
+        )
+    return ""
+
+
 def _build_extraction_prompt(
     start_line: int,
     batch_size: int,
@@ -345,12 +362,11 @@ EOF DETECTION:
 - Do NOT try to re-extract questions from earlier in the document. If the start line is past the questions section, return EOF.
 - Only return EOF if you are CERTAIN no new questions remain. Do not return EOF if you simply cannot find {batch_size} questions — return whatever new questions you find.
 
-DIFFICULTY CLASSIFICATION:
-Assign a difficulty level to each question based on these JEE/NEET criteria:
-- "EASY": Direct formula application, single-concept, NCERT-level, definition-based, 1-step solution
-- "MEDIUM": Multi-concept, 2-3 step reasoning, moderate calculation, standard exam level
-- "HARD": Multi-step derivation, tricky/non-standard approach, integration of 3+ concepts, competition-level, lengthy calculation
-For passage sub-questions, classify each sub-question independently.
+DIFFICULTY CLASSIFICATION (from a 60%+ scoring student's perspective — how the question FEELS to attempt, not academic taxonomy):
+- "EASY": Student instantly recognizes the pattern/formula. One-read solve, 1-2 steps. Direct NCERT, PYQ repeat, plug-and-chug. "Sitter" — done in under 90 seconds.
+- "MEDIUM": Student needs 30-60 sec to spot the approach, then it flows. Multi-step or 2-3 concepts, may be lengthy, but method is clear once identified. Includes what teachers call "hard but standard."
+- "HARD": Student reads it twice and still cannot identify the method. Non-obvious trick, obscure concept link, or paragraph decoding that is a time sink. "Skip and come back" territory.
+{_build_difficulty_exam_note(prev_exam)}For passage sub-questions, classify each sub-question independently.
 
 OUTPUT FORMAT (JSON):
 - If questions found, return JSON array:
