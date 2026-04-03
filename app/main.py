@@ -214,6 +214,65 @@ def _backfill_upload_log(sessions_dir: str) -> None:
         _safe_print(f"[BACKFILL] Filled upload_log for {backfilled} session(s)")
 
 
+def _cleanup_completed_sessions(sessions_dir: str) -> None:
+    """Free disk by removing heavy directories from completed sessions.
+
+    Keeps upload_logs/ and session_config.json (needed for stats backfill
+    and orphan recovery). Deletes images, metadata, batches, etc.
+    Only touches sessions that have a combined_upload_log.csv (confirmed complete).
+    """
+    import shutil
+    from app.db import list_sessions
+
+    sdir = Path(sessions_dir)
+    if not sdir.exists():
+        return
+
+    # Identify active sessions (not completed) — never touch these
+    sessions = list_sessions()
+    active_ids = {s["id"] for s in sessions if s["current_stage"] != "completed"}
+
+    HEAVY_DIRS = [
+        "images_original", "images_cleaned", "metadata_v2", "mapped_output",
+        "cleaned_output", "batch_jsonl", "batch_results", "batch_files",
+        "duplicate_reports", "duplicates", "quality_check", "quality",
+        "quarantine", "backups", "input", "mathpix_output",
+        "session_embeddings", "smiles_output",
+    ]
+
+    cleaned = 0
+    freed_mb = 0
+    for d in sorted(sdir.iterdir()):
+        if not d.is_dir():
+            continue
+        sid = d.name
+        if sid in active_ids:
+            continue
+
+        # Only clean sessions with a completed CSV (confirmed uploaded)
+        csv_path = d / "upload_logs" / "combined_upload_log.csv"
+        if not csv_path.exists():
+            continue
+
+        session_freed = 0
+        for hd in HEAVY_DIRS:
+            target = d / hd
+            if target.is_dir():
+                try:
+                    size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+                    shutil.rmtree(target)
+                    session_freed += size
+                except Exception:
+                    pass
+
+        if session_freed > 0:
+            cleaned += 1
+            freed_mb += session_freed / (1024 * 1024)
+
+    if cleaned:
+        _safe_print(f"[CLEANUP] Freed {freed_mb:.0f}MB from {cleaned} completed session(s)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: init DB, create dirs. Shutdown: cleanup."""
@@ -243,6 +302,9 @@ async def lifespan(app: FastAPI):
 
     # Backfill upload_log for completed sessions missing stats
     _backfill_upload_log(settings.sessions_dir)
+
+    # Selective cleanup: free disk for completed sessions (keep CSVs + config)
+    _cleanup_completed_sessions(settings.sessions_dir)
 
     # Concurrency limiter -- prevents OOM from concurrent heavy operations
     from app.utils import init_semaphore
