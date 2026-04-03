@@ -870,29 +870,47 @@ function renderTeamPanel(teamData, heartbeats) {
         return {cls: 'offline', text: lastFmt ? 'Last: ' + lastFmt : 'Never logged in'};
     }
 
-    // Collect all subjects across team for subject breakdown
-    const allSubjects = new Set();
-    teamData.forEach(m => {
-        const subjs = m.today_by_subject || m.all_time_by_subject || {};
-        Object.keys(subjs).forEach(s => allSubjects.add(s));
-    });
-    // Normalize Biology -> Botany + Zoology display
-    const subjectList = Array.from(allSubjects).sort();
+    // ── Helper: merge subject data into 4 groups (Math, Physics, Chemistry, Biology) ──
+    function mergeSubjects(bySubj) {
+        const m = {err1: 0, err2: 0}, p = {err1: 0, err2: 0}, c = {err1: 0, err2: 0}, b = {err1: 0, err2: 0};
+        for (const [s, v] of Object.entries(bySubj || {})) {
+            const sl = s.toLowerCase();
+            if (sl.includes('math')) { m.err1 += (v.err1||0); m.err2 += (v.err2||0); }
+            else if (sl.includes('physics')) { p.err1 += (v.err1||0); p.err2 += (v.err2||0); }
+            else if (sl.includes('botan') || sl.includes('zoolog') || sl.includes('biology')) { b.err1 += (v.err1||0); b.err2 += (v.err2||0); }
+            else if (sl.includes('chem') || sl.includes('inorganic') || sl.includes('organic') || sl.includes('physical c')) { c.err1 += (v.err1||0); c.err2 += (v.err2||0); }
+            else { c.err1 += (v.err1||0); c.err2 += (v.err2||0); } // default to chem
+        }
+        return {M: m, P: p, C: c, B: b};
+    }
+    function subjCell(g, key) {
+        const v = g[key];
+        if (!v || (v.err1 + v.err2) === 0) return '<td style="text-align:center;color:var(--text-muted);font-family:monospace;font-size:10px;">-</td>';
+        return '<td style="text-align:center;font-family:monospace;font-size:10px;"><span style="color:var(--success);">' + v.err1 + '</span><span style="color:var(--text-muted);">/</span><span style="color:var(--warning);">' + v.err2 + '</span></td>';
+    }
 
     // ── Main table with header row ──
-    let html = '<table style="width:100%;border-collapse:separate;border-spacing:0 2px;font-size:12px;">';
-    html += '<thead><tr style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text-muted);">' +
-        '<th style="text-align:left;padding:6px 8px;">Member</th>' +
-        '<th style="text-align:center;padding:6px 4px;color:var(--success);">Today E1</th>' +
-        '<th style="text-align:center;padding:6px 4px;color:var(--warning);">Today E2</th>' +
-        '<th style="text-align:center;padding:6px 4px;">Yday E1</th>' +
-        '<th style="text-align:center;padding:6px 4px;color:var(--accent);">' + _currentDays + 'd E1</th>' +
-        '<th style="text-align:center;padding:6px 4px;color:var(--warning);">' + _currentDays + 'd E2</th>' +
-        '<th style="text-align:center;padding:6px 4px;">Sessions</th>' +
-        '<th style="text-align:center;padding:6px 4px;">Status</th>' +
+    const hdr = 'font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:var(--text-muted);padding:6px 3px;text-align:center;';
+    const sep = '<th style="width:1px;padding:0;border-left:1px solid var(--border);"></th>';
+    let html = '<table style="width:100%;border-collapse:separate;border-spacing:0 2px;font-size:11px;">';
+    html += '<thead><tr>' +
+        '<th style="' + hdr + 'text-align:left;padding-left:8px;">Member</th>' +
+        '<th style="' + hdr + 'color:var(--success);">Today</th>' +
+        '<th style="' + hdr + '">Yday</th>' +
+        '<th style="' + hdr + 'color:var(--accent);">' + _currentDays + 'd</th>' +
+        '<th style="' + hdr + '">All</th>' +
+        sep +
+        '<th style="' + hdr + '" title="Math">M</th>' +
+        '<th style="' + hdr + '" title="Physics">P</th>' +
+        '<th style="' + hdr + '" title="Chemistry">C</th>' +
+        '<th style="' + hdr + '" title="Biology">B</th>' +
+        sep +
+        '<th style="' + hdr + '">Sess</th>' +
+        '<th style="' + hdr + '">Status</th>' +
     '</tr></thead><tbody>';
 
-    let totTodayE1 = 0, totTodayE2 = 0, totYdayE1 = 0, totRangeE1 = 0, totRangeE2 = 0, totActive = 0, totDone = 0;
+    let totTodayE1 = 0, totTodayE2 = 0, totYdayE1 = 0, totRangeE1 = 0, totRangeE2 = 0, totAllE1 = 0, totAllE2 = 0, totActive = 0, totDone = 0;
+    const totSubj = {M:{err1:0,err2:0}, P:{err1:0,err2:0}, C:{err1:0,err2:0}, B:{err1:0,err2:0}};
 
     teamData.forEach(member => {
         const name = member.name || 'Unknown';
@@ -905,82 +923,67 @@ function renderTeamPanel(teamData, heartbeats) {
         totYdayE1 += (member.yesterday_err1 || 0);
         totRangeE1 += (member.range_err1 || 0);
         totRangeE2 += (member.range_err2 || 0);
+        totAllE1 += (member.all_time_err1 || 0);
+        totAllE2 += (member.all_time_err2 || 0);
         totActive += (member.active_sessions || 0);
         totDone += (member.completed_sessions || 0);
 
-        const roleBadge = '<span style="font-size:9px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +
+        // Subject breakdown for selected range
+        const sg = mergeSubjects(member.range_by_subject || member.all_time_by_subject || {});
+        for (const k of ['M','P','C','B']) { totSubj[k].err1 += sg[k].err1; totSubj[k].err2 += sg[k].err2; }
+
+        const roleBadge = '<span style="font-size:8px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +
             ';background:' + (isAdmin ? 'rgba(79,125,249,0.1)' : 'transparent') +
-            ';padding:0 4px;border-radius:2px;">' + role + '</span>';
+            ';padding:0 3px;border-radius:2px;">' + role + '</span>';
+
+        const td = 'text-align:center;font-family:monospace;';
+        const sepTd = '<td style="width:1px;padding:0;border-left:1px solid var(--border);"></td>';
+
+        // E1/E2 cell helper
+        function e12(e1, e2, bold) {
+            const w = bold ? 'font-weight:700;font-size:12px;' : 'font-size:11px;';
+            return '<td style="' + td + w + '"><span style="color:var(--success);">' + e1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + e2 + '</span></td>';
+        }
 
         html += '<tr style="background:var(--bg-card);">' +
-            '<td style="padding:8px;border-radius:6px 0 0 6px;">' +
-                '<div style="display:flex;align-items:center;gap:8px;">' +
-                    '<div class="team-avatar ' + (isAdmin ? 'admin' : 'team') + '" style="width:28px;height:28px;font-size:11px;">' + name[0] + '</div>' +
-                    '<div><div style="font-weight:600;font-size:12px;">' + name + ' ' + roleBadge + '</div>' +
-                    '</div>' +
+            '<td style="padding:6px 8px;border-radius:6px 0 0 6px;">' +
+                '<div style="display:flex;align-items:center;gap:6px;">' +
+                    '<div class="team-avatar ' + (isAdmin ? 'admin' : 'team') + '" style="width:24px;height:24px;font-size:10px;">' + name[0] + '</div>' +
+                    '<div style="font-weight:600;font-size:11px;line-height:1.2;">' + name.split(' ')[0] + ' ' + roleBadge + '</div>' +
                 '</div>' +
             '</td>' +
-            '<td style="text-align:center;font-weight:700;font-family:monospace;font-size:14px;color:var(--success);">' + (member.today_err1 || 0) + '</td>' +
-            '<td style="text-align:center;font-weight:600;font-family:monospace;color:var(--warning);">' + (member.today_err2 || 0) + '</td>' +
-            '<td style="text-align:center;font-family:monospace;color:var(--text-secondary);">' + (member.yesterday_err1 || 0) + '</td>' +
-            '<td style="text-align:center;font-weight:600;font-family:monospace;color:var(--accent);">' + (member.range_err1 || 0) + '</td>' +
-            '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + (member.range_err2 || 0) + '</td>' +
-            '<td style="text-align:center;font-family:monospace;">' + (member.active_sessions || 0) + '<span style="color:var(--text-muted);"> / </span>' + (member.completed_sessions || 0) + '</td>' +
+            e12(member.today_err1||0, member.today_err2||0, true) +
+            '<td style="' + td + 'font-size:11px;color:var(--text-secondary);">' + (member.yesterday_err1||0) + '</td>' +
+            e12(member.range_err1||0, member.range_err2||0, false) +
+            e12(member.all_time_err1||0, member.all_time_err2||0, false) +
+            sepTd +
+            subjCell(sg, 'M') + subjCell(sg, 'P') + subjCell(sg, 'C') + subjCell(sg, 'B') +
+            sepTd +
+            '<td style="' + td + 'font-size:10px;">' + (member.active_sessions||0) + '<span style="color:var(--text-muted);">/</span>' + (member.completed_sessions||0) + '</td>' +
             '<td style="text-align:center;border-radius:0 6px 6px 0;">' +
                 '<span class="activity-dot ' + act.cls + '"></span>' +
-                '<span style="font-size:10px;color:var(--text-muted);">' + act.text + '</span>' +
+                '<span style="font-size:9px;color:var(--text-muted);">' + act.text + '</span>' +
             '</td>' +
         '</tr>';
     });
 
     // Totals row
+    const ttd = 'text-align:center;font-family:monospace;font-weight:700;';
+    const sepTd = '<td style="width:1px;padding:0;border-left:1px solid var(--border);"></td>';
     html += '<tr style="font-weight:700;border-top:2px solid var(--border);">' +
-        '<td style="padding:10px 8px;font-size:12px;border-radius:6px 0 0 6px;">TOTALS</td>' +
-        '<td style="text-align:center;font-family:monospace;font-size:14px;color:var(--success);">' + totTodayE1 + '</td>' +
-        '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + totTodayE2 + '</td>' +
-        '<td style="text-align:center;font-family:monospace;color:var(--text-secondary);">' + totYdayE1 + '</td>' +
-        '<td style="text-align:center;font-family:monospace;color:var(--accent);">' + totRangeE1 + '</td>' +
-        '<td style="text-align:center;font-family:monospace;color:var(--warning);">' + totRangeE2 + '</td>' +
-        '<td style="text-align:center;font-family:monospace;">' + totActive + ' / ' + totDone + '</td>' +
+        '<td style="padding:8px;font-size:11px;border-radius:6px 0 0 6px;">TOTALS</td>' +
+        '<td style="' + ttd + 'font-size:12px;"><span style="color:var(--success);">' + totTodayE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totTodayE2 + '</span></td>' +
+        '<td style="' + ttd + 'color:var(--text-secondary);">' + totYdayE1 + '</td>' +
+        '<td style="' + ttd + '"><span style="color:var(--success);">' + totRangeE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totRangeE2 + '</span></td>' +
+        '<td style="' + ttd + '"><span style="color:var(--success);">' + totAllE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totAllE2 + '</span></td>' +
+        sepTd +
+        subjCell(totSubj, 'M') + subjCell(totSubj, 'P') + subjCell(totSubj, 'C') + subjCell(totSubj, 'B') +
+        sepTd +
+        '<td style="' + ttd + 'font-size:10px;">' + totActive + '/' + totDone + '</td>' +
         '<td style="border-radius:0 6px 6px 0;"></td>' +
     '</tr>';
 
     html += '</tbody></table>';
-
-    // ── Subject breakdown section ──
-    if (subjectList.length > 0) {
-        html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">' +
-            '<div style="font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Subject Breakdown (Today)</div>';
-
-        html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
-        html += '<thead><tr style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text-muted);">' +
-            '<th style="text-align:left;padding:4px 6px;">Member</th>';
-        subjectList.forEach(s => {
-            // Shorten long subject names
-            const short = s.length > 8 ? s.slice(0, 7) + '.' : s;
-            html += '<th style="text-align:center;padding:4px 3px;" title="' + s + '">' + short + '</th>';
-        });
-        html += '</tr></thead><tbody>';
-
-        teamData.forEach(member => {
-            const subjs = member.today_by_subject || {};
-            html += '<tr><td style="padding:3px 6px;font-weight:600;">' + (member.name || '?') + '</td>';
-            subjectList.forEach(s => {
-                const sv = subjs[s] || {};
-                const e1 = sv.err1 || 0;
-                const e2 = sv.err2 || 0;
-                if (e1 + e2 > 0) {
-                    html += '<td style="text-align:center;font-family:monospace;"><span style="color:var(--success);">' + e1 + '</span>' +
-                        '<span style="color:var(--text-muted);"> / </span><span style="color:var(--warning);">' + e2 + '</span></td>';
-                } else {
-                    html += '<td style="text-align:center;color:var(--text-muted);">-</td>';
-                }
-            });
-            html += '</tr>';
-        });
-
-        html += '</tbody></table></div>';
-    }
 
     body.innerHTML = html;
 }

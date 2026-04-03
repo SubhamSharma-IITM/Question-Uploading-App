@@ -455,6 +455,7 @@ async def dashboard_stats(request: Request, days: int = 7):
                 "yesterday_err2": u_yesterday_only["err2"],
                 "range_err1": u_range["err1"],
                 "range_err2": u_range["err2"],
+                "range_by_subject": u_range.get("by_subject", {}),
                 "all_time_err1": u_all_time["err1"],
                 "all_time_err2": u_all_time["err2"],
                 "all_time_by_subject": u_all_time.get("by_subject", {}),
