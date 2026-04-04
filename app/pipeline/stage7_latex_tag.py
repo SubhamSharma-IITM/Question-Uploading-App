@@ -1605,6 +1605,28 @@ class LatexTagStage(BasePipelineStage):
                         qid = custom_id[len(prefix):] if custom_id.startswith(prefix) else custom_id
                         result_lookup[qid] = content_text
 
+                # Detect dropped QIDs: submitted in input but missing from output
+                if batch_type == "tagging":
+                    input_path = self._get_batch_dir() / "tagging_batch.jsonl"
+                    if input_path.exists():
+                        submitted_qids = set()
+                        with open(input_path, "r", encoding="utf-8") as inf:
+                            for line in inf:
+                                if not line.strip():
+                                    continue
+                                try:
+                                    req = json.loads(line)
+                                    cid = req.get("custom_id", "")
+                                    if cid.startswith("tag-"):
+                                        submitted_qids.add(cid[4:])
+                                except json.JSONDecodeError:
+                                    continue
+                        dropped = submitted_qids - set(result_lookup.keys())
+                        if dropped:
+                            self.log("warning",
+                                     f"{len(dropped)} tagging QIDs submitted but missing from batch output -- quarantining")
+                            empty_tag_qids.extend(dropped)
+
                 # Merge into metadata_v2 files
                 meta_dir = self._get_metadata_dir()
 
