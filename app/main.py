@@ -37,6 +37,55 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _task_semaphore: Optional[asyncio.Semaphore] = None
 
 
+def _reattribute_ghost_sessions(sessions_dir: str) -> None:
+    """Fix sessions with empty created_by by reading session_config.json.
+
+    Display cookie fallback used to create sessions with phone="" after
+    server restarts. This scans ALL sessions and re-attributes from disk
+    config where possible, or logs unattributed sessions for manual fix.
+    """
+    from app.db import list_sessions, _get_conn, _lock
+    import json as _json
+
+    sdir = Path(sessions_dir)
+    fixed = 0
+    unattributed = 0
+
+    sessions = list_sessions()
+    for s in sessions:
+        sid = s.get("id", s.get("session_id", ""))
+        if not sid or s.get("created_by", ""):
+            continue  # Already attributed
+
+        # Try session_config.json for phone
+        phone = ""
+        cfg_path = sdir / sid / "session_config.json"
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = _json.load(f)
+                phone = cfg.get("created_by", "")
+            except Exception:
+                pass
+
+        if phone:
+            with _lock:
+                conn = _get_conn()
+                conn.execute("UPDATE sessions SET created_by = ? WHERE id = ?",
+                             (phone, sid))
+                conn.commit()
+            fixed += 1
+            _safe_print(f"[REATTR] Fixed ghost session {sid[:8]} -> {phone[-4:]}")
+        else:
+            unattributed += 1
+            _safe_print(f"[REATTR] Unattributed ghost: {sid[:8]} ({s.get('name', '?')}) stage={s.get('current_stage', '?')}")
+
+    if fixed:
+        _safe_print(f"[REATTR] Re-attributed {fixed} ghost session(s)")
+    if unattributed:
+        _safe_print(f"[REATTR] {unattributed} session(s) still unattributed (need manual fix)")
+
+
 def _recover_orphan_sessions(sessions_dir: str) -> None:
     """Scan session directories and re-register any that are missing from SQLite.
 
@@ -300,6 +349,9 @@ async def lifespan(app: FastAPI):
     # Prevents data loss from OOM crashes that kill SQLite WAL
     _recover_orphan_sessions(settings.sessions_dir)
 
+    # Fix ghost sessions created with empty created_by (display cookie fallback bug)
+    _reattribute_ghost_sessions(settings.sessions_dir)
+
     # Backfill upload_log for completed sessions missing stats
     _backfill_upload_log(settings.sessions_dir)
 
@@ -355,13 +407,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
             display = request.cookies.get("acadza_display", "")
             if display and "|" in display:
                 parts = display.split("|", 1)
-                session_data = {"name": parts[0], "role": parts[1], "phone": "", "uid": "restored"}
+                # Resolve phone from USER_REGISTRY by matching name
+                from app.firebase_auth import USER_REGISTRY
+                resolved_phone = ""
+                for ph, info in USER_REGISTRY.items():
+                    if info.get("name") == parts[0]:
+                        resolved_phone = ph
+                        break
+                session_data = {"name": parts[0], "role": parts[1], "phone": resolved_phone, "uid": "restored"}
+                # Track login for restored sessions
+                if resolved_phone:
+                    from app.db import upsert_user, update_user_login
+                    upsert_user(resolved_phone, parts[0], parts[1])
+                    update_user_login(resolved_phone)
                 # Re-create server session so verify works on next request
-                new_token = create_session("", parts[0], parts[1])
+                new_token = create_session(resolved_phone, parts[0], parts[1])
                 from app.firebase_auth import _sessions
                 if new_token in _sessions:
                     _sessions[new_token]["name"] = parts[0]
                     _sessions[new_token]["role"] = parts[1]
+                    _sessions[new_token]["phone"] = resolved_phone
                 # Set user state before call_next so templates can access it
                 request.state.user = session_data
                 response = await call_next(request)

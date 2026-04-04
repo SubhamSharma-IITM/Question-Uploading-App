@@ -191,6 +191,66 @@ async def advance_session(session_id: str):
     return APIResponse(data={"session_id": session_id, "stage": nxt})
 
 
+@router.get("/api/admin/ghost-sessions")
+async def list_ghost_sessions(request: Request):
+    """Admin-only: list sessions with empty created_by (ghost sessions)."""
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("Admin", "Architect"):
+        return JSONResponse(status_code=403, content={"success": False, "error": "Admin only"})
+
+    all_sessions = list_sessions()
+    ghosts = []
+    for s in all_sessions:
+        if not s.get("created_by", ""):
+            ghosts.append({
+                "id": s["id"],
+                "name": s.get("name", "?"),
+                "current_stage": s.get("current_stage", "?"),
+                "created_at": s.get("created_at", ""),
+            })
+    return APIResponse(data={"ghost_count": len(ghosts), "ghosts": ghosts})
+
+
+@router.post("/api/admin/reattribute")
+async def reattribute_sessions(request: Request):
+    """Admin-only: assign ghost sessions to a user phone.
+
+    Body: {"session_ids": [...], "phone": "+91..."}
+    """
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("Admin", "Architect"):
+        return JSONResponse(status_code=403, content={"success": False, "error": "Admin only"})
+
+    body = await request.json()
+    session_ids = body.get("session_ids", [])
+    phone = body.get("phone", "")
+    if not phone or not session_ids:
+        return JSONResponse(status_code=400, content={"success": False, "error": "session_ids and phone required"})
+
+    from app.db import _get_conn, _lock
+    import json as _json
+    fixed = 0
+    for sid in session_ids:
+        with _lock:
+            conn = _get_conn()
+            conn.execute("UPDATE sessions SET created_by = ? WHERE id = ?", (phone, sid))
+            conn.commit()
+        # Also fix session_config.json on disk
+        cfg_path = Path(settings.sessions_dir) / sid / "session_config.json"
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = _json.load(f)
+                cfg["created_by"] = phone
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    _json.dump(cfg, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        fixed += 1
+
+    return APIResponse(data={"fixed": fixed, "phone": phone})
+
+
 @router.get("/api/sessions/{session_id}/quarantine-count")
 async def get_quarantine_count(session_id: str):
     """Get the current quarantine count for sidebar display."""
