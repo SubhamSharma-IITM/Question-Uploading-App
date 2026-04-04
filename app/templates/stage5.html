@@ -478,7 +478,7 @@ async function removeUnselected() {
             if (r.success) {
                 lockPreviewPane();
                 _quarantineDone = true;
-                activateSmilesStep();
+                await activateSmilesStep();
                 appendLog('success', 'Image review confirmed -- proceeding to SMILES check');
             }
         } catch (e) {
@@ -503,7 +503,7 @@ async function removeUnselected() {
             if (r.success) {
                 lockPreviewPane();
                 _quarantineDone = true;
-                activateSmilesStep();
+                await activateSmilesStep();
             }
         } catch (e) { appendLog('error', 'Confirm error: ' + e.message); }
         return;
@@ -533,7 +533,7 @@ async function removeUnselected() {
 
             lockPreviewPane();
             _quarantineDone = true;
-            activateSmilesStep();
+            await activateSmilesStep();
         } else {
             appendLog('error', 'Remove failed: ' + (r.error?.message || 'Unknown'));
             btn.disabled = false;
@@ -654,29 +654,35 @@ async function advanceWithAutoQuarantine(sessionId) {
     if (!_quarantineDone && _watermarkDone) {
         const unchecked = document.querySelectorAll('.wm-checkbox:not(:checked)');
         if (unchecked.length > 0) {
-            // Has unselected images — ask user like Stage 8 does
             const qids = [];
             unchecked.forEach(cb => { if (cb.dataset.qid) qids.push(cb.dataset.qid); });
             if (qids.length > 0 && !confirm(`${qids.length} image(s) unselected will be quarantined. Proceed?`)) {
                 return;
             }
         }
-        // Auto-confirm review (quarantine unselected + mark done)
         appendLog('info', 'Auto-confirming image review before advancing...');
         try {
             await removeUnselected();
         } catch (e) {
             appendLog('warning', 'Auto-quarantine error: ' + e.message);
         }
-        // Even if removeUnselected had issues, proceed
         if (!_quarantineDone) {
-            // Force-complete quarantine step via API
             try {
                 await apiPost(`${API_BASE}/confirm_review`);
                 _quarantineDone = true;
             } catch (e) { /* proceed anyway */ }
         }
     }
+
+    // Ensure SMILES scan ran (backend auto-completes if no SMILES)
+    if (!_smilesDone) {
+        try {
+            await activateSmilesStep();
+        } catch (e) {
+            appendLog('warning', 'SMILES scan error: ' + e.message);
+        }
+    }
+
     advanceStage(sessionId);
 }
 

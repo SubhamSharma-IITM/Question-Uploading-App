@@ -151,6 +151,19 @@ async def advance_session(session_id: str):
     # Allow advancement if stage is completed OR running in background
     # "smiles_rendered" and "skipped" are legacy/safety — stages should save "completed"
     ADVANCEABLE_STATUSES = {"completed", "background", "smiles_rendered", "skipped"}
+
+    # Stage 5 safety net: auto-complete if all sub-steps are done but status
+    # never transitioned (e.g. SMILES scan didn't run or errored)
+    if (current == "stage5_watermark"
+            and checkpoint is not None
+            and checkpoint.get("status") not in ADVANCEABLE_STATUSES):
+        cp_data = checkpoint.get("data") or {}
+        if (cp_data.get("watermark_step") == "completed"
+                and cp_data.get("quarantine_step") == "completed"):
+            from app.db import upsert_checkpoint
+            upsert_checkpoint(session_id, current, "completed", cp_data)
+            checkpoint = get_checkpoint(session_id, current)
+
     if checkpoint is None or checkpoint.get("status") not in ADVANCEABLE_STATUSES:
         stage_label = current.replace("_", " ").replace("stage", "Stage ")
         return JSONResponse(

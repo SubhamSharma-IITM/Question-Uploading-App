@@ -205,7 +205,9 @@ async def confirm_review(session_id: str):
     """Confirm image review is complete (even if 0 quarantined).
 
     Called when user finishes reviewing images but doesn't quarantine any.
-    Marks quarantine_step as completed so SMILES can activate.
+    Marks quarantine_step as completed. Also runs inline SMILES check --
+    if no SMILES tags exist, immediately marks checkpoint as completed
+    so the advance gate passes without needing a separate scan call.
     """
     session, err = _get_session_or_404(session_id)
     if err:
@@ -217,8 +219,14 @@ async def confirm_review(session_id: str):
         cp_data["quarantine_step"] = "completed"
         cp_data["quarantined_qids"] = []
         cp_data["quarantined_count"] = 0
+        # Save FIRST so scan_smiles sees quarantine_step=completed
         stage.save_checkpoint("in_progress", cp_data)
-        stage.log("info", "Image review confirmed -- no quarantines, proceeding to SMILES")
+        stage.log("info", "Image review confirmed -- no quarantines")
+
+    # Inline SMILES check: scan_smiles auto-completes if no SMILES
+    smiles_result = stage.scan_smiles()
+    if smiles_result.get("has_smiles", False):
+        stage.log("info", "SMILES tags found -- render needed before advance")
 
     return APIResponse(data={"confirmed": True})
 

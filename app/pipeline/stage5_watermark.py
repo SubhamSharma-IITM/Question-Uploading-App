@@ -990,13 +990,21 @@ class WatermarkStage(BasePipelineStage):
                  f"Quarantined {quarantined_count} questions from image review, "
                  f"{remaining_count} remaining in {files_modified} files modified")
 
-        # Update checkpoint with quarantine data
+        # Update checkpoint with quarantine data — save FIRST so scan_smiles
+        # sees quarantine_step=completed when it reloads checkpoint
         cp_data = self._load_checkpoint_data()
         cp_data["quarantine_step"] = "completed"
         cp_data["quarantined_qids"] = list(qid_set)
         cp_data["quarantined_count"] = quarantined_count
         cp_data["remaining_count"] = remaining_count
         self.save_checkpoint("in_progress", cp_data)
+
+        # Inline SMILES check: auto-complete if no SMILES tags exist
+        # scan_smiles() reloads checkpoint and sets status=completed internally
+        smiles_result = self.scan_smiles()
+        if smiles_result.get("has_smiles", False):
+            self.log("info", "SMILES tags found -- render needed before advance")
+        # If no SMILES, scan_smiles already set checkpoint to completed
 
         return {
             "quarantined": quarantined_count,
