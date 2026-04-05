@@ -58,3 +58,8 @@ benchmark_*.py
 benchmark_*.json
 test_*.py
 fire_test_passes.py
+
+# YouTube OAuth credentials
+data/youtube_token.json
+data/youtube_client_secret.json
+data/videos/

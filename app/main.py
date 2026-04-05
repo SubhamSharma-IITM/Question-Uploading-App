@@ -393,7 +393,7 @@ app = FastAPI(
 # ── Auth Middleware ──
 # Paths that don't require authentication
 _PUBLIC_PATHS = {"/login", "/auth/verify", "/auth/logout", "/health"}
-_PUBLIC_PREFIXES = ("/static/", "/video/api/stream/", "/video/api/info/", "/video/player")
+_PUBLIC_PREFIXES = ("/static/", "/video/api/status/", "/video/player")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

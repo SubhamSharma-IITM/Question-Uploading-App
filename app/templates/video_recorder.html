@@ -33,10 +33,18 @@
     .btn-o { background:transparent; border:1px solid var(--border); color:var(--muted); }
     .btn-o:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
     .status { font-size:11px; color:var(--muted); text-align:center; margin-top:6px; }
-    .stats { display:flex; gap:8px; margin-top:8px; }
-    .stat { flex:1; background:var(--input); border-radius:8px; padding:6px; text-align:center; }
-    .stat-v { font-size:14px; font-weight:800; color:var(--accent); }
-    .stat-l { font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    /* Upload progress card */
+    .upload-phase { font-size:13px; font-weight:600; color:var(--text); text-align:center; margin-bottom:8px; }
+    .spinner-wrap { display:flex; flex-direction:column; align-items:center; padding:20px 0; }
+    .spinner { width:40px; height:40px; border:3px solid rgba(255,255,255,0.1); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .phase-steps { margin-top:14px; font-size:11px; color:var(--muted); }
+    .phase-step { display:flex; align-items:center; gap:6px; padding:3px 0; }
+    .phase-dot { width:8px; height:8px; border-radius:50%; background:var(--input); flex-shrink:0; }
+    .phase-dot.active { background:var(--warn); animation:pulse 1s infinite; }
+    .phase-dot.done { background:var(--success); }
+    @keyframes pulse { 50% { opacity:0.5; } }
+    /* Result */
     .url-box { background:var(--input); border:1px solid var(--success); border-radius:8px; padding:10px; word-break:break-all; font-family:Consolas,monospace; font-size:11px; color:var(--success); cursor:pointer; position:relative; }
     .url-box:hover { background:#3b5249; }
     .url-box .hint { position:absolute; top:3px; right:6px; font-size:9px; color:var(--muted); }
@@ -54,11 +62,12 @@
         <p>Record & share 1-minute video explanations</p>
     </div>
 
+    <!-- Recorder -->
     <div class="card" id="rec-card">
         <div class="card-title">Record Video</div>
         <div class="vid-box">
             <video id="preview" autoplay muted playsinline></video>
-            <video id="playback" playsinline class="hidden"></video>
+            <video id="playback" playsinline controls class="hidden"></video>
             <div class="placeholder" id="ph">Tap "Start Camera" to begin</div>
         </div>
         <div class="timer" id="timer">00:00 / 01:00</div>
@@ -73,26 +82,30 @@
         <div class="status" id="st"></div>
     </div>
 
+    <!-- Upload + YouTube Processing -->
     <div class="card hidden" id="up-card">
-        <div class="card-title">Uploading</div>
+        <div class="card-title">Publishing Video</div>
+        <div class="upload-phase" id="up-phase">Preparing upload...</div>
         <div class="pbar-wrap"><div class="pbar up" id="upbar"></div></div>
-        <div class="status" id="up-st">Preparing...</div>
-        <div class="stats hidden" id="up-stats">
-            <div class="stat"><div class="stat-v" id="s-size">-</div><div class="stat-l">Size</div></div>
-            <div class="stat"><div class="stat-v" id="s-qual">480p</div><div class="stat-l">Quality</div></div>
-            <div class="stat"><div class="stat-v" id="s-exp">-</div><div class="stat-l">Expires</div></div>
+        <div class="spinner-wrap"><div class="spinner"></div></div>
+        <div class="phase-steps">
+            <div class="phase-step"><div class="phase-dot active" id="dot-upload"></div><span id="lbl-upload">Uploading to server...</span></div>
+            <div class="phase-step"><div class="phase-dot" id="dot-yt-upload"></div><span id="lbl-yt-upload">Uploading to YouTube</span></div>
+            <div class="phase-step"><div class="phase-dot" id="dot-yt-proc"></div><span id="lbl-yt-proc">YouTube processing</span></div>
+            <div class="phase-step"><div class="phase-dot" id="dot-ready"></div><span id="lbl-ready">Video ready</span></div>
         </div>
     </div>
 
+    <!-- Result -->
     <div class="card hidden" id="res-card">
-        <div class="card-title">Video Ready</div>
+        <div class="card-title">Video Published</div>
         <div style="margin-bottom:8px;font-size:12px;color:var(--muted);">Share this link with students:</div>
         <div class="url-box" id="res-url" onclick="copyUrl()">
             <span class="hint">tap to copy</span>
             <span id="url-txt"></span>
         </div>
         <div style="margin-top:10px;display:flex;gap:6px;">
-            <button class="btn btn-p" onclick="openPlayer()">Play Video</button>
+            <button class="btn btn-p" onclick="openPlayer()">Watch Video</button>
             <button class="btn btn-o" onclick="another()">Record Another</button>
         </div>
     </div>
@@ -100,11 +113,11 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0, videoId=null;
-let facing='user';
-let recordedDuration=0; // exact seconds recorded (client-side truth)
+let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0;
+let facing='user', recordedDuration=0, resultYtId=null, resultUrl=null;
 const MAX=60;
 
+// ── Camera ──
 async function startCam(){
     if(stream) stream.getTracks().forEach(t=>t.stop());
     try{
@@ -122,6 +135,7 @@ async function startCam(){
 }
 function flipCam(){if(recorder&&recorder.state==='recording')return;facing=facing==='user'?'environment':'user';startCam();}
 
+// ── Recording ──
 function toggleRec(){if(recorder&&recorder.state==='recording')stopRec();else startRec();}
 function startRec(){
     if(!stream)return;chunks=[];blob=null;
@@ -133,7 +147,6 @@ function startRec(){
     recorder.onstop=()=>{blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'});onDone();};
     recorder.start(500);startT=Date.now();
     document.getElementById('b-rec').textContent='Stop';
-    document.getElementById('b-rec').className='btn btn-d';
     document.getElementById('b-send').disabled=true;
     document.getElementById('b-redo').disabled=true;
     document.getElementById('rpbar').className='pbar rec';
@@ -142,16 +155,15 @@ function startRec(){
     timerInt=setInterval(()=>{const e=(Date.now()-startT)/1000;updTimer(e);if(e>=MAX)stopRec();},100);
 }
 function stopRec(){
-    recordedDuration=Math.min((Date.now()-startT)/1000, MAX);
+    recordedDuration=Math.min((Date.now()-startT)/1000,MAX);
     if(recorder&&recorder.state==='recording')recorder.stop();
     clearInterval(timerInt);
 }
 function onDone(){
-    const p=document.getElementById('preview'),pb=document.getElementById('playback');
-    p.classList.add('hidden');pb.classList.remove('hidden');
-    pb.src=URL.createObjectURL(blob);pb.controls=true;
+    document.getElementById('preview').classList.add('hidden');
+    const pb=document.getElementById('playback');
+    pb.classList.remove('hidden');pb.src=URL.createObjectURL(blob);
     document.getElementById('b-rec').textContent='Record';
-    document.getElementById('b-rec').className='btn btn-d';
     document.getElementById('b-rec').disabled=true;
     document.getElementById('b-redo').disabled=false;
     document.getElementById('b-send').disabled=false;
@@ -163,7 +175,8 @@ function onDone(){
     toast('Saved ('+mb+'MB)','success');
 }
 function redo(){
-    blob=null;chunks=[];URL.revokeObjectURL(document.getElementById('playback').src);
+    blob=null;chunks=[];
+    URL.revokeObjectURL(document.getElementById('playback').src);
     document.getElementById('playback').classList.add('hidden');
     document.getElementById('playback').src='';
     document.getElementById('preview').classList.remove('hidden');
@@ -175,57 +188,113 @@ function redo(){
     updTimer(0);setSt('Ready to re-record.');
 }
 
+// ── Upload + YouTube publish ──
 async function send(){
     if(!blob)return;
     document.getElementById('rec-card').classList.add('hidden');
     document.getElementById('up-card').classList.remove('hidden');
+
     const ext=blob.type.includes('mp4')?'.mp4':'.webm';
     const file=new File([blob],'recording'+ext,{type:blob.type});
-    const fd=new FormData();fd.append('file',file);fd.append('duration',recordedDuration.toFixed(2));
+    const fd=new FormData();
+    fd.append('file',file);
+    fd.append('duration',recordedDuration.toFixed(2));
+
     const mb=(file.size/(1024*1024)).toFixed(1);
-    document.getElementById('up-st').textContent='Uploading '+mb+'MB...';
+    setPhase('Uploading '+mb+'MB to server...');
+    setDot('upload','active');
+
+    // Step 1: Upload to our server
     const xhr=new XMLHttpRequest();
     xhr.open('POST','/video/api/upload');
     xhr.upload.onprogress=e=>{
         if(e.lengthComputable){
             const pct=(e.loaded/e.total*100).toFixed(0);
             document.getElementById('upbar').style.width=pct+'%';
-            document.getElementById('up-st').textContent='Uploading... '+pct+'% ('+(e.loaded/(1024*1024)).toFixed(1)+'/'+mb+'MB)';
+            setPhase('Uploading... '+pct+'%');
         }
     };
     xhr.onload=()=>{
         const d=JSON.parse(xhr.responseText);
         if(d.success){
-            document.getElementById('up-stats').classList.remove('hidden');
-            document.getElementById('s-size').textContent=d.size_mb+'MB';
-            document.getElementById('s-exp').textContent=new Date(d.expires_at).toLocaleDateString('en-IN',{month:'short',day:'numeric'});
-            document.getElementById('upbar').className='pbar done';
+            setDot('upload','done');
+            document.getElementById('lbl-upload').textContent='Uploaded to server ('+d.size_mb+'MB)';
             document.getElementById('upbar').style.width='100%';
-            document.getElementById('up-st').textContent='Upload complete!';
-            setTimeout(()=>{
-                videoId=d.video_id;
-                document.getElementById('up-card').classList.add('hidden');
-                document.getElementById('res-card').classList.remove('hidden');
-                document.getElementById('url-txt').textContent=d.player_url;
-                toast('Video uploaded!','success');
-            },800);
+            // Step 2: Poll YouTube status
+            pollStatus(d.request_id);
         }else{
-            document.getElementById('up-st').textContent='Failed: '+(d.error||'Unknown');
+            setPhase('Failed: '+(d.error||'Unknown'));
             toast('Upload failed','error');
         }
     };
-    xhr.onerror=()=>{document.getElementById('up-st').textContent='Network error';toast('Network error','error');};
+    xhr.onerror=()=>{setPhase('Network error');toast('Network error','error');};
     xhr.send(fd);
 }
 
+function pollStatus(requestId){
+    setDot('yt-upload','active');
+    setPhase('Uploading to YouTube...');
+
+    const interval=setInterval(async()=>{
+        try{
+            const r=await fetch('/video/api/status/'+requestId);
+            const d=await r.json();
+            if(!d.success)return;
+            const s=d.data;
+
+            if(s.status==='uploading'){
+                setDot('yt-upload','active');
+                setPhase(s.phase||'Uploading to YouTube...');
+                if(s.progress>0){
+                    document.getElementById('lbl-yt-upload').textContent='YouTube upload: '+s.progress+'%';
+                }
+            }else if(s.status==='processing'){
+                setDot('yt-upload','done');
+                setDot('yt-proc','active');
+                document.getElementById('lbl-yt-upload').textContent='Uploaded to YouTube';
+                setPhase(s.phase||'YouTube is processing...');
+            }else if(s.status==='ready'){
+                clearInterval(interval);
+                setDot('yt-upload','done');
+                setDot('yt-proc','done');
+                setDot('ready','done');
+                setPhase('Video published!');
+                document.getElementById('upbar').className='pbar done';
+                resultUrl=s.youtube_url;
+                resultYtId=s.youtube_id;
+                setTimeout(()=>{
+                    document.getElementById('up-card').classList.add('hidden');
+                    document.getElementById('res-card').classList.remove('hidden');
+                    // Show both YouTube URL and our player URL
+                    const playerUrl=location.origin+'/video/player?v='+s.youtube_id;
+                    document.getElementById('url-txt').textContent=playerUrl;
+                    toast('Video published!','success');
+                },800);
+            }else if(s.status==='failed'){
+                clearInterval(interval);
+                setPhase('Failed: '+(s.error||'Unknown error'));
+                toast('Upload failed','error');
+            }
+        }catch(e){}
+    },3000);
+}
+
+// ── Helpers ──
+function setPhase(t){document.getElementById('up-phase').textContent=t;}
+function setDot(id,state){
+    const dot=document.getElementById('dot-'+id);
+    dot.className='phase-dot '+state;
+}
 function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-txt').textContent).then(()=>toast('Copied!','success'));}
-function openPlayer(){if(videoId)window.open('/video/player?v='+videoId,'_blank');}
+function openPlayer(){if(resultYtId)window.open('/video/player?v='+resultYtId,'_blank');}
 function another(){
     document.getElementById('res-card').classList.add('hidden');
     document.getElementById('rec-card').classList.remove('hidden');
     document.getElementById('upbar').style.width='0%';
     document.getElementById('upbar').className='pbar up';
-    document.getElementById('up-stats').classList.add('hidden');
+    ['upload','yt-upload','yt-proc','ready'].forEach(id=>{
+        document.getElementById('dot-'+id).className='phase-dot';
+    });
     redo();
 }
 function updTimer(e){
