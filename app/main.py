@@ -358,6 +358,12 @@ async def lifespan(app: FastAPI):
     # Selective cleanup: free disk for completed sessions (keep CSVs + config)
     _cleanup_completed_sessions(settings.sessions_dir)
 
+    # Video cleanup: delete expired videos (>7 days)
+    from app.routes.video import cleanup_expired_videos
+    cleaned = cleanup_expired_videos()
+    if cleaned:
+        _safe_print(f"[CLEANUP] Deleted {cleaned} expired video(s)")
+
     # Concurrency limiter -- prevents OOM from concurrent heavy operations
     from app.utils import init_semaphore
     init_semaphore(settings.max_concurrent_tasks)
@@ -387,7 +393,7 @@ app = FastAPI(
 # ── Auth Middleware ──
 # Paths that don't require authentication
 _PUBLIC_PATHS = {"/login", "/auth/verify", "/auth/logout", "/health"}
-_PUBLIC_PREFIXES = ("/static/",)
+_PUBLIC_PREFIXES = ("/static/", "/video/api/stream/", "/video/api/info/", "/video/player")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -608,6 +614,7 @@ from app.routes.stage7_latex_tag import router as stage7_router
 from app.routes.stage8_duplicates import router as stage8_router
 from app.routes.stage9_quality import router as stage9_router
 from app.routes.stage10_upload import router as stage10_router
+from app.routes.video import router as video_router
 
 app.include_router(sessions_router)
 app.include_router(stage1_router, prefix="/api/sessions/{session_id}/stage1", tags=["Stage 1"])
@@ -620,6 +627,7 @@ app.include_router(stage7_router, prefix="/api/sessions/{session_id}/stage7", ta
 app.include_router(stage8_router, prefix="/api/sessions/{session_id}/stage8", tags=["Stage 8"])
 app.include_router(stage9_router, prefix="/api/sessions/{session_id}/stage9", tags=["Stage 9"])
 app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", tags=["Stage 10"])
+app.include_router(video_router, prefix="/video", tags=["Video"])
 
 
 # ── Auth pages ──

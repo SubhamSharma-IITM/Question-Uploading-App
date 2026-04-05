@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Acadza - Record Video</title>
+    <style>
+    :root { --bg:#0f172a; --card:#1e293b; --input:#334155; --accent:#3b82f6; --success:#22c55e; --error:#ef4444; --warn:#f59e0b; --text:#f1f5f9; --muted:#94a3b8; --border:#475569; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; justify-content:center; padding:20px; }
+    .wrap { max-width:540px; width:100%; }
+    .logo { text-align:center; margin-bottom:20px; }
+    .logo h1 { font-size:20px; font-weight:800; background:linear-gradient(135deg,var(--accent),#a78bfa); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .logo p { font-size:11px; color:var(--muted); margin-top:2px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:14px; }
+    .card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:10px; }
+    .vid-box { position:relative; width:100%; aspect-ratio:4/3; background:#000; border-radius:8px; overflow:hidden; margin-bottom:10px; }
+    .vid-box video { width:100%; height:100%; object-fit:cover; }
+    .placeholder { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:var(--muted); font-size:12px; text-align:center; }
+    .timer { font-family:Consolas,monospace; font-size:18px; font-weight:700; text-align:center; color:var(--muted); margin-bottom:6px; }
+    .timer.rec { color:var(--error); }
+    .pbar-wrap { height:5px; background:var(--input); border-radius:3px; overflow:hidden; margin-bottom:8px; }
+    .pbar { height:100%; border-radius:3px; width:0%; transition:width .3s linear; }
+    .pbar.rec { background:var(--error); }
+    .pbar.up { background:var(--warn); }
+    .pbar.done { background:var(--success); }
+    .btns { display:flex; gap:6px; flex-wrap:wrap; }
+    .btn { padding:9px 16px; border:none; border-radius:8px; font-weight:700; font-size:12px; cursor:pointer; transition:all .15s; text-transform:uppercase; letter-spacing:.4px; }
+    .btn:disabled { opacity:.35; cursor:not-allowed; }
+    .btn-p { background:var(--accent); color:#fff; }
+    .btn-d { background:var(--error); color:#fff; }
+    .btn-s { background:var(--success); color:#fff; }
+    .btn-o { background:transparent; border:1px solid var(--border); color:var(--muted); }
+    .btn-o:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+    .status { font-size:11px; color:var(--muted); text-align:center; margin-top:6px; }
+    .stats { display:flex; gap:8px; margin-top:8px; }
+    .stat { flex:1; background:var(--input); border-radius:8px; padding:6px; text-align:center; }
+    .stat-v { font-size:14px; font-weight:800; color:var(--accent); }
+    .stat-l { font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    .url-box { background:var(--input); border:1px solid var(--success); border-radius:8px; padding:10px; word-break:break-all; font-family:Consolas,monospace; font-size:11px; color:var(--success); cursor:pointer; position:relative; }
+    .url-box:hover { background:#3b5249; }
+    .url-box .hint { position:absolute; top:3px; right:6px; font-size:9px; color:var(--muted); }
+    .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(80px); padding:8px 18px; border-radius:8px; font-size:12px; font-weight:600; opacity:0; transition:all .3s; z-index:1000; }
+    .toast.show { transform:translateX(-50%) translateY(0); opacity:1; }
+    .toast.success { background:var(--success); color:#fff; }
+    .toast.error { background:var(--error); color:#fff; }
+    .hidden { display:none !important; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="logo">
+        <h1>Acadza Video</h1>
+        <p>Record & share 1-minute video explanations</p>
+    </div>
+
+    <div class="card" id="rec-card">
+        <div class="card-title">Record Video</div>
+        <div class="vid-box">
+            <video id="preview" autoplay muted playsinline></video>
+            <video id="playback" playsinline class="hidden"></video>
+            <div class="placeholder" id="ph">Tap "Start Camera" to begin</div>
+        </div>
+        <div class="timer" id="timer">00:00 / 01:00</div>
+        <div class="pbar-wrap"><div class="pbar" id="rpbar"></div></div>
+        <div class="btns">
+            <button class="btn btn-o" id="b-cam" onclick="startCam()">Start Camera</button>
+            <button class="btn btn-o hidden" id="b-flip" onclick="flipCam()">Flip</button>
+            <button class="btn btn-d" id="b-rec" onclick="toggleRec()" disabled>Record</button>
+            <button class="btn btn-o" id="b-redo" onclick="redo()" disabled>Re-record</button>
+            <button class="btn btn-s" id="b-send" onclick="send()" disabled>Submit</button>
+        </div>
+        <div class="status" id="st"></div>
+    </div>
+
+    <div class="card hidden" id="up-card">
+        <div class="card-title">Uploading</div>
+        <div class="pbar-wrap"><div class="pbar up" id="upbar"></div></div>
+        <div class="status" id="up-st">Preparing...</div>
+        <div class="stats hidden" id="up-stats">
+            <div class="stat"><div class="stat-v" id="s-size">-</div><div class="stat-l">Size</div></div>
+            <div class="stat"><div class="stat-v" id="s-qual">480p</div><div class="stat-l">Quality</div></div>
+            <div class="stat"><div class="stat-v" id="s-exp">-</div><div class="stat-l">Expires</div></div>
+        </div>
+    </div>
+
+    <div class="card hidden" id="res-card">
+        <div class="card-title">Video Ready</div>
+        <div style="margin-bottom:8px;font-size:12px;color:var(--muted);">Share this link with students:</div>
+        <div class="url-box" id="res-url" onclick="copyUrl()">
+            <span class="hint">tap to copy</span>
+            <span id="url-txt"></span>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:6px;">
+            <button class="btn btn-p" onclick="openPlayer()">Play Video</button>
+            <button class="btn btn-o" onclick="another()">Record Another</button>
+        </div>
+    </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0, videoId=null;
+let facing='user';
+let recordedDuration=0; // exact seconds recorded (client-side truth)
+const MAX=60;
+
+async function startCam(){
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    try{
+        stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:facing},audio:true});
+        const p=document.getElementById('preview');
+        p.srcObject=stream; p.classList.remove('hidden');
+        document.getElementById('playback').classList.add('hidden');
+        document.getElementById('ph').classList.add('hidden');
+        document.getElementById('b-cam').disabled=true;
+        document.getElementById('b-cam').textContent='Camera On';
+        document.getElementById('b-flip').classList.remove('hidden');
+        document.getElementById('b-rec').disabled=false;
+        setSt('Camera ready. Tap "Record" when ready.');
+    }catch(e){toast('Camera denied: '+e.message,'error');}
+}
+function flipCam(){if(recorder&&recorder.state==='recording')return;facing=facing==='user'?'environment':'user';startCam();}
+
+function toggleRec(){if(recorder&&recorder.state==='recording')stopRec();else startRec();}
+function startRec(){
+    if(!stream)return;chunks=[];blob=null;
+    let mime='video/webm;codecs=vp8,opus';
+    if(!MediaRecorder.isTypeSupported(mime)){mime='video/webm';if(!MediaRecorder.isTypeSupported(mime)){mime='video/mp4';if(!MediaRecorder.isTypeSupported(mime))mime='';}}
+    const opts=mime?{mimeType:mime,videoBitsPerSecond:1000000}:{videoBitsPerSecond:1000000};
+    recorder=new MediaRecorder(stream,opts);
+    recorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
+    recorder.onstop=()=>{blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'});onDone();};
+    recorder.start(500);startT=Date.now();
+    document.getElementById('b-rec').textContent='Stop';
+    document.getElementById('b-rec').className='btn btn-d';
+    document.getElementById('b-send').disabled=true;
+    document.getElementById('b-redo').disabled=true;
+    document.getElementById('rpbar').className='pbar rec';
+    document.getElementById('timer').classList.add('rec');
+    setSt('Recording...');
+    timerInt=setInterval(()=>{const e=(Date.now()-startT)/1000;updTimer(e);if(e>=MAX)stopRec();},100);
+}
+function stopRec(){
+    recordedDuration=Math.min((Date.now()-startT)/1000, MAX);
+    if(recorder&&recorder.state==='recording')recorder.stop();
+    clearInterval(timerInt);
+}
+function onDone(){
+    const p=document.getElementById('preview'),pb=document.getElementById('playback');
+    p.classList.add('hidden');pb.classList.remove('hidden');
+    pb.src=URL.createObjectURL(blob);pb.controls=true;
+    document.getElementById('b-rec').textContent='Record';
+    document.getElementById('b-rec').className='btn btn-d';
+    document.getElementById('b-rec').disabled=true;
+    document.getElementById('b-redo').disabled=false;
+    document.getElementById('b-send').disabled=false;
+    document.getElementById('rpbar').className='pbar done';
+    document.getElementById('rpbar').style.width='100%';
+    document.getElementById('timer').classList.remove('rec');
+    const mb=(blob.size/(1024*1024)).toFixed(1);
+    setSt('Done. '+mb+'MB. Preview and submit.');
+    toast('Saved ('+mb+'MB)','success');
+}
+function redo(){
+    blob=null;chunks=[];URL.revokeObjectURL(document.getElementById('playback').src);
+    document.getElementById('playback').classList.add('hidden');
+    document.getElementById('playback').src='';
+    document.getElementById('preview').classList.remove('hidden');
+    document.getElementById('b-rec').disabled=false;
+    document.getElementById('b-send').disabled=true;
+    document.getElementById('b-redo').disabled=true;
+    document.getElementById('rpbar').className='pbar';
+    document.getElementById('rpbar').style.width='0%';
+    updTimer(0);setSt('Ready to re-record.');
+}
+
+async function send(){
+    if(!blob)return;
+    document.getElementById('rec-card').classList.add('hidden');
+    document.getElementById('up-card').classList.remove('hidden');
+    const ext=blob.type.includes('mp4')?'.mp4':'.webm';
+    const file=new File([blob],'recording'+ext,{type:blob.type});
+    const fd=new FormData();fd.append('file',file);fd.append('duration',recordedDuration.toFixed(2));
+    const mb=(file.size/(1024*1024)).toFixed(1);
+    document.getElementById('up-st').textContent='Uploading '+mb+'MB...';
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST','/video/api/upload');
+    xhr.upload.onprogress=e=>{
+        if(e.lengthComputable){
+            const pct=(e.loaded/e.total*100).toFixed(0);
+            document.getElementById('upbar').style.width=pct+'%';
+            document.getElementById('up-st').textContent='Uploading... '+pct+'% ('+(e.loaded/(1024*1024)).toFixed(1)+'/'+mb+'MB)';
+        }
+    };
+    xhr.onload=()=>{
+        const d=JSON.parse(xhr.responseText);
+        if(d.success){
+            document.getElementById('up-stats').classList.remove('hidden');
+            document.getElementById('s-size').textContent=d.size_mb+'MB';
+            document.getElementById('s-exp').textContent=new Date(d.expires_at).toLocaleDateString('en-IN',{month:'short',day:'numeric'});
+            document.getElementById('upbar').className='pbar done';
+            document.getElementById('upbar').style.width='100%';
+            document.getElementById('up-st').textContent='Upload complete!';
+            setTimeout(()=>{
+                videoId=d.video_id;
+                document.getElementById('up-card').classList.add('hidden');
+                document.getElementById('res-card').classList.remove('hidden');
+                document.getElementById('url-txt').textContent=d.player_url;
+                toast('Video uploaded!','success');
+            },800);
+        }else{
+            document.getElementById('up-st').textContent='Failed: '+(d.error||'Unknown');
+            toast('Upload failed','error');
+        }
+    };
+    xhr.onerror=()=>{document.getElementById('up-st').textContent='Network error';toast('Network error','error');};
+    xhr.send(fd);
+}
+
+function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-txt').textContent).then(()=>toast('Copied!','success'));}
+function openPlayer(){if(videoId)window.open('/video/player?v='+videoId,'_blank');}
+function another(){
+    document.getElementById('res-card').classList.add('hidden');
+    document.getElementById('rec-card').classList.remove('hidden');
+    document.getElementById('upbar').style.width='0%';
+    document.getElementById('upbar').className='pbar up';
+    document.getElementById('up-stats').classList.add('hidden');
+    redo();
+}
+function updTimer(e){
+    const s=Math.min(Math.floor(e),MAX);
+    document.getElementById('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')+' / 01:00';
+    document.getElementById('rpbar').style.width=Math.min(e/MAX*100,100)+'%';
+}
+function setSt(m){document.getElementById('st').textContent=m;}
+function toast(m,t){const el=document.getElementById('toast');el.textContent=m;el.className='toast '+t+' show';setTimeout(()=>el.classList.remove('show'),3000);}
+document.addEventListener('keydown',e=>{
+    if(e.code==='Space'&&document.activeElement.tagName!=='INPUT'){e.preventDefault();
+        if(recorder&&recorder.state==='recording')stopRec();
+        else if(!document.getElementById('b-rec').disabled)startRec();
+    }
+});
+</script>
+</body>
+</html>

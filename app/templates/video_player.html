@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Acadza - Video Player</title>
+    <style>
+    :root { --bg:#0f172a; --card:#1e293b; --input:#334155; --accent:#3b82f6; --text:#f1f5f9; --muted:#94a3b8; --border:#475569; --error:#ef4444; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; justify-content:center; padding:20px; }
+    .wrap { max-width:640px; width:100%; }
+    .logo { text-align:center; margin-bottom:20px; }
+    .logo h1 { font-size:20px; font-weight:800; background:linear-gradient(135deg,var(--accent),#a78bfa); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:14px; }
+    .card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:16px 16px 10px; }
+
+    /* ── Player container ── */
+    .player-wrap {
+        position:relative; width:100%; aspect-ratio:16/9; background:#000;
+        cursor:pointer; user-select:none; -webkit-user-select:none;
+    }
+    .player-wrap video { width:100%; height:100%; object-fit:contain; display:block; }
+
+    /* ── Double-tap seek zones ── */
+    .tap-zone { position:absolute; top:0; width:35%; z-index:5; }
+    .tap-zone.left { left:0; bottom:0; }
+    .tap-zone.right { right:0; bottom:0; }
+    .tap-ripple {
+        position:absolute; top:45%; left:50%; transform:translate(-50%,-50%);
+        display:flex; flex-direction:column; align-items:center;
+        opacity:0; transition:opacity 0.15s; pointer-events:none;
+    }
+    .tap-ripple.show { opacity:1; }
+    .tap-ripple .skip-icon { width:36px; height:36px; }
+    .tap-ripple .skip-label { font-size:12px; font-weight:700; color:#fff; margin-top:2px; text-shadow:0 1px 4px rgba(0,0,0,0.8); }
+
+    /* ── Loading overlay (glassmorphism) ── */
+    .loading-overlay {
+        position:absolute; top:0; left:0; right:0; bottom:0; z-index:10;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        background:rgba(15,23,42,0.5); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+        transition:opacity 0.4s; pointer-events:all;
+    }
+    .loading-overlay.hidden { opacity:0; pointer-events:none; }
+    .spinner {
+        width:40px; height:40px; border:3px solid rgba(255,255,255,0.15);
+        border-top-color:var(--accent); border-radius:50%;
+        animation:spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .loading-text { font-size:12px; color:rgba(255,255,255,0.7); margin-top:10px; font-weight:500; }
+
+    /* ── Big center play button ── */
+    .big-play {
+        position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+        width:56px; height:56px; border-radius:50%; background:rgba(0,0,0,0.55);
+        display:flex; align-items:center; justify-content:center;
+        z-index:3; opacity:0; transition:opacity 0.2s; pointer-events:none;
+    }
+    .big-play.show { opacity:1; }
+    .big-play svg { width:28px; height:28px; fill:#fff; margin-left:2px; }
+
+    /* ── Bottom overlay ── */
+    .overlay {
+        position:absolute; bottom:0; left:0; right:0; z-index:6;
+        background:linear-gradient(transparent, rgba(0,0,0,0.8));
+        padding:0 10px 8px; opacity:0; transition:opacity 0.25s;
+    }
+    .player-wrap:hover .overlay,
+    .player-wrap.show-ctrl .overlay { opacity:1; }
+
+    /* Seekbar row */
+    .seek-row { display:flex; align-items:center; height:28px; }
+    .seek-track { flex:1; height:3px; background:rgba(255,255,255,0.2); border-radius:2px; position:relative; cursor:pointer; margin:0 8px; transition:height 0.1s; }
+    .seek-track:hover { height:5px; }
+    .seek-buf { position:absolute; top:0; left:0; height:100%; background:rgba(255,255,255,0.25); border-radius:2px; pointer-events:none; }
+    .seek-fill { position:absolute; top:0; left:0; height:100%; background:var(--accent); border-radius:2px; pointer-events:none; }
+    .seek-dot { position:absolute; top:50%; right:-5px; width:10px; height:10px; background:var(--accent); border-radius:50%; transform:translateY(-50%) scale(0); transition:transform 0.1s; pointer-events:none; }
+    .seek-track:hover .seek-dot { transform:translateY(-50%) scale(1); }
+    .t { font-family:Consolas,monospace; font-size:10px; color:rgba(255,255,255,0.75); min-width:32px; }
+    .t.r { text-align:right; }
+
+    /* Control buttons row */
+    .ctrl-row { display:flex; align-items:center; gap:2px; margin-top:2px; }
+    .cb {
+        background:none; border:none; cursor:pointer; padding:4px 6px;
+        display:flex; align-items:center; justify-content:center;
+        border-radius:4px; transition:background 0.12s;
+    }
+    .cb:hover { background:rgba(255,255,255,0.12); }
+    .cb svg { fill:#fff; }
+    .cb.play-btn svg { width:24px; height:24px; }
+    .cb.skip-btn svg { width:20px; height:20px; }
+    .spacer { flex:1; }
+
+    /* ── SVG icon definitions (rewind/forward with "10" text) ── */
+    .icon-rewind, .icon-forward { width:20px; height:20px; }
+
+    /* Info section */
+    .info { padding:12px 16px; }
+    .stats { display:flex; gap:8px; }
+    .stat { flex:1; background:var(--input); border-radius:8px; padding:6px; text-align:center; }
+    .stat-v { font-size:13px; font-weight:800; color:var(--accent); }
+    .stat-l { font-size:8px; color:var(--muted); text-transform:uppercase; }
+    .status { font-size:11px; color:var(--muted); text-align:center; margin-top:6px; }
+    .err { text-align:center; color:var(--error); font-size:14px; padding:20px; }
+    .hidden { display:none !important; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="logo"><h1>Acadza Video</h1></div>
+    <div class="card" id="p-card">
+        <div class="card-title">Video Player</div>
+
+        <div class="player-wrap" id="pw">
+            <video id="vid" playsinline preload="metadata"></video>
+
+            <!-- Loading overlay: glass blur + spinner until video is ready -->
+            <div class="loading-overlay" id="loader">
+                <div class="spinner"></div>
+                <div class="loading-text">Loading video...</div>
+            </div>
+
+            <div class="big-play" id="bp">
+                <svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>
+            </div>
+
+            <!-- Tap zones -->
+            <div class="tap-zone left" id="tz-l">
+                <div class="tap-ripple" id="rp-l">
+                    <svg class="skip-icon" viewBox="0 0 24 24"><path fill="#fff" d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="12" y="14.5" text-anchor="middle" font-size="6.5" font-weight="800" fill="#fff" font-family="sans-serif">10</text></svg>
+                    <div class="skip-label" id="lb-l"></div>
+                </div>
+            </div>
+            <div class="tap-zone right" id="tz-r">
+                <div class="tap-ripple" id="rp-r">
+                    <svg class="skip-icon" viewBox="0 0 24 24"><path fill="#fff" d="M12.01 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/><text x="12" y="14.5" text-anchor="middle" font-size="6.5" font-weight="800" fill="#fff" font-family="sans-serif">10</text></svg>
+                    <div class="skip-label" id="lb-r"></div>
+                </div>
+            </div>
+
+            <!-- Overlay controls -->
+            <div class="overlay" id="ov">
+                <div class="seek-row">
+                    <span class="t" id="tc">0:00</span>
+                    <div class="seek-track" id="st">
+                        <div class="seek-buf" id="sb"></div>
+                        <div class="seek-fill" id="sf"><div class="seek-dot"></div></div>
+                    </div>
+                    <span class="t r" id="tt">0:00</span>
+                </div>
+                <div class="ctrl-row">
+                    <button class="cb play-btn" id="pb" onclick="tp()">
+                        <svg id="ip" viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>
+                        <svg id="iq" viewBox="0 0 24 24" class="hidden"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+                    </button>
+                    <button class="cb skip-btn" onclick="sk(-10)" title="Back 10s">
+                        <svg viewBox="0 0 24 24"><path fill="#fff" d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="12" y="14.5" text-anchor="middle" font-size="6.5" font-weight="800" fill="#fff" font-family="sans-serif">10</text></svg>
+                    </button>
+                    <button class="cb skip-btn" onclick="sk(10)" title="Forward 10s">
+                        <svg viewBox="0 0 24 24"><path fill="#fff" d="M12.01 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/><text x="12" y="14.5" text-anchor="middle" font-size="6.5" font-weight="800" fill="#fff" font-family="sans-serif">10</text></svg>
+                    </button>
+                    <div class="spacer"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="info">
+            <div class="stats">
+                <div class="stat"><div class="stat-v" id="mt">-</div><div class="stat-l">Teacher</div></div>
+                <div class="stat"><div class="stat-v" id="ms">-</div><div class="stat-l">Size</div></div>
+                <div class="stat"><div class="stat-v" id="me">-</div><div class="stat-l">Expires</div></div>
+            </div>
+            <div class="status" id="ps">Loading video...</div>
+        </div>
+    </div>
+    <div class="card hidden" id="e-card"><div class="err" id="em">Video not found or expired.</div></div>
+</div>
+
+<script>
+const V=document.getElementById('vid');
+const sf=document.getElementById('sf');
+const sb=document.getElementById('sb');
+const tc=document.getElementById('tc');
+const tt=document.getElementById('tt');
+const bp=document.getElementById('bp');
+const pw=document.getElementById('pw');
+const loader=document.getElementById('loader');
+let D=0;
+let dragging=false;
+let ctrlT=null;
+let videoReady=false;
+
+function f(s){if(!s||!isFinite(s))return'0:00';s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');}
+
+// ── Loading state ──
+function dismissLoader(){
+    if(!videoReady){
+        videoReady=true;
+        loader.classList.add('hidden');
+        bp.classList.add('show'); // show play button only after loader gone
+    }
+}
+
+// canplay = browser has enough data to start playing
+V.addEventListener('canplay',dismissLoader);
+// Safety: if canplay doesn't fire within 5s, dismiss anyway
+setTimeout(()=>{if(!videoReady)dismissLoader();},5000);
+
+// Show loader again during buffering mid-playback (seeking/slow network)
+V.addEventListener('waiting',()=>{
+    if(videoReady){loader.querySelector('.loading-text').textContent='Buffering...';loader.classList.remove('hidden');}
+});
+V.addEventListener('playing',()=>{loader.classList.add('hidden');});
+
+// ── Play/Pause ──
+function tp(){if(!videoReady)return;if(V.paused)V.play();else V.pause();}
+V.addEventListener('play',()=>{document.getElementById('ip').classList.add('hidden');document.getElementById('iq').classList.remove('hidden');bp.classList.remove('show');showC();});
+V.addEventListener('pause',()=>{document.getElementById('iq').classList.add('hidden');document.getElementById('ip').classList.remove('hidden');bp.classList.add('show');pw.classList.add('show-ctrl');});
+V.addEventListener('ended',()=>{document.getElementById('iq').classList.add('hidden');document.getElementById('ip').classList.remove('hidden');bp.classList.add('show');});
+
+// ── Duration: prefer server value, upgrade to browser if finite ──
+V.addEventListener('loadedmetadata',()=>{if(V.duration&&isFinite(V.duration)){D=V.duration;tt.textContent=f(D);}});
+V.addEventListener('durationchange',()=>{if(V.duration&&isFinite(V.duration)){D=V.duration;tt.textContent=f(D);}});
+
+// ── Progress ──
+V.addEventListener('timeupdate',()=>{
+    if(!D||dragging)return;
+    sf.style.width=(V.currentTime/D*100)+'%';
+    tc.textContent=f(V.currentTime);
+});
+V.addEventListener('progress',()=>{
+    if(!D||!V.buffered.length)return;
+    sb.style.width=(V.buffered.end(V.buffered.length-1)/D*100)+'%';
+});
+
+// ── Skip ──
+function sk(s){if(!D||!videoReady)return;V.currentTime=Math.max(0,Math.min(V.currentTime+s,D));}
+
+// ── Seekbar ──
+function seekX(cx){
+    if(!D||!videoReady)return;
+    const r=document.getElementById('st').getBoundingClientRect();
+    const p=Math.max(0,Math.min(1,(cx-r.left)/r.width));
+    V.currentTime=p*D;
+    sf.style.width=(p*100)+'%';
+    tc.textContent=f(p*D);
+}
+document.getElementById('st').addEventListener('mousedown',e=>{e.stopPropagation();dragging=true;seekX(e.clientX);});
+document.getElementById('st').addEventListener('touchstart',e=>{e.stopPropagation();dragging=true;seekX(e.touches[0].clientX);},{passive:true});
+document.addEventListener('mousemove',e=>{if(dragging)seekX(e.clientX);});
+document.addEventListener('touchmove',e=>{if(dragging)seekX(e.touches[0].clientX);},{passive:true});
+document.addEventListener('mouseup',()=>{dragging=false;});
+document.addEventListener('touchend',()=>{dragging=false;});
+
+// ── Controls visibility ──
+function showC(){
+    pw.classList.add('show-ctrl');
+    clearTimeout(ctrlT);
+    if(!V.paused)ctrlT=setTimeout(()=>pw.classList.remove('show-ctrl'),3000);
+}
+pw.addEventListener('mousemove',showC);
+pw.addEventListener('click',e=>{
+    // Only toggle play if clicking the video itself (not controls/tap zones)
+    if(e.target===V){tp();showC();}
+});
+
+// ── Double-tap seek ──
+let tapN=0,tapS=null,tapTm=null;
+function dblTap(side){
+    tapN++;
+    if(tapS!==side){tapN=1;tapS=side;}
+    clearTimeout(tapTm);
+    tapTm=setTimeout(()=>{
+        if(tapN>=2){
+            const amt=Math.floor(tapN/2)*10;
+            if(side==='l'){sk(-amt);ripple('l',amt);}
+            else{sk(amt);ripple('r',amt);}
+        }else{tp();showC();}
+        tapN=0;tapS=null;
+    },250);
+}
+function ripple(s,n){
+    const el=document.getElementById('rp-'+s);
+    document.getElementById('lb-'+s).textContent=(s==='l'?'-':'+')+n+'s';
+    el.classList.add('show');
+    setTimeout(()=>el.classList.remove('show'),500);
+}
+document.getElementById('tz-l').addEventListener('click',e=>{e.stopPropagation();dblTap('l');});
+document.getElementById('tz-r').addEventListener('click',e=>{e.stopPropagation();dblTap('r');});
+
+// ── Keyboard ──
+document.addEventListener('keydown',e=>{
+    if(e.code==='Space'){e.preventDefault();tp();}
+    else if(e.code==='ArrowLeft'){e.preventDefault();sk(-10);}
+    else if(e.code==='ArrowRight'){e.preventDefault();sk(10);}
+});
+
+// ── Init ──
+(async()=>{
+    const v=new URLSearchParams(location.search).get('v');
+    if(!v){document.getElementById('p-card').classList.add('hidden');document.getElementById('e-card').classList.remove('hidden');document.getElementById('em').textContent='No video ID.';return;}
+
+    // Fetch metadata FIRST — get exact duration before video loads
+    try{
+        const r=await fetch('/video/api/info/'+v);
+        const d=await r.json();
+        if(d.success){
+            const m=d.data;
+            document.getElementById('mt').textContent=m.uploader_name||'-';
+            document.getElementById('ms').textContent=m.size_mb+'MB';
+            document.getElementById('me').textContent=new Date(m.expires_at).toLocaleDateString('en-IN',{month:'short',day:'numeric',year:'numeric'});
+            // SET DURATION FROM SERVER (client-recorded exact value)
+            if(m.duration_seconds>0){D=m.duration_seconds;tt.textContent=f(D);}
+            document.getElementById('ps').textContent='By '+m.uploader_name;
+        }
+    }catch(e){}
+
+    // Video source — preload=metadata only downloads file header (few KB)
+    // Actual video streams via HTTP 206 range requests as user plays
+    // On slow internet: video progressively downloads and plays, same as any web video
+    V.src='/video/api/stream/'+v;
+    V.onerror=()=>{document.getElementById('p-card').classList.add('hidden');document.getElementById('e-card').classList.remove('hidden');};
+})();
+</script>
+</body>
+</html>
