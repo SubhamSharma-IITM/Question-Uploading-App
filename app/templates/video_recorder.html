@@ -236,7 +236,9 @@ function stopRec(){
 function onDone(){
     // Stop camera immediately — recording is done, preview switches to playback
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-    document.getElementById('preview').classList.add('hidden');
+    var prev=document.getElementById('preview');
+    prev.srcObject=null;
+    prev.classList.add('hidden');
     const pb=document.getElementById('playback');
     pb.classList.remove('hidden');pb.src=URL.createObjectURL(blob);
     document.getElementById('b-rec').textContent='Record';
@@ -267,8 +269,9 @@ function redo(){
 // ── Upload ──
 async function send(){
     if(!blob)return;
-    // Stop camera — recording is done, no need to keep it on
+    // Stop camera fully — clear srcObject so browser releases camera indicator
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    document.getElementById('preview').srcObject=null;
     document.getElementById('rec-card').classList.add('hidden');
     document.getElementById('up-card').classList.remove('hidden');
     document.getElementById('up-err').classList.add('hidden');
@@ -474,11 +477,13 @@ function copyLink(url){navigator.clipboard.writeText(url).then(()=>toast('Link c
 // Stop camera when leaving page
 window.addEventListener('beforeunload',()=>{
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    document.getElementById('preview').srcObject=null;
 });
 document.addEventListener('visibilitychange',()=>{
     if(document.hidden && stream && !(recorder&&recorder.state==='recording')){
         // Stop camera if page is hidden and not recording
         stream.getTracks().forEach(t=>t.stop()); stream=null;
+        document.getElementById('preview').srcObject=null;
         document.getElementById('b-cam').disabled=false;
         document.getElementById('b-cam').textContent='Start Camera';
         document.getElementById('b-rec').disabled=true;
