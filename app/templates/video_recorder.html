@@ -37,13 +37,24 @@
     .upload-phase { font-size:13px; font-weight:600; color:var(--text); text-align:center; margin-bottom:8px; }
     .spinner-wrap { display:flex; flex-direction:column; align-items:center; padding:20px 0; }
     .spinner { width:40px; height:40px; border:3px solid rgba(255,255,255,0.1); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+    .spinner.fail { border-top-color:var(--error); animation:none; display:none; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .phase-steps { margin-top:14px; font-size:11px; color:var(--muted); }
-    .phase-step { display:flex; align-items:center; gap:6px; padding:3px 0; }
-    .phase-dot { width:8px; height:8px; border-radius:50%; background:var(--input); flex-shrink:0; }
-    .phase-dot.active { background:var(--warn); animation:pulse 1s infinite; }
-    .phase-dot.done { background:var(--success); }
+    .phase-steps { margin-top:14px; font-size:12px; color:var(--muted); }
+    .phase-step { display:flex; align-items:center; gap:8px; padding:5px 0; }
+    .phase-icon { width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:700; }
+    .phase-icon.pending { background:var(--input); color:var(--muted); }
+    .phase-icon.active { background:var(--warn); color:#000; animation:pulse 1s infinite; }
+    .phase-icon.done { background:var(--success); color:#fff; }
+    .phase-icon.fail { background:var(--error); color:#fff; }
     @keyframes pulse { 50% { opacity:0.5; } }
+    .phase-label { font-size:12px; }
+    .phase-label.done { color:var(--success); }
+    .phase-label.fail { color:var(--error); }
+    /* Error card */
+    .err-card { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:12px; padding:20px; text-align:center; margin-top:12px; }
+    .err-card .err-title { font-size:14px; font-weight:700; color:var(--error); margin-bottom:6px; }
+    .err-card .err-msg { font-size:12px; color:var(--muted); line-height:1.5; }
+    .err-card .err-retry { margin-top:12px; }
     /* Result */
     .url-box { background:var(--input); border:1px solid var(--success); border-radius:8px; padding:10px; word-break:break-all; font-family:Consolas,monospace; font-size:11px; color:var(--success); cursor:pointer; position:relative; }
     .url-box:hover { background:#3b5249; }
@@ -53,6 +64,17 @@
     .toast.success { background:var(--success); color:#fff; }
     .toast.error { background:var(--error); color:#fff; }
     .hidden { display:none !important; }
+    /* Video list table */
+    .vid-table { width:100%; border-collapse:collapse; font-size:11px; }
+    .vid-table th { text-align:left; padding:8px 6px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.4px; font-size:10px; border-bottom:1px solid var(--border); }
+    .vid-table td { padding:7px 6px; border-bottom:1px solid rgba(255,255,255,0.04); vertical-align:middle; }
+    .vid-table tr:hover td { background:rgba(255,255,255,0.03); }
+    .vid-table .link-btn { color:var(--accent); text-decoration:none; cursor:pointer; font-weight:600; }
+    .vid-table .link-btn:hover { text-decoration:underline; }
+    .vid-table .copy-btn { padding:2px 8px; font-size:10px; background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:4px; color:var(--muted); cursor:pointer; }
+    .vid-table .copy-btn:hover { background:rgba(255,255,255,0.12); color:var(--text); }
+    .vid-table .plays { color:var(--success); font-weight:700; }
+    .vid-count { font-size:11px; color:var(--muted); margin-bottom:8px; }
     </style>
 </head>
 <body>
@@ -82,16 +104,33 @@
         <div class="status" id="st"></div>
     </div>
 
-    <!-- Upload + YouTube Processing -->
+    <!-- Upload + Cloud Processing -->
     <div class="card hidden" id="up-card">
         <div class="card-title">Publishing Video</div>
         <div class="upload-phase" id="up-phase">Preparing upload...</div>
         <div class="pbar-wrap"><div class="pbar up" id="upbar"></div></div>
-        <div class="spinner-wrap"><div class="spinner"></div></div>
+        <div class="spinner-wrap"><div class="spinner" id="up-spinner"></div></div>
         <div class="phase-steps">
-            <div class="phase-step"><div class="phase-dot active" id="dot-upload"></div><span id="lbl-upload">Uploading to server...</span></div>
-            <div class="phase-step"><div class="phase-dot" id="dot-drive"></div><span id="lbl-drive">Uploading to cloud</span></div>
-            <div class="phase-step"><div class="phase-dot" id="dot-ready"></div><span id="lbl-ready">Video ready</span></div>
+            <div class="phase-step">
+                <div class="phase-icon pending" id="icon-upload">1</div>
+                <span class="phase-label" id="lbl-upload">Uploading to server</span>
+            </div>
+            <div class="phase-step">
+                <div class="phase-icon pending" id="icon-drive">2</div>
+                <span class="phase-label" id="lbl-drive">Uploading to cloud</span>
+            </div>
+            <div class="phase-step">
+                <div class="phase-icon pending" id="icon-ready">3</div>
+                <span class="phase-label" id="lbl-ready">Video ready</span>
+            </div>
+        </div>
+        <!-- Error display (hidden by default) -->
+        <div class="err-card hidden" id="up-err">
+            <div class="err-title" id="err-title">Upload Failed</div>
+            <div class="err-msg" id="err-msg">Something went wrong. Please try again or contact Acadza support.</div>
+            <div class="err-retry">
+                <button class="btn btn-o" onclick="retryUpload()">Try Again</button>
+            </div>
         </div>
     </div>
 
@@ -108,6 +147,16 @@
             <button class="btn btn-o" onclick="another()">Record Another</button>
         </div>
     </div>
+    <!-- All Recordings Panel -->
+    <div class="card" id="all-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div class="card-title" style="margin-bottom:0;">All Recordings</div>
+            <button class="btn btn-o" id="b-refresh" onclick="loadVideos()" style="padding:5px 12px; font-size:10px;">Refresh</button>
+        </div>
+        <div id="vid-list">
+            <div style="text-align:center; color:var(--muted); font-size:12px; padding:10px;">Click "Refresh" to load recordings</div>
+        </div>
+    </div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -115,12 +164,12 @@
 let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0;
 let facing='user', recordedDuration=0, resultFileId=null, resultUrl=null;
 const MAX=60;
+const TICK='&#10003;', CROSS='&#10007;';
 
 // ── Camera ──
 async function startCam(){
     if(stream) stream.getTracks().forEach(t=>t.stop());
     try{
-        // Try exact facingMode first (needed for mobile flip), fall back to ideal
         let constraints={video:{width:{ideal:1280},height:{ideal:720},facingMode:{exact:facing}},audio:true};
         try{
             stream=await navigator.mediaDevices.getUserMedia(constraints);
@@ -141,23 +190,18 @@ async function startCam(){
 }
 async function flipCam(){
     facing=facing==='user'?'environment':'user';
-    // If recording, swap camera mid-recording: stop old stream, start new, swap tracks
     if(recorder&&recorder.state==='recording'){
         try{
             const newStream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:{exact:facing}},audio:true});
-            // Replace video track in the recorder's stream
             const oldTrack=stream.getVideoTracks()[0];
             const newTrack=newStream.getVideoTracks()[0];
             stream.removeTrack(oldTrack);
             stream.addTrack(newTrack);
             oldTrack.stop();
-            // Update preview
             document.getElementById('preview').srcObject=stream;
-            // Stop extra audio track from new stream (we keep the original)
             newStream.getAudioTracks().forEach(t=>t.stop());
         }catch(e){
-            // Fallback: if exact fails, try ideal
-            facing=facing==='user'?'environment':'user'; // revert
+            facing=facing==='user'?'environment':'user';
             toast('Cannot flip during recording','error');
         }
     }else{
@@ -190,6 +234,8 @@ function stopRec(){
     clearInterval(timerInt);
 }
 function onDone(){
+    // Stop camera immediately — recording is done, preview switches to playback
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     document.getElementById('preview').classList.add('hidden');
     const pb=document.getElementById('playback');
     pb.classList.remove('hidden');pb.src=URL.createObjectURL(blob);
@@ -209,20 +255,24 @@ function redo(){
     URL.revokeObjectURL(document.getElementById('playback').src);
     document.getElementById('playback').classList.add('hidden');
     document.getElementById('playback').src='';
-    document.getElementById('preview').classList.remove('hidden');
-    document.getElementById('b-rec').disabled=false;
     document.getElementById('b-send').disabled=true;
     document.getElementById('b-redo').disabled=true;
     document.getElementById('rpbar').className='pbar';
     document.getElementById('rpbar').style.width='0%';
-    updTimer(0);setSt('Ready to re-record.');
+    updTimer(0);
+    // Restart camera (it was stopped after recording)
+    startCam();
 }
 
-// ── Upload + YouTube publish ──
+// ── Upload ──
 async function send(){
     if(!blob)return;
+    // Stop camera — recording is done, no need to keep it on
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     document.getElementById('rec-card').classList.add('hidden');
     document.getElementById('up-card').classList.remove('hidden');
+    document.getElementById('up-err').classList.add('hidden');
+    document.getElementById('up-spinner').style.display='';
 
     const ext=blob.type.includes('mp4')?'.mp4':'.webm';
     const file=new File([blob],'recording'+ext,{type:blob.type});
@@ -232,9 +282,8 @@ async function send(){
 
     const mb=(file.size/(1024*1024)).toFixed(1);
     setPhase('Uploading '+mb+'MB to server...');
-    setDot('upload','active');
+    setIcon('upload','active');
 
-    // Step 1: Upload to our server
     const xhr=new XMLHttpRequest();
     xhr.open('POST','/video/api/upload');
     xhr.upload.onprogress=e=>{
@@ -245,35 +294,43 @@ async function send(){
         }
     };
     xhr.onload=()=>{
-        const d=JSON.parse(xhr.responseText);
-        if(d.success){
-            setDot('upload','done');
-            document.getElementById('lbl-upload').textContent='Uploaded to server ('+d.size_mb+'MB)';
-            document.getElementById('upbar').style.width='100%';
-            // Step 2: Poll YouTube status
-            pollStatus(d.request_id);
-        }else{
-            setPhase('Failed: '+(d.error||'Unknown'));
-            toast('Upload failed','error');
+        try{
+            const d=JSON.parse(xhr.responseText);
+            if(d.success){
+                setIcon('upload','done');
+                document.getElementById('lbl-upload').textContent='Uploaded to server ('+d.size_mb+'MB)';
+                document.getElementById('lbl-upload').classList.add('done');
+                document.getElementById('upbar').style.width='100%';
+                pollStatus(d.request_id);
+            }else{
+                showError('upload', d.error||'Server rejected the upload');
+            }
+        }catch(e){
+            showError('upload', 'Invalid server response');
         }
     };
-    xhr.onerror=()=>{setPhase('Network error');toast('Network error','error');};
+    xhr.onerror=()=>{ showError('upload', 'Network error -- check your connection'); };
+    xhr.ontimeout=()=>{ showError('upload', 'Upload timed out -- check your connection'); };
+    xhr.timeout=120000;
     xhr.send(fd);
 }
 
 function pollStatus(requestId){
-    setDot('drive','active');
+    setIcon('drive','active');
     setPhase('Uploading to cloud...');
 
+    let failCount=0;
     const interval=setInterval(async()=>{
         try{
             const r=await fetch('/video/api/status/'+requestId);
+            if(!r.ok){ failCount++; if(failCount>10){clearInterval(interval);showError('drive','Lost connection to server');} return; }
             const d=await r.json();
             if(!d.success)return;
             const s=d.data;
+            failCount=0;
 
             if(s.status==='uploading'){
-                setDot('drive','active');
+                setIcon('drive','active');
                 setPhase(s.phase||'Uploading...');
                 if(s.progress>0){
                     document.getElementById('lbl-drive').textContent='Uploading: '+s.progress+'%';
@@ -281,45 +338,91 @@ function pollStatus(requestId){
                 }
             }else if(s.status==='ready'){
                 clearInterval(interval);
-                setDot('drive','done');
-                setDot('ready','done');
-                setPhase('Video ready!');
+
+                // Step 2 done
+                setIcon('drive','done');
+                document.getElementById('lbl-drive').textContent='Uploaded to cloud';
+                document.getElementById('lbl-drive').classList.add('done');
+
+                // Step 3 done
+                setIcon('ready','done');
+                document.getElementById('lbl-ready').textContent='Video ready';
+                document.getElementById('lbl-ready').classList.add('done');
+
+                setPhase('Video published!');
                 document.getElementById('upbar').className='pbar done';
                 document.getElementById('upbar').style.width='100%';
+                document.getElementById('up-spinner').style.display='none';
+
                 resultUrl=s.embed_url;
                 resultFileId=s.file_id;
                 setTimeout(()=>{
                     document.getElementById('up-card').classList.add('hidden');
                     document.getElementById('res-card').classList.remove('hidden');
-                    const playerUrl=location.origin+'/video/player?v='+s.file_id;
+                    const playerUrl=location.origin+'/video/player?v='+s.file_id+'&fresh=1';
                     document.getElementById('url-txt').textContent=playerUrl;
                     toast('Video published!','success');
-                },600);
+                },800);
             }else if(s.status==='failed'){
                 clearInterval(interval);
-                setPhase('Failed: '+(s.error||'Unknown error'));
-                toast('Upload failed','error');
+                showError('drive', s.error||'Cloud upload failed');
             }
-        }catch(e){}
+        }catch(e){ failCount++; if(failCount>10){clearInterval(interval);showError('drive','Lost connection to server');} }
     },2000);
+}
+
+// ── Error handling ──
+function showError(step, message){
+    // Mark the failed step
+    setIcon(step,'fail');
+    var lbl=document.getElementById('lbl-'+step);
+    if(lbl){ lbl.textContent='Failed'; lbl.classList.add('fail'); }
+
+    // Stop spinner
+    document.getElementById('up-spinner').style.display='none';
+    setPhase('');
+
+    // Show error card
+    document.getElementById('up-err').classList.remove('hidden');
+    document.getElementById('err-msg').textContent=message+'. Please try again or contact Acadza support.';
+}
+
+function retryUpload(){
+    // Reset all icons
+    ['upload','drive','ready'].forEach(id=>{
+        setIcon(id,'pending');
+        var lbl=document.getElementById('lbl-'+id);
+        if(lbl){ lbl.className='phase-label'; }
+    });
+    document.getElementById('lbl-upload').textContent='Uploading to server';
+    document.getElementById('lbl-drive').textContent='Uploading to cloud';
+    document.getElementById('lbl-ready').textContent='Video ready';
+    document.getElementById('upbar').style.width='0%';
+    document.getElementById('upbar').className='pbar up';
+    document.getElementById('up-err').classList.add('hidden');
+
+    // Re-trigger upload
+    send();
 }
 
 // ── Helpers ──
 function setPhase(t){document.getElementById('up-phase').textContent=t;}
-function setDot(id,state){
-    const dot=document.getElementById('dot-'+id);
-    dot.className='phase-dot '+state;
+function setIcon(id,state){
+    var icon=document.getElementById('icon-'+id);
+    icon.className='phase-icon '+state;
+    if(state==='done') icon.innerHTML=TICK;
+    else if(state==='fail') icon.innerHTML=CROSS;
+    else if(state==='active') icon.innerHTML='';
+    else icon.innerHTML=({'upload':'1','drive':'2','ready':'3'}[id]||'');
 }
 function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-txt').textContent).then(()=>toast('Copied!','success'));}
-function openPlayer(){if(resultFileId)window.open('/video/player?v='+resultFileId,'_blank');}
+function openPlayer(){if(resultFileId)window.open('/video/player?v='+resultFileId+'&fresh=1','_blank');}
 function another(){
     document.getElementById('res-card').classList.add('hidden');
     document.getElementById('rec-card').classList.remove('hidden');
     document.getElementById('upbar').style.width='0%';
     document.getElementById('upbar').className='pbar up';
-    ['upload','drive','ready'].forEach(id=>{
-        document.getElementById('dot-'+id).className='phase-dot';
-    });
+    ['upload','drive','ready'].forEach(id=>setIcon(id,'pending'));
     redo();
 }
 function updTimer(e){
@@ -335,6 +438,56 @@ document.addEventListener('keydown',e=>{
         else if(!document.getElementById('b-rec').disabled)startRec();
     }
 });
+
+// ── All Recordings ──
+function loadVideos(){
+    const el=document.getElementById('vid-list');
+    el.innerHTML='<div style="text-align:center;padding:12px;"><div class="spinner" style="width:24px;height:24px;margin:0 auto;"></div></div>';
+    fetch('/video/api/videos').then(r=>r.json()).then(d=>{
+        if(!d.success||!d.videos||d.videos.length===0){
+            el.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;padding:10px;">No recordings found</div>';
+            return;
+        }
+        let html='<div class="vid-count">'+d.count+' recording'+(d.count!==1?'s':'')+'</div>';
+        html+='<table class="vid-table"><thead><tr><th>#</th><th>Teacher</th><th>Date</th><th>Size</th><th>Plays</th><th>Link</th><th></th></tr></thead><tbody>';
+        d.videos.forEach((v,i)=>{
+            const date=v.created_at?new Date(v.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}):'--';
+            const playerUrl=location.origin+'/video/player?v='+v.file_id;
+            html+='<tr>';
+            html+='<td>'+(i+1)+'</td>';
+            html+='<td>'+(v.uploader||'--')+'</td>';
+            html+='<td>'+date+'</td>';
+            html+='<td>'+(v.size_mb||0).toFixed(1)+' MB</td>';
+            html+='<td class="plays">'+(v.play_count||0)+'</td>';
+            html+='<td><a class="link-btn" href="'+playerUrl+'" target="_blank">Play</a></td>';
+            html+='<td><button class="copy-btn" onclick="copyLink(\''+playerUrl+'\')">Copy</button></td>';
+            html+='</tr>';
+        });
+        html+='</tbody></table>';
+        el.innerHTML=html;
+    }).catch(e=>{
+        el.innerHTML='<div style="text-align:center;color:var(--error);font-size:12px;padding:10px;">Failed to load: '+e.message+'</div>';
+    });
+}
+function copyLink(url){navigator.clipboard.writeText(url).then(()=>toast('Link copied!','success'));}
+
+// Stop camera when leaving page
+window.addEventListener('beforeunload',()=>{
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+});
+document.addEventListener('visibilitychange',()=>{
+    if(document.hidden && stream && !(recorder&&recorder.state==='recording')){
+        // Stop camera if page is hidden and not recording
+        stream.getTracks().forEach(t=>t.stop()); stream=null;
+        document.getElementById('b-cam').disabled=false;
+        document.getElementById('b-cam').textContent='Start Camera';
+        document.getElementById('b-rec').disabled=true;
+        setSt('Camera stopped (page hidden). Tap "Start Camera" to resume.');
+    }
+});
+
+// Auto-load on page open
+loadVideos();
 </script>
 </body>
 </html>

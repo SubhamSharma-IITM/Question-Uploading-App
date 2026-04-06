@@ -156,6 +156,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_quarantine_session ON quarantine(session_id);
             CREATE INDEX IF NOT EXISTS idx_upload_log_user ON upload_log(user_phone);
             CREATE INDEX IF NOT EXISTS idx_upload_log_date ON upload_log(uploaded_at);
+
+            CREATE TABLE IF NOT EXISTS videos (
+                file_id TEXT PRIMARY KEY,
+                uploader_phone TEXT,
+                uploader_name TEXT,
+                size_mb REAL DEFAULT 0,
+                duration REAL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                play_count INTEGER DEFAULT 0
+            );
         """)
 
         # ── Auto-migration: add created_by to sessions if missing ──

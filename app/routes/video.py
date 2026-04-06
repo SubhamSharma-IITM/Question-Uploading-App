@@ -30,7 +30,7 @@ router = APIRouter()
 # ── Config ──
 VIDEOS_DIR = Path(settings.data_dir) / "videos"
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15MB
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB (Drive handles storage, temp file deleted after upload)
 ALLOWED_EXTENSIONS = {".webm", ".mp4", ".mkv"}
 EXPIRY_DAYS = 7
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -172,6 +172,13 @@ def _upload_to_drive(request_id: str, video_path: Path, title: str, uploader: st
             view_url=view_url,
         )
 
+        # Persist to SQLite so video list survives restarts
+        try:
+            size_mb = round(upload_path.stat().st_size / (1024 * 1024), 2) if upload_path.exists() else 0
+            _save_video_record(file_id, request_id, uploader, size_mb)
+        except Exception:
+            pass
+
         # Delete temp file
         try:
             upload_path.unlink()
@@ -193,6 +200,66 @@ def cleanup_expired_videos():
             f.unlink()
             cleaned += 1
     return cleaned
+
+
+def _save_video_record(file_id: str, request_id: str, uploader: str, size_mb: float):
+    """Persist video metadata to SQLite after Drive upload succeeds."""
+    from app.db import _get_conn, _lock
+    # Get uploader phone from in-memory status
+    phone = ""
+    with _status_lock:
+        st = _upload_status.get(request_id, {})
+        phone = st.get("uploader_phone", "")
+        if not phone:
+            # Try to get from started_at context
+            phone = st.get("phone", "")
+    duration = 0
+    with _status_lock:
+        duration = _upload_status.get(request_id, {}).get("duration", 0)
+
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO videos (file_id, uploader_phone, uploader_name, size_mb, duration, created_at, play_count) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (file_id, phone, uploader, size_mb, duration,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def _increment_play_count(file_id: str):
+    """Increment play count for a video."""
+    from app.db import _get_conn, _lock
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE videos SET play_count = play_count + 1 WHERE file_id = ?", (file_id,))
+        conn.commit()
+
+
+# ── Check if Drive has finished processing a video ──
+
+@router.get("/api/check/{file_id}")
+async def check_video_ready(file_id: str):
+    """Check if Google Drive has finished processing a video.
+
+    Drive populates videoMediaMetadata only after transcoding completes.
+    Returns {ready: true/false} — used by player to decide iframe vs proxy.
+    """
+    import asyncio
+
+    def _check():
+        drive = _get_drive_client()
+        meta = drive.files().get(
+            fileId=file_id, fields="videoMediaMetadata,mimeType"
+        ).execute()
+        vmm = meta.get("videoMediaMetadata")
+        return vmm is not None
+
+    try:
+        ready = await asyncio.to_thread(_check)
+        return {"ready": ready}
+    except Exception:
+        return {"ready": False}
 
 
 # ── Stream: return Drive direct download URL for client-side fetch ──
@@ -267,6 +334,82 @@ async def proxy_from_drive(file_id: str):
         return JSONResponse(status_code=404, content={"error": str(e)})
 
 
+# ── Playback logging ──
+
+PLAYBACK_LOG = VIDEOS_DIR / "playback_log.jsonl"
+
+
+@router.post("/api/log")
+async def log_playback(request: Request):
+    """Log playback events (iframe vs proxy, timing, fallback triggers).
+
+    Appended to data/videos/playback_log.jsonl for local analysis.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "file_id": str(body.get("file_id", ""))[:64],
+        "method": str(body.get("method", ""))[:10],
+        "elapsed_ms": int(body.get("elapsed_ms", 0)),
+        "success": bool(body.get("success")),
+        "iframe_loaded": bool(body.get("iframe_loaded")),
+        "user_agent": str(body.get("user_agent", ""))[:200],
+        "events": body.get("events", [])[:30],  # cap at 30 entries
+    }
+
+    try:
+        with open(PLAYBACK_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    # Increment play count in SQLite
+    file_id = entry.get("file_id", "")
+    if file_id:
+        try:
+            _increment_play_count(file_id)
+        except Exception:
+            pass
+
+    return {"ok": True}
+
+
+# ── List all recorded videos (from SQLite) ──
+
+@router.get("/api/videos")
+async def list_videos():
+    """List all recorded videos with metadata and play counts.
+
+    Reads from SQLite — persists across restarts, works on Render.
+    """
+    from app.db import _get_conn, _lock
+    try:
+        with _lock:
+            conn = _get_conn()
+            rows = conn.execute(
+                "SELECT file_id, uploader_name, size_mb, duration, created_at, play_count FROM videos ORDER BY created_at DESC"
+            ).fetchall()
+        videos = []
+        for r in rows:
+            fid = r["file_id"]
+            videos.append({
+                "file_id": fid,
+                "uploader": r["uploader_name"] or "",
+                "size_mb": r["size_mb"] or 0,
+                "duration": r["duration"] or 0,
+                "created_at": r["created_at"] or "",
+                "play_count": r["play_count"] or 0,
+                "player_url": f"/video/player?v={fid}",
+            })
+        return {"success": True, "count": len(videos), "videos": videos}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ── Pages ──
 
 @router.get("/recorder", response_class=HTMLResponse)
@@ -329,6 +472,8 @@ async def upload_video(request: Request, file: UploadFile = File(...), duration:
             "error": None,
             "size_mb": round(total_size / (1024 * 1024), 2),
             "uploader": name,
+            "uploader_phone": phone,
+            "duration": duration,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
