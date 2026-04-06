@@ -1,14 +1,14 @@
-"""Teacher Video Recording — upload to YouTube, stream via YouTube embed.
+"""Teacher Video Recording — upload to Google Drive, embed via iframe.
 
 Flow:
-1. Teacher records in browser → POST /video/api/upload
-2. Server saves to temp disk → uploads to YouTube (unlisted)
-3. Client polls GET /video/api/status/{id} until YouTube processing completes
-4. Player page embeds YouTube iframe player
+1. Teacher records in browser -> POST /video/api/upload
+2. Server saves to temp disk -> uploads to Google Drive (public link)
+3. Server returns Drive file ID instantly (no processing delay)
+4. Player page embeds Google Drive preview iframe
+5. Temp file deleted from server after Drive upload succeeds
 
-Migration note: YouTube credentials (OAuth token + client secret) stored in
-{data_dir}/youtube_token.json and youtube_client_secret.json. Token auto-refreshes.
-To switch to S3: replace _upload_to_youtube() with S3 put_object, remove polling.
+Credentials: OAuth token + client secret in {data_dir}/youtube_token.json
+and youtube_client_secret.json (same creds, Drive scope added).
 """
 
 import json
@@ -35,37 +35,67 @@ ALLOWED_EXTENSIONS = {".webm", ".mp4", ".mkv"}
 EXPIRY_DAYS = 7
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
-# YouTube credentials
-YT_CLIENT_SECRET = Path(settings.data_dir) / "youtube_client_secret.json"
-YT_TOKEN_FILE = Path(settings.data_dir) / "youtube_token.json"
-YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
-              "https://www.googleapis.com/auth/youtube.readonly"]
+# OAuth credentials (shared with YouTube — same project)
+OAUTH_CLIENT_SECRET = Path(settings.data_dir) / "youtube_client_secret.json"
+OAUTH_TOKEN_FILE = Path(settings.data_dir) / "youtube_token.json"
+OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
+# Google Drive folder for videos (created on first upload)
+_drive_folder_id = None
 
 # In-memory upload status tracker
-# {request_id: {status, progress, youtube_url, error, ...}}
 _upload_status = {}
 _status_lock = threading.Lock()
 
 
-def _get_youtube_client():
-    """Build authenticated YouTube API client from saved OAuth token."""
+def _get_drive_client():
+    """Build authenticated Google Drive API client from saved OAuth token."""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
 
-    if not YT_TOKEN_FILE.exists():
-        raise RuntimeError("YouTube token not found. Run test_youtube_upload.py first.")
+    if not OAUTH_TOKEN_FILE.exists():
+        raise RuntimeError("OAuth token not found. Run auth flow first.")
 
-    creds = Credentials.from_authorized_user_file(str(YT_TOKEN_FILE), YT_SCOPES)
+    creds = Credentials.from_authorized_user_file(str(OAUTH_TOKEN_FILE), OAUTH_SCOPES)
+
+    # Check if token has Drive scope — if not, need re-auth
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        YT_TOKEN_FILE.write_text(creds.to_json())
+        OAUTH_TOKEN_FILE.write_text(creds.to_json())
 
-    return build("youtube", "v3", credentials=creds)
+    return build("drive", "v3", credentials=creds)
 
 
-def _upload_to_youtube(request_id: str, video_path: Path, title: str, uploader: str):
-    """Background thread: upload video to YouTube + poll until processed."""
+def _get_or_create_folder(drive):
+    """Get or create 'Acadza Videos' folder in Drive root."""
+    global _drive_folder_id
+    if _drive_folder_id:
+        return _drive_folder_id
+
+    # Search for existing folder
+    results = drive.files().list(
+        q="name='Acadza Videos' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+        spaces="drive", fields="files(id)"
+    ).execute()
+
+    if results.get("files"):
+        _drive_folder_id = results["files"][0]["id"]
+    else:
+        # Create folder
+        meta = {"name": "Acadza Videos", "mimeType": "application/vnd.google-apps.folder"}
+        folder = drive.files().create(body=meta, fields="id").execute()
+        _drive_folder_id = folder["id"]
+
+    return _drive_folder_id
+
+
+def _upload_to_drive(request_id: str, video_path: Path, title: str, uploader: str):
+    """Background thread: upload video to Google Drive + set public sharing."""
     from googleapiclient.http import MediaFileUpload
 
     def set_status(**kwargs):
@@ -73,27 +103,47 @@ def _upload_to_youtube(request_id: str, video_path: Path, title: str, uploader: 
             _upload_status[request_id].update(kwargs)
 
     try:
-        youtube = _get_youtube_client()
+        # Transcode WebM -> MP4 for Drive compatibility (Drive can't preview WebM)
+        upload_path = video_path
+        if video_path.suffix == ".webm":
+            import shutil, subprocess
+            ffmpeg = shutil.which("ffmpeg")
+            if ffmpeg:
+                set_status(status="uploading", phase="Converting video...")
+                mp4_path = video_path.with_suffix(".mp4")
+                result = subprocess.run(
+                    [ffmpeg, "-i", str(video_path),
+                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                     "-c:a", "aac", "-b:a", "64k",
+                     "-movflags", "+faststart", "-y", str(mp4_path)],
+                    capture_output=True, timeout=30,
+                )
+                if mp4_path.exists() and mp4_path.stat().st_size > 0:
+                    upload_path = mp4_path
+                    video_path.unlink()  # delete original WebM
+                    # Fix title extension
+                    if title.endswith(".webm"):
+                        title = title[:-5] + ".mp4"
 
-        body = {
-            "snippet": {
-                "title": title,
-                "description": f"Recorded by {uploader} via Acadza Video",
-                "tags": ["acadza", "education"],
-                "categoryId": "27",  # Education
-            },
-            "status": {
-                "privacyStatus": "unlisted",
-                "selfDeclaredMadeForKids": False,
-            },
+        set_status(status="uploading", phase="Connecting to Google Drive...")
+        drive = _get_drive_client()
+        folder_id = _get_or_create_folder(drive)
+
+        set_status(phase="Uploading to Google Drive...")
+
+        # Upload file
+        file_meta = {
+            "name": title,
+            "parents": [folder_id],
+            "description": f"Recorded by {uploader} via Acadza Video",
         }
 
-        media = MediaFileUpload(str(video_path), chunksize=5 * 1024 * 1024, resumable=True)
-        request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+        mime = "video/mp4" if upload_path.suffix == ".mp4" else "video/webm"
+        media = MediaFileUpload(str(upload_path), mimetype=mime, resumable=True,
+                                chunksize=5 * 1024 * 1024)
 
-        set_status(status="uploading", phase="Uploading to YouTube...")
+        request = drive.files().create(body=file_meta, media_body=media, fields="id")
 
-        # Upload with progress tracking
         response = None
         while response is None:
             status, response = request.next_chunk()
@@ -101,44 +151,32 @@ def _upload_to_youtube(request_id: str, video_path: Path, title: str, uploader: 
                 pct = int(status.progress() * 100)
                 set_status(progress=pct, phase=f"Uploading... {pct}%")
 
-        video_id = response["id"]
-        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-        set_status(status="processing", progress=100, youtube_id=video_id,
-                   youtube_url=youtube_url, phase="YouTube is processing...")
+        file_id = response["id"]
+        set_status(progress=100, phase="Setting permissions...")
 
-        # Poll YouTube for processing completion
-        for i in range(60):  # up to 10 minutes
-            time.sleep(5)
-            result = youtube.videos().list(
-                part="processingDetails,status", id=video_id
-            ).execute()
+        # Set public sharing (anyone with link can view)
+        drive.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader"},
+        ).execute()
 
-            if result["items"]:
-                item = result["items"][0]
-                proc = item.get("processingDetails", {})
-                upload_status = item.get("status", {}).get("uploadStatus", "")
-                proc_status = proc.get("processingStatus", "")
+        # Build URLs
+        embed_url = f"https://drive.google.com/file/d/{file_id}/preview"
+        view_url = f"https://drive.google.com/file/d/{file_id}/view"
 
-                elapsed = i * 5
-                set_status(phase=f"Processing... ({elapsed}s)")
+        set_status(
+            status="ready",
+            phase="Video ready!",
+            file_id=file_id,
+            embed_url=embed_url,
+            view_url=view_url,
+        )
 
-                if proc_status == "succeeded" or upload_status == "processed":
-                    set_status(status="ready", phase="Video ready!",
-                               youtube_url=youtube_url, youtube_id=video_id)
-                    # Clean up temp file
-                    try:
-                        video_path.unlink()
-                    except Exception:
-                        pass
-                    return
-
-                if upload_status == "failed":
-                    reason = item.get("status", {}).get("failureReason", "unknown")
-                    set_status(status="failed", error=f"YouTube rejected: {reason}")
-                    return
-
-        set_status(status="ready", phase="Video uploaded (processing may continue)",
-                   youtube_url=youtube_url)
+        # Delete temp file
+        try:
+            upload_path.unlink()
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
@@ -157,6 +195,78 @@ def cleanup_expired_videos():
     return cleaned
 
 
+# ── Stream: return Drive direct download URL for client-side fetch ──
+
+@router.get("/api/stream/{file_id}")
+async def get_stream_url(file_id: str):
+    """Return the direct download URL for a Drive file.
+
+    The client fetches the video directly from Google's CDN using this URL.
+    Our server is NOT in the data path — zero RAM usage, zero bandwidth.
+    """
+    import asyncio
+
+    def _get_url():
+        drive = _get_drive_client()
+        meta = drive.files().get(
+            fileId=file_id, fields="webContentLink,size,mimeType"
+        ).execute()
+        return {
+            "url": meta.get("webContentLink", ""),
+            "size": int(meta.get("size", 0)),
+            "mimeType": meta.get("mimeType", "video/mp4"),
+        }
+
+    try:
+        result = await asyncio.to_thread(_get_url)
+        if not result["url"]:
+            return JSONResponse(status_code=404, content={"error": "No download URL"})
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=404, content={"error": f"Video not found: {e}"})
+
+
+# ── Proxy fallback: server downloads from Drive, serves to client ──
+
+@router.get("/api/proxy/{file_id}")
+async def proxy_from_drive(file_id: str):
+    """Fallback: download video from Drive server-side and serve to browser.
+
+    Used when CORS blocks direct client-side fetch from Google Drive.
+    Loads full file into memory — only for small videos (<15MB).
+    """
+    import asyncio
+    import io
+    from fastapi.responses import Response
+
+    def _download():
+        drive = _get_drive_client()
+        meta = drive.files().get(fileId=file_id, fields="size,mimeType").execute()
+        content_type = meta.get("mimeType", "video/mp4")
+        from googleapiclient.http import MediaIoBaseDownload
+        fh = io.BytesIO()
+        dl = MediaIoBaseDownload(fh, drive.files().get_media(fileId=file_id))
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        fh.seek(0)
+        return fh.read(), content_type
+
+    try:
+        video_bytes, content_type = await asyncio.to_thread(_download)
+        return Response(
+            content=video_bytes,
+            media_type=content_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(len(video_bytes)),
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+
+
 # ── Pages ──
 
 @router.get("/recorder", response_class=HTMLResponse)
@@ -169,7 +279,7 @@ async def player_page():
     return (TEMPLATES_DIR / "video_player.html").read_text(encoding="utf-8")
 
 
-# ── Upload (starts YouTube upload in background) ──
+# ── Upload (starts Drive upload in background) ──
 
 @router.post("/api/upload")
 async def upload_video(request: Request, file: UploadFile = File(...), duration: float = 0):
@@ -213,18 +323,19 @@ async def upload_video(request: Request, file: UploadFile = File(...), duration:
             "status": "queued",
             "progress": 0,
             "phase": "Preparing upload...",
-            "youtube_url": None,
-            "youtube_id": None,
+            "file_id": None,
+            "embed_url": None,
+            "view_url": None,
             "error": None,
             "size_mb": round(total_size / (1024 * 1024), 2),
             "uploader": name,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # Start YouTube upload in background thread
-    title = f"Acadza - {name} - {datetime.now().strftime('%d %b %Y %H:%M')}"
+    # Start Drive upload in background thread
+    title = f"Acadza - {name} - {datetime.now().strftime('%d %b %Y %H:%M')}{ext}"
     thread = threading.Thread(
-        target=_upload_to_youtube,
+        target=_upload_to_drive,
         args=(request_id, video_path, title, name),
         daemon=True,
     )

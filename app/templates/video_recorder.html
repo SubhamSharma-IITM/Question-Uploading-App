@@ -90,8 +90,7 @@
         <div class="spinner-wrap"><div class="spinner"></div></div>
         <div class="phase-steps">
             <div class="phase-step"><div class="phase-dot active" id="dot-upload"></div><span id="lbl-upload">Uploading to server...</span></div>
-            <div class="phase-step"><div class="phase-dot" id="dot-yt-upload"></div><span id="lbl-yt-upload">Uploading to YouTube</span></div>
-            <div class="phase-step"><div class="phase-dot" id="dot-yt-proc"></div><span id="lbl-yt-proc">YouTube processing</span></div>
+            <div class="phase-step"><div class="phase-dot" id="dot-drive"></div><span id="lbl-drive">Uploading to cloud</span></div>
             <div class="phase-step"><div class="phase-dot" id="dot-ready"></div><span id="lbl-ready">Video ready</span></div>
         </div>
     </div>
@@ -114,14 +113,21 @@
 
 <script>
 let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0;
-let facing='user', recordedDuration=0, resultYtId=null, resultUrl=null;
+let facing='user', recordedDuration=0, resultFileId=null, resultUrl=null;
 const MAX=60;
 
 // ── Camera ──
 async function startCam(){
     if(stream) stream.getTracks().forEach(t=>t.stop());
     try{
-        stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:facing},audio:true});
+        // Try exact facingMode first (needed for mobile flip), fall back to ideal
+        let constraints={video:{width:{ideal:1280},height:{ideal:720},facingMode:{exact:facing}},audio:true};
+        try{
+            stream=await navigator.mediaDevices.getUserMedia(constraints);
+        }catch(e){
+            constraints.video.facingMode={ideal:facing};
+            stream=await navigator.mediaDevices.getUserMedia(constraints);
+        }
         const p=document.getElementById('preview');
         p.srcObject=stream; p.classList.remove('hidden');
         document.getElementById('playback').classList.add('hidden');
@@ -133,7 +139,31 @@ async function startCam(){
         setSt('Camera ready. Tap "Record" when ready.');
     }catch(e){toast('Camera denied: '+e.message,'error');}
 }
-function flipCam(){if(recorder&&recorder.state==='recording')return;facing=facing==='user'?'environment':'user';startCam();}
+async function flipCam(){
+    facing=facing==='user'?'environment':'user';
+    // If recording, swap camera mid-recording: stop old stream, start new, swap tracks
+    if(recorder&&recorder.state==='recording'){
+        try{
+            const newStream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:{exact:facing}},audio:true});
+            // Replace video track in the recorder's stream
+            const oldTrack=stream.getVideoTracks()[0];
+            const newTrack=newStream.getVideoTracks()[0];
+            stream.removeTrack(oldTrack);
+            stream.addTrack(newTrack);
+            oldTrack.stop();
+            // Update preview
+            document.getElementById('preview').srcObject=stream;
+            // Stop extra audio track from new stream (we keep the original)
+            newStream.getAudioTracks().forEach(t=>t.stop());
+        }catch(e){
+            // Fallback: if exact fails, try ideal
+            facing=facing==='user'?'environment':'user'; // revert
+            toast('Cannot flip during recording','error');
+        }
+    }else{
+        startCam();
+    }
+}
 
 // ── Recording ──
 function toggleRec(){if(recorder&&recorder.state==='recording')stopRec();else startRec();}
@@ -141,7 +171,7 @@ function startRec(){
     if(!stream)return;chunks=[];blob=null;
     let mime='video/webm;codecs=vp8,opus';
     if(!MediaRecorder.isTypeSupported(mime)){mime='video/webm';if(!MediaRecorder.isTypeSupported(mime)){mime='video/mp4';if(!MediaRecorder.isTypeSupported(mime))mime='';}}
-    const opts=mime?{mimeType:mime,videoBitsPerSecond:1000000}:{videoBitsPerSecond:1000000};
+    const opts=mime?{mimeType:mime,videoBitsPerSecond:2500000}:{videoBitsPerSecond:2500000};
     recorder=new MediaRecorder(stream,opts);
     recorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
     recorder.onstop=()=>{blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'});onDone();};
@@ -232,8 +262,8 @@ async function send(){
 }
 
 function pollStatus(requestId){
-    setDot('yt-upload','active');
-    setPhase('Uploading to YouTube...');
+    setDot('drive','active');
+    setPhase('Uploading to cloud...');
 
     const interval=setInterval(async()=>{
         try{
@@ -243,40 +273,35 @@ function pollStatus(requestId){
             const s=d.data;
 
             if(s.status==='uploading'){
-                setDot('yt-upload','active');
-                setPhase(s.phase||'Uploading to YouTube...');
+                setDot('drive','active');
+                setPhase(s.phase||'Uploading...');
                 if(s.progress>0){
-                    document.getElementById('lbl-yt-upload').textContent='YouTube upload: '+s.progress+'%';
+                    document.getElementById('lbl-drive').textContent='Uploading: '+s.progress+'%';
+                    document.getElementById('upbar').style.width=s.progress+'%';
                 }
-            }else if(s.status==='processing'){
-                setDot('yt-upload','done');
-                setDot('yt-proc','active');
-                document.getElementById('lbl-yt-upload').textContent='Uploaded to YouTube';
-                setPhase(s.phase||'YouTube is processing...');
             }else if(s.status==='ready'){
                 clearInterval(interval);
-                setDot('yt-upload','done');
-                setDot('yt-proc','done');
+                setDot('drive','done');
                 setDot('ready','done');
-                setPhase('Video published!');
+                setPhase('Video ready!');
                 document.getElementById('upbar').className='pbar done';
-                resultUrl=s.youtube_url;
-                resultYtId=s.youtube_id;
+                document.getElementById('upbar').style.width='100%';
+                resultUrl=s.embed_url;
+                resultFileId=s.file_id;
                 setTimeout(()=>{
                     document.getElementById('up-card').classList.add('hidden');
                     document.getElementById('res-card').classList.remove('hidden');
-                    // Show both YouTube URL and our player URL
-                    const playerUrl=location.origin+'/video/player?v='+s.youtube_id;
+                    const playerUrl=location.origin+'/video/player?v='+s.file_id;
                     document.getElementById('url-txt').textContent=playerUrl;
                     toast('Video published!','success');
-                },800);
+                },600);
             }else if(s.status==='failed'){
                 clearInterval(interval);
                 setPhase('Failed: '+(s.error||'Unknown error'));
                 toast('Upload failed','error');
             }
         }catch(e){}
-    },3000);
+    },2000);
 }
 
 // ── Helpers ──
@@ -286,13 +311,13 @@ function setDot(id,state){
     dot.className='phase-dot '+state;
 }
 function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-txt').textContent).then(()=>toast('Copied!','success'));}
-function openPlayer(){if(resultYtId)window.open('/video/player?v='+resultYtId,'_blank');}
+function openPlayer(){if(resultFileId)window.open('/video/player?v='+resultFileId,'_blank');}
 function another(){
     document.getElementById('res-card').classList.add('hidden');
     document.getElementById('rec-card').classList.remove('hidden');
     document.getElementById('upbar').style.width='0%';
     document.getElementById('upbar').className='pbar up';
-    ['upload','yt-upload','yt-proc','ready'].forEach(id=>{
+    ['upload','drive','ready'].forEach(id=>{
         document.getElementById('dot-'+id).className='phase-dot';
     });
     redo();
