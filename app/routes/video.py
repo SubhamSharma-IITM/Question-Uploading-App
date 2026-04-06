@@ -61,12 +61,14 @@ def _get_drive_client():
     if not OAUTH_TOKEN_FILE.exists():
         raise RuntimeError("OAuth token not found. Run auth flow first.")
 
-    creds = Credentials.from_authorized_user_file(str(OAUTH_TOKEN_FILE), OAUTH_SCOPES)
+    # Load token without forcing scopes — use whatever was originally granted.
+    # Forcing OAUTH_SCOPES here causes RefreshError if the token was created
+    # with different scopes (e.g. YouTube-only without drive.file).
+    creds = Credentials.from_authorized_user_file(str(OAUTH_TOKEN_FILE))
 
-    # Check if token has Drive scope — if not, need re-auth
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        OAUTH_TOKEN_FILE.write_text(creds.to_json())
+        OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
     return build("drive", "v3", credentials=creds)
 
@@ -116,7 +118,7 @@ def _upload_to_drive(request_id: str, video_path: Path, title: str, uploader: st
                      "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                      "-c:a", "aac", "-b:a", "64k",
                      "-movflags", "+faststart", "-y", str(mp4_path)],
-                    capture_output=True, timeout=30,
+                    capture_output=True, timeout=120,
                 )
                 if mp4_path.exists() and mp4_path.stat().st_size > 0:
                     upload_path = mp4_path
