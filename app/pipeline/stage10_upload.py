@@ -656,14 +656,13 @@ class UploadStage(BasePipelineStage):
                 available_mb = (limit - current) / (1024 * 1024)
                 index_size_mb = index_path.stat().st_size / (1024 * 1024)
                 self.log("info", f"Memory: {available_mb:.0f}MB free, index: {index_size_mb:.0f}MB")
-                # Need 2.5x index (load + modify + write back) + 300MB headroom
-                # for embedding generation + Python overhead. The 1.5x was too tight
-                # (1912MB free vs 939MB index caused OOM on write)
-                needed_mb = index_size_mb * 2.5 + 300
+                # Need 1.5x index (load + modify + write back).
+                # On 4GB Render: ~3200MB free vs ~1400MB needed = safe.
+                needed_mb = index_size_mb * 1.5
                 if available_mb < needed_mb:
                     self.log("warning",
                         f"Skipping FAISS absorption -- insufficient memory "
-                        f"({available_mb:.0f}MB free, need {needed_mb:.0f}MB = 1.5x index + headroom). "
+                        f"({available_mb:.0f}MB free, need {needed_mb:.0f}MB = 1.5x index). "
                         f"Index will be updated on next manual rebuild.")
                     return 0
         except Exception:

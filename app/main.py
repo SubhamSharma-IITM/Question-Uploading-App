@@ -281,10 +281,12 @@ def _cleanup_completed_sessions(sessions_dir: str) -> None:
     sessions = list_sessions()
     active_ids = {s["id"] for s in sessions if s["current_stage"] != "completed"}
 
+    # PRESERVE: metadata_v2 (final question data), quality_check (QA verdicts/ledgers)
+    # These are needed for post-upload evaluation and audits.
     HEAVY_DIRS = [
-        "images_original", "images_cleaned", "metadata_v2", "mapped_output",
+        "images_original", "images_cleaned", "mapped_output",
         "cleaned_output", "batch_jsonl", "batch_results", "batch_files",
-        "duplicate_reports", "duplicates", "quality_check", "quality",
+        "duplicate_reports", "duplicates", "quality",
         "quarantine", "backups", "input", "mathpix_output",
         "session_embeddings", "smiles_output",
     ]
