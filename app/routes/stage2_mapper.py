@@ -102,6 +102,9 @@ async def start_mapping(
     config["pyq_year_to"] = pyq_year_to
     config["extra_context"] = extra_context or ""
     config["llm_provider"] = llm_provider
+    # Capture user-set max questions independently — never overridden once set
+    if "user_set_max_questions" not in config:
+        config["user_set_max_questions"] = max_questions
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # If already running for this session, reject
