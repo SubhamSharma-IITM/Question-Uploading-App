@@ -23,38 +23,54 @@ if [ -n "$VERTEX_AI_CREDENTIALS_B64" ]; then
 fi
 
 # ── 2. Bootstrap persistent disk (first deploy only) ──
-# Copy large data files from Docker image to persistent disk
-# Subsequent deploys skip this (files already exist)
+# SAFETY: NEVER overwrite live data files. Stage 10 absorptions update these
+# continuously. The Git LFS copies are frozen snapshots from initial deploy.
+# Only copy if the persistent disk file is completely MISSING (fresh disk).
 
 # Create directories
 mkdir -p "$PERSISTENT/sessions"
 mkdir -p "$PERSISTENT/db_index_cache/db_reference"
 
-# Question database (512MB) — Stage 8 cross-check + Stage 10 absorption
+# Question database — LIVE, updated by Stage 10 absorption
 if [ ! -f "$PERSISTENT/allque030326.json" ]; then
-    echo "[BOOT] Copying question database to persistent disk..."
-    cp "$SRC_DATA/allque030326.json" "$PERSISTENT/allque030326.json"
-    echo "[BOOT] Done ($(du -sh "$PERSISTENT/allque030326.json" | cut -f1))"
+    if [ -f "$SRC_DATA/allque030326.json" ] && [ "$(wc -c < "$SRC_DATA/allque030326.json")" -gt 1000 ]; then
+        echo "[BOOT] First deploy: copying question database to persistent disk..."
+        cp "$SRC_DATA/allque030326.json" "$PERSISTENT/allque030326.json"
+        echo "[BOOT] Done ($(du -sh "$PERSISTENT/allque030326.json" | cut -f1))"
+    else
+        echo "[BOOT] WARNING: Question database missing from persistent disk AND source is missing/stub (LFS not fetched)."
+        echo "[BOOT] WARNING: You must SCP the database manually: scp allque030326.json render:/data/"
+    fi
 else
-    echo "[BOOT] Question database already on persistent disk"
+    echo "[BOOT] Question database on persistent disk ($(du -sh "$PERSISTENT/allque030326.json" | cut -f1)) -- NOT overwriting"
 fi
 
-# FAISS index (965MB) — Stage 8 duplicate detection + Stage 10 update
+# FAISS index — LIVE, updated by Stage 10 absorption
 if [ ! -f "$PERSISTENT/db_index_cache/db_reference/faiss.index" ]; then
-    echo "[BOOT] Copying FAISS index to persistent disk..."
-    cp "$SRC_DATA/db_index_cache/db_reference/faiss.index" "$PERSISTENT/db_index_cache/db_reference/faiss.index"
-    echo "[BOOT] Done ($(du -sh "$PERSISTENT/db_index_cache/db_reference/faiss.index" | cut -f1))"
+    if [ -f "$SRC_DATA/db_index_cache/db_reference/faiss.index" ] && [ "$(wc -c < "$SRC_DATA/db_index_cache/db_reference/faiss.index")" -gt 1000 ]; then
+        echo "[BOOT] First deploy: copying FAISS index to persistent disk..."
+        cp "$SRC_DATA/db_index_cache/db_reference/faiss.index" "$PERSISTENT/db_index_cache/db_reference/faiss.index"
+        echo "[BOOT] Done ($(du -sh "$PERSISTENT/db_index_cache/db_reference/faiss.index" | cut -f1))"
+    else
+        echo "[BOOT] WARNING: FAISS index missing from persistent disk AND source is missing/stub."
+        echo "[BOOT] WARNING: You must SCP the index manually."
+    fi
 else
-    echo "[BOOT] FAISS index already on persistent disk"
+    echo "[BOOT] FAISS index on persistent disk ($(du -sh "$PERSISTENT/db_index_cache/db_reference/faiss.index" | cut -f1)) -- NOT overwriting"
 fi
 
-# FAISS metadata (8MB) — OID map for duplicate preview
+# FAISS metadata — LIVE, updated by Stage 10 absorption
 if [ ! -f "$PERSISTENT/db_index_cache/db_reference/metadata.json" ]; then
-    echo "[BOOT] Copying FAISS metadata to persistent disk..."
-    cp "$SRC_DATA/db_index_cache/db_reference/metadata.json" "$PERSISTENT/db_index_cache/db_reference/metadata.json"
-    echo "[BOOT] Done ($(du -sh "$PERSISTENT/db_index_cache/db_reference/metadata.json" | cut -f1))"
+    if [ -f "$SRC_DATA/db_index_cache/db_reference/metadata.json" ] && [ "$(wc -c < "$SRC_DATA/db_index_cache/db_reference/metadata.json")" -gt 1000 ]; then
+        echo "[BOOT] First deploy: copying FAISS metadata to persistent disk..."
+        cp "$SRC_DATA/db_index_cache/db_reference/metadata.json" "$PERSISTENT/db_index_cache/db_reference/metadata.json"
+        echo "[BOOT] Done ($(du -sh "$PERSISTENT/db_index_cache/db_reference/metadata.json" | cut -f1))"
+    else
+        echo "[BOOT] WARNING: FAISS metadata missing from persistent disk AND source is missing/stub."
+        echo "[BOOT] WARNING: You must SCP the metadata manually."
+    fi
 else
-    echo "[BOOT] FAISS metadata already on persistent disk"
+    echo "[BOOT] FAISS metadata on persistent disk ($(du -sh "$PERSISTENT/db_index_cache/db_reference/metadata.json" | cut -f1)) -- NOT overwriting"
 fi
 
 echo "[BOOT] Persistent disk contents:"

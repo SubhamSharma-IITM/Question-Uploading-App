@@ -18,6 +18,10 @@ services:
 
     # Environment variables
     envVars:
+      # ── Git LFS: skip download during clone (data lives on persistent disk) ──
+      - key: GIT_LFS_SKIP_SMUDGE
+        value: "1"
+
       # ── Paths (override defaults to point to persistent disk) ──
       - key: DATA_DIR
         value: /data

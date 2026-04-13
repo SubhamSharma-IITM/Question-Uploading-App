@@ -1,3 +1,7 @@
-data/allque030326.json filter=lfs diff=lfs merge=lfs -text
-data/db_index_cache/db_reference/faiss.index filter=lfs diff=lfs merge=lfs -text
-data/db_index_cache/db_reference/metadata.json filter=lfs diff=lfs merge=lfs -text
+# Data files stored in Git LFS but NOT downloaded during Render deploy.
+# Live production copies live on the persistent disk (/data/).
+# With filter= (empty), git checks out LFS pointer stubs (~130 bytes).
+# start.sh guards against copying stubs (requires > 1000 bytes).
+data/allque030326.json filter= diff=lfs merge=lfs -text
+data/db_index_cache/db_reference/faiss.index filter= diff=lfs merge=lfs -text
+data/db_index_cache/db_reference/metadata.json filter= diff=lfs merge=lfs -text
