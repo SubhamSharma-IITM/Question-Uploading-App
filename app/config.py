@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     acadza_api_username: str = ""
     acadza_api_password: str = ""
 
+    # ── Video Service API ──
+    video_api_token: str = ""
+
     # ── AWS S3 CDN ──
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""

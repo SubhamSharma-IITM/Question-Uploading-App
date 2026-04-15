@@ -20,12 +20,45 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 
 router = APIRouter()
+
+
+# ── Bearer Token Auth (all video endpoints) ──
+
+async def require_video_auth(request: Request, authorization: str = Header(None)):
+    """FastAPI dependency -- gates every video endpoint behind a static bearer token.
+
+    Token is set via VIDEO_API_TOKEN env var. Accepts token via:
+      1. Header:  Authorization: Bearer <token>  (API calls, curl, fetch)
+      2. Query:   ?token=<token>  (browser <video src>, <iframe>, page loads)
+
+    Query param fallback is required because browsers cannot attach custom
+    headers to <video src> or <img src> resource requests.
+    """
+    from fastapi import HTTPException
+    expected = settings.video_api_token
+    if not expected:
+        raise HTTPException(status_code=500, detail="VIDEO_API_TOKEN not configured on server")
+
+    # Try header first, then query param fallback
+    token = None
+    if authorization:
+        parts = authorization.split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+    if not token:
+        token = request.query_params.get("token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization header or ?token= param")
+    if token != expected:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return True
 
 # ── Config ──
 VIDEOS_DIR = Path(settings.data_dir) / "videos"
@@ -229,19 +262,42 @@ def _save_video_record(file_id: str, request_id: str, uploader: str, size_mb: fl
         conn.commit()
 
 
-def _increment_play_count(file_id: str):
-    """Increment play count for a video."""
+def _increment_play_count(file_id: str, method: str = ""):
+    """Increment play count + method-specific counter for a video."""
     from app.db import _get_conn, _lock
     with _lock:
         conn = _get_conn()
-        conn.execute("UPDATE videos SET play_count = play_count + 1 WHERE file_id = ?", (file_id,))
+        if method == "iframe":
+            conn.execute(
+                "UPDATE videos SET play_count = play_count + 1, iframe_plays = iframe_plays + 1 WHERE file_id = ?",
+                (file_id,),
+            )
+        elif method == "proxy":
+            conn.execute(
+                "UPDATE videos SET play_count = play_count + 1, proxy_plays = proxy_plays + 1 WHERE file_id = ?",
+                (file_id,),
+            )
+        else:
+            conn.execute("UPDATE videos SET play_count = play_count + 1 WHERE file_id = ?", (file_id,))
+        conn.commit()
+
+
+def _add_proxy_bytes(file_id: str, byte_count: int):
+    """Track cumulative proxy bandwidth per video."""
+    from app.db import _get_conn, _lock
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE videos SET proxy_bytes_served = proxy_bytes_served + ? WHERE file_id = ?",
+            (byte_count, file_id),
+        )
         conn.commit()
 
 
 # ── Check if Drive has finished processing a video ──
 
 @router.get("/api/check/{file_id}")
-async def check_video_ready(file_id: str):
+async def check_video_ready(file_id: str, _auth=Depends(require_video_auth)):
     """Check if Google Drive has finished processing a video.
 
     Drive populates videoMediaMetadata only after transcoding completes.
@@ -267,7 +323,7 @@ async def check_video_ready(file_id: str):
 # ── Stream: return Drive direct download URL for client-side fetch ──
 
 @router.get("/api/stream/{file_id}")
-async def get_stream_url(file_id: str):
+async def get_stream_url(file_id: str, _auth=Depends(require_video_auth)):
     """Return the direct download URL for a Drive file.
 
     The client fetches the video directly from Google's CDN using this URL.
@@ -298,7 +354,7 @@ async def get_stream_url(file_id: str):
 # ── Proxy fallback: server downloads from Drive, serves to client ──
 
 @router.get("/api/proxy/{file_id}")
-async def proxy_from_drive(file_id: str):
+async def proxy_from_drive(file_id: str, _auth=Depends(require_video_auth)):
     """Fallback: download video from Drive server-side and serve to browser.
 
     Used when CORS blocks direct client-side fetch from Google Drive.
@@ -323,6 +379,11 @@ async def proxy_from_drive(file_id: str):
 
     try:
         video_bytes, content_type = await asyncio.to_thread(_download)
+        # Track proxy bandwidth in SQLite
+        try:
+            _add_proxy_bytes(file_id, len(video_bytes))
+        except Exception:
+            pass
         return Response(
             content=video_bytes,
             media_type=content_type,
@@ -342,7 +403,7 @@ PLAYBACK_LOG = VIDEOS_DIR / "playback_log.jsonl"
 
 
 @router.post("/api/log")
-async def log_playback(request: Request):
+async def log_playback(request: Request, _auth=Depends(require_video_auth)):
     """Log playback events (iframe vs proxy, timing, fallback triggers).
 
     Appended to data/videos/playback_log.jsonl for local analysis.
@@ -369,11 +430,12 @@ async def log_playback(request: Request):
     except Exception:
         pass
 
-    # Increment play count in SQLite
+    # Increment play count in SQLite (with method breakdown)
     file_id = entry.get("file_id", "")
+    method = entry.get("method", "")
     if file_id:
         try:
-            _increment_play_count(file_id)
+            _increment_play_count(file_id, method)
         except Exception:
             pass
 
@@ -383,7 +445,7 @@ async def log_playback(request: Request):
 # ── List all recorded videos (from SQLite) ──
 
 @router.get("/api/videos")
-async def list_videos():
+async def list_videos(_auth=Depends(require_video_auth)):
     """List all recorded videos with metadata and play counts.
 
     Reads from SQLite — persists across restarts, works on Render.
@@ -393,7 +455,9 @@ async def list_videos():
         with _lock:
             conn = _get_conn()
             rows = conn.execute(
-                "SELECT file_id, uploader_name, size_mb, duration, created_at, play_count FROM videos ORDER BY created_at DESC"
+                "SELECT file_id, uploader_name, uploader_phone, size_mb, duration, "
+                "created_at, play_count, iframe_plays, proxy_plays, proxy_bytes_served "
+                "FROM videos ORDER BY created_at DESC"
             ).fetchall()
         videos = []
         for r in rows:
@@ -401,13 +465,228 @@ async def list_videos():
             videos.append({
                 "file_id": fid,
                 "uploader": r["uploader_name"] or "",
+                "uploader_phone": r["uploader_phone"] or "",
                 "size_mb": r["size_mb"] or 0,
                 "duration": r["duration"] or 0,
                 "created_at": r["created_at"] or "",
                 "play_count": r["play_count"] or 0,
+                "iframe_plays": r["iframe_plays"] or 0,
+                "proxy_plays": r["proxy_plays"] or 0,
+                "proxy_bandwidth_mb": round((r["proxy_bytes_served"] or 0) / (1024 * 1024), 2),
                 "player_url": f"/video/player?v={fid}",
+                "embed_url": f"https://drive.google.com/file/d/{fid}/preview",
             })
         return {"success": True, "count": len(videos), "videos": videos}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── Analytics Dashboard ──
+
+@router.get("/api/stats")
+async def video_stats(_auth=Depends(require_video_auth)):
+    """Comprehensive video service analytics for AWS migration planning.
+
+    Returns: teacher breakdown, storage, bandwidth, playback method split,
+    daily upload timeline, and infrastructure constraints.
+    """
+    import asyncio
+    from app.db import _get_conn, _lock
+
+    try:
+        with _lock:
+            conn = _get_conn()
+
+            # ── Totals ──
+            totals = conn.execute(
+                "SELECT COUNT(*) as total_videos, "
+                "COUNT(DISTINCT uploader_phone) as unique_teachers, "
+                "COALESCE(SUM(size_mb), 0) as total_size_mb, "
+                "COALESCE(SUM(duration), 0) as total_duration_sec, "
+                "COALESCE(SUM(play_count), 0) as total_plays, "
+                "COALESCE(SUM(iframe_plays), 0) as total_iframe_plays, "
+                "COALESCE(SUM(proxy_plays), 0) as total_proxy_plays, "
+                "COALESCE(SUM(proxy_bytes_served), 0) as total_proxy_bytes "
+                "FROM videos"
+            ).fetchone()
+
+            # ── Per-teacher breakdown ──
+            teachers = conn.execute(
+                "SELECT uploader_name, uploader_phone, "
+                "COUNT(*) as video_count, "
+                "COALESCE(SUM(size_mb), 0) as total_size_mb, "
+                "COALESCE(SUM(duration), 0) as total_duration_sec, "
+                "COALESCE(SUM(play_count), 0) as total_plays, "
+                "COALESCE(SUM(iframe_plays), 0) as iframe_plays, "
+                "COALESCE(SUM(proxy_plays), 0) as proxy_plays, "
+                "MIN(created_at) as first_upload, "
+                "MAX(created_at) as last_upload "
+                "FROM videos GROUP BY uploader_phone ORDER BY video_count DESC"
+            ).fetchall()
+
+            # ── Daily upload timeline ──
+            daily = conn.execute(
+                "SELECT DATE(created_at) as day, "
+                "COUNT(*) as uploads, "
+                "COALESCE(SUM(size_mb), 0) as size_mb "
+                "FROM videos GROUP BY DATE(created_at) ORDER BY day DESC LIMIT 30"
+            ).fetchall()
+
+            # ── Top played videos ──
+            top_played = conn.execute(
+                "SELECT file_id, uploader_name, play_count, iframe_plays, proxy_plays, "
+                "size_mb, duration, created_at "
+                "FROM videos ORDER BY play_count DESC LIMIT 10"
+            ).fetchall()
+
+        total_proxy_bytes = totals["total_proxy_bytes"] or 0
+        total_size_mb = totals["total_size_mb"] or 0
+        total_plays = totals["total_plays"] or 0
+        total_iframe = totals["total_iframe_plays"] or 0
+        total_proxy = totals["total_proxy_plays"] or 0
+
+        # ── Playback log file stats (JSONL) ──
+        log_lines = 0
+        log_size_kb = 0
+        if PLAYBACK_LOG.exists():
+            log_size_kb = round(PLAYBACK_LOG.stat().st_size / 1024, 1)
+            try:
+                with open(PLAYBACK_LOG, "r", encoding="utf-8") as f:
+                    log_lines = sum(1 for _ in f)
+            except Exception:
+                pass
+
+        # ── Drive processing check (batch — async) ──
+        # Check all video file_ids against Drive to see which are processed
+        drive_status = {}
+        with _lock:
+            all_fids = [r["file_id"] for r in conn.execute("SELECT file_id FROM videos").fetchall()]
+
+        def _check_drive_batch(file_ids):
+            results = {}
+            try:
+                drive = _get_drive_client()
+                for fid in file_ids:
+                    try:
+                        meta = drive.files().get(
+                            fileId=fid, fields="videoMediaMetadata,mimeType,size"
+                        ).execute()
+                        results[fid] = {
+                            "processed": meta.get("videoMediaMetadata") is not None,
+                            "drive_size_bytes": int(meta.get("size", 0)),
+                        }
+                    except Exception:
+                        results[fid] = {"processed": False, "drive_size_bytes": 0, "error": "not_found_or_deleted"}
+            except Exception:
+                pass
+            return results
+
+        try:
+            drive_status = await asyncio.to_thread(_check_drive_batch, all_fids)
+        except Exception:
+            pass
+
+        drive_processed = sum(1 for v in drive_status.values() if v.get("processed"))
+        drive_pending = sum(1 for v in drive_status.values() if not v.get("processed") and "error" not in v)
+        drive_missing = sum(1 for v in drive_status.values() if "error" in v)
+        drive_total_bytes = sum(v.get("drive_size_bytes", 0) for v in drive_status.values())
+
+        return {
+            "success": True,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+
+            "overview": {
+                "total_videos": totals["total_videos"],
+                "unique_teachers": totals["unique_teachers"],
+                "total_storage_mb": round(total_size_mb, 2),
+                "total_storage_gb": round(total_size_mb / 1024, 3),
+                "total_duration_sec": round(totals["total_duration_sec"] or 0, 1),
+                "total_duration_min": round((totals["total_duration_sec"] or 0) / 60, 1),
+            },
+
+            "playback": {
+                "total_plays": total_plays,
+                "iframe_plays": total_iframe,
+                "proxy_plays": total_proxy,
+                "iframe_pct": round(total_iframe / total_plays * 100, 1) if total_plays else 0,
+                "proxy_pct": round(total_proxy / total_plays * 100, 1) if total_plays else 0,
+                "untracked_plays": total_plays - total_iframe - total_proxy,
+            },
+
+            "bandwidth": {
+                "proxy_bytes_served_total": total_proxy_bytes,
+                "proxy_mb_served_total": round(total_proxy_bytes / (1024 * 1024), 2),
+                "proxy_gb_served_total": round(total_proxy_bytes / (1024 * 1024 * 1024), 3),
+                "avg_proxy_mb_per_play": round(total_proxy_bytes / (1024 * 1024) / total_proxy, 2) if total_proxy else 0,
+                "note": "iframe plays use zero server bandwidth (Drive CDN). Only proxy plays consume server RAM+bandwidth.",
+            },
+
+            "drive_status": {
+                "total_checked": len(drive_status),
+                "processed_in_drive": drive_processed,
+                "pending_processing": drive_pending,
+                "missing_or_deleted": drive_missing,
+                "drive_total_storage_mb": round(drive_total_bytes / (1024 * 1024), 2),
+                "drive_total_storage_gb": round(drive_total_bytes / (1024 * 1024 * 1024), 3),
+            },
+
+            "teachers": [
+                {
+                    "name": t["uploader_name"] or "",
+                    "phone": t["uploader_phone"] or "",
+                    "video_count": t["video_count"],
+                    "total_size_mb": round(t["total_size_mb"], 2),
+                    "total_duration_min": round(t["total_duration_sec"] / 60, 1),
+                    "total_plays": t["total_plays"],
+                    "iframe_plays": t["iframe_plays"],
+                    "proxy_plays": t["proxy_plays"],
+                    "first_upload": t["first_upload"] or "",
+                    "last_upload": t["last_upload"] or "",
+                }
+                for t in teachers
+            ],
+
+            "daily_uploads": [
+                {
+                    "date": d["day"],
+                    "uploads": d["uploads"],
+                    "size_mb": round(d["size_mb"], 2),
+                }
+                for d in daily
+            ],
+
+            "top_played": [
+                {
+                    "file_id": v["file_id"],
+                    "uploader": v["uploader_name"] or "",
+                    "play_count": v["play_count"],
+                    "iframe_plays": v["iframe_plays"],
+                    "proxy_plays": v["proxy_plays"],
+                    "size_mb": round(v["size_mb"] or 0, 2),
+                    "duration_sec": round(v["duration"] or 0, 1),
+                    "created_at": v["created_at"] or "",
+                    "embed_url": f"https://drive.google.com/file/d/{v['file_id']}/preview",
+                }
+                for v in top_played
+            ],
+
+            "playback_log_file": {
+                "path": str(PLAYBACK_LOG),
+                "entries": log_lines,
+                "size_kb": log_size_kb,
+            },
+
+            "infrastructure": {
+                "storage_backend": "Google Drive (Acadza Videos folder)",
+                "server_plan": "Render Pro (4GB RAM, 10GB disk)",
+                "concurrent_proxy_limit": "~50 viewers before OOM risk",
+                "max_upload_size_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+                "video_expiry_days": EXPIRY_DAYS,
+                "transcoding": "ffmpeg WebM->MP4 (H.264+AAC, CRF 23)",
+                "aws_migration_note": "Switch Drive to S3 + CloudFront. Replace proxy with pre-signed URLs. Estimated cost: ~$14/mo at 500 videos + 150GB transfer.",
+            },
+        }
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -415,24 +694,28 @@ async def list_videos():
 # ── Pages ──
 
 @router.get("/recorder", response_class=HTMLResponse)
-async def recorder_page():
+async def recorder_page(_auth=Depends(require_video_auth)):
     return (TEMPLATES_DIR / "video_recorder.html").read_text(encoding="utf-8")
 
 
 @router.get("/player", response_class=HTMLResponse)
-async def player_page():
+async def player_page(_auth=Depends(require_video_auth)):
     return (TEMPLATES_DIR / "video_player.html").read_text(encoding="utf-8")
 
 
 # ── Upload (starts Drive upload in background) ──
 
 @router.post("/api/upload")
-async def upload_video(request: Request, file: UploadFile = File(...), duration: float = 0):
-    user = getattr(request.state, "user", {})
-    phone = user.get("phone", "")
-    name = user.get("name", "")
-    if not phone:
-        return JSONResponse(status_code=401, content={"success": False, "error": "Not authenticated"})
+async def upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+    duration: float = 0,
+    teacherName: str = "",
+    teacherPhone: str = "",
+    _auth=Depends(require_video_auth),
+):
+    name = teacherName or "Teacher"
+    phone = teacherPhone or ""
 
     ext = Path(file.filename or "video.webm").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -494,7 +777,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), duration:
 # ── Poll upload status ──
 
 @router.get("/api/status/{request_id}")
-async def upload_status(request_id: str):
+async def upload_status(request_id: str, _auth=Depends(require_video_auth)):
     with _status_lock:
         status = _upload_status.get(request_id)
     if not status:

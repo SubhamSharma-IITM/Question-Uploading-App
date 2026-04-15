@@ -164,7 +164,10 @@ def init_db() -> None:
                 size_mb REAL DEFAULT 0,
                 duration REAL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                play_count INTEGER DEFAULT 0
+                play_count INTEGER DEFAULT 0,
+                iframe_plays INTEGER DEFAULT 0,
+                proxy_plays INTEGER DEFAULT 0,
+                proxy_bytes_served INTEGER DEFAULT 0
             );
         """)
 
@@ -175,6 +178,17 @@ def init_db() -> None:
 
         # Index on created_by (safe to run after migration)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_created_by ON sessions(created_by)")
+
+        # ── Auto-migration: add video analytics columns if missing ──
+        vcols = [r[1] for r in conn.execute("PRAGMA table_info(videos)").fetchall()]
+        for col, coldef in [
+            ("iframe_plays", "INTEGER DEFAULT 0"),
+            ("proxy_plays", "INTEGER DEFAULT 0"),
+            ("proxy_bytes_served", "INTEGER DEFAULT 0"),
+        ]:
+            if col not in vcols:
+                conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {coldef}")
+
         conn.commit()
 
 

@@ -395,7 +395,7 @@ app = FastAPI(
 # ── Auth Middleware ──
 # Paths that don't require authentication
 _PUBLIC_PATHS = {"/login", "/auth/verify", "/auth/logout", "/health"}
-_PUBLIC_PREFIXES = ("/static/", "/video/api/status/", "/video/api/stream/", "/video/api/proxy/", "/video/api/check/", "/video/api/log", "/video/player")
+_PUBLIC_PREFIXES = ("/static/",)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -404,6 +404,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Allow public paths
         if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # Video endpoints use their own Bearer token auth (not session cookies)
+        if path.startswith("/video/"):
             return await call_next(request)
 
         # Check session cookie

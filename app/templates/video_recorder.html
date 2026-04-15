@@ -164,6 +164,8 @@
 let stream=null, recorder=null, chunks=[], blob=null, timerInt=null, startT=0;
 let facing='user', recordedDuration=0, resultFileId=null, resultUrl=null;
 const MAX=60;
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const AUTH_HDR = TOKEN ? {'Authorization': 'Bearer ' + TOKEN} : {};
 const TICK='&#10003;', CROSS='&#10007;';
 
 // ── Camera ──
@@ -289,6 +291,7 @@ async function send(){
 
     const xhr=new XMLHttpRequest();
     xhr.open('POST','/video/api/upload');
+    if(TOKEN) xhr.setRequestHeader('Authorization','Bearer '+TOKEN);
     xhr.upload.onprogress=e=>{
         if(e.lengthComputable){
             const pct=(e.loaded/e.total*100).toFixed(0);
@@ -325,7 +328,7 @@ function pollStatus(requestId){
     let failCount=0;
     const interval=setInterval(async()=>{
         try{
-            const r=await fetch('/video/api/status/'+requestId);
+            const r=await fetch('/video/api/status/'+requestId, {headers: AUTH_HDR});
             if(!r.ok){ failCount++; if(failCount>10){clearInterval(interval);showError('drive','Lost connection to server');} return; }
             const d=await r.json();
             if(!d.success)return;
@@ -362,7 +365,7 @@ function pollStatus(requestId){
                 setTimeout(()=>{
                     document.getElementById('up-card').classList.add('hidden');
                     document.getElementById('res-card').classList.remove('hidden');
-                    const playerUrl=location.origin+'/video/player?v='+s.file_id+'&fresh=1';
+                    const playerUrl=location.origin+'/video/player?v='+s.file_id+'&fresh=1'+(TOKEN?'&token='+TOKEN:'');
                     document.getElementById('url-txt').textContent=playerUrl;
                     toast('Video published!','success');
                 },800);
@@ -419,7 +422,7 @@ function setIcon(id,state){
     else icon.innerHTML=({'upload':'1','drive':'2','ready':'3'}[id]||'');
 }
 function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-txt').textContent).then(()=>toast('Copied!','success'));}
-function openPlayer(){if(resultFileId)window.open('/video/player?v='+resultFileId+'&fresh=1','_blank');}
+function openPlayer(){if(resultFileId)window.open('/video/player?v='+resultFileId+'&fresh=1'+(TOKEN?'&token='+TOKEN:''),'_blank');}
 function another(){
     document.getElementById('res-card').classList.add('hidden');
     document.getElementById('rec-card').classList.remove('hidden');
@@ -446,7 +449,7 @@ document.addEventListener('keydown',e=>{
 function loadVideos(){
     const el=document.getElementById('vid-list');
     el.innerHTML='<div style="text-align:center;padding:12px;"><div class="spinner" style="width:24px;height:24px;margin:0 auto;"></div></div>';
-    fetch('/video/api/videos').then(r=>r.json()).then(d=>{
+    fetch('/video/api/videos', {headers: AUTH_HDR}).then(r=>r.json()).then(d=>{
         if(!d.success||!d.videos||d.videos.length===0){
             el.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;padding:10px;">No recordings found</div>';
             return;
@@ -455,7 +458,7 @@ function loadVideos(){
         html+='<table class="vid-table"><thead><tr><th>#</th><th>Teacher</th><th>Date</th><th>Size</th><th>Plays</th><th>Link</th><th></th></tr></thead><tbody>';
         d.videos.forEach((v,i)=>{
             const date=v.created_at?new Date(v.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}):'--';
-            const playerUrl=location.origin+'/video/player?v='+v.file_id;
+            const playerUrl=location.origin+'/video/player?v='+v.file_id+(TOKEN?'&token='+TOKEN:'');
             html+='<tr>';
             html+='<td>'+(i+1)+'</td>';
             html+='<td>'+(v.uploader||'--')+'</td>';

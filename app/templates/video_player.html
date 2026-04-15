@@ -72,6 +72,8 @@
 
     const params = new URLSearchParams(location.search);
     const v = params.get('v');
+    const TOKEN = params.get('token') || '';
+    const AUTH_HDR = TOKEN ? {'Authorization': 'Bearer ' + TOKEN} : {};
     let startTs = Date.now();
 
     if (!v) {
@@ -96,7 +98,7 @@
     // ──────────────────────────────────────────
     loadText.textContent = 'Checking video status...';
 
-    fetch('/video/api/check/' + v)
+    fetch('/video/api/check/' + v, {headers: AUTH_HDR})
         .then(r => r.json())
         .then(d => {
             if (d.ready) {
@@ -141,7 +143,7 @@
         loadText.textContent = 'Loading video...';
         loader.classList.remove('done');
 
-        video.src = '/video/api/proxy/' + v;
+        video.src = '/video/api/proxy/' + v + (TOKEN ? '?token=' + TOKEN : '');
 
         video.addEventListener('canplay', () => {
             loader.classList.add('done');
@@ -169,7 +171,7 @@
         try {
             fetch('/video/api/log', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: Object.assign({ 'Content-Type': 'application/json' }, AUTH_HDR),
                 body: JSON.stringify({
                     file_id: v,
                     method: method,
