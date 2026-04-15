@@ -283,10 +283,12 @@ def _cleanup_completed_sessions(sessions_dir: str) -> None:
 
     # PRESERVE: metadata_v2 (final question data), quality_check (QA verdicts/ledgers)
     # These are needed for post-upload evaluation and audits.
+    # NOTE: metadata_v2, quality_check, upload_logs, session_config.json are PRESERVED.
+    # quality_check holds Stage 9 batch results + ledgers needed for error=3/4 audit.
     HEAVY_DIRS = [
         "images_original", "images_cleaned", "mapped_output",
         "cleaned_output", "batch_jsonl", "batch_results", "batch_files",
-        "duplicate_reports", "duplicates", "quality",
+        "duplicate_reports", "duplicates",
         "quarantine", "backups", "input", "mathpix_output",
         "session_embeddings", "smiles_output",
     ]

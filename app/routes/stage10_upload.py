@@ -264,6 +264,37 @@ async def download_stats_zip(session_id: str):
         csv_e2 = stage.export_csv(error_level=2)
         if csv_e2:
             zf.writestr(f"{safe}_upload_log_error2.csv", csv_e2)
+        # Error=3 CSV (rejected by QA — 1/3 approved)
+        csv_e3 = stage.export_csv(error_level=3)
+        if csv_e3:
+            zf.writestr(f"{safe}_rejected_error3.csv", csv_e3)
+        # Error=4 CSV (rejected by QA — 0/3 approved)
+        csv_e4 = stage.export_csv(error_level=4)
+        if csv_e4:
+            zf.writestr(f"{safe}_rejected_error4.csv", csv_e4)
+        # QA batch results (raw model responses — why each question was approved/rejected)
+        qa_dir = session_dir / "quality_check"
+        if qa_dir.exists():
+            for qa_file in sorted(qa_dir.glob("pass*_batch_results.jsonl")):
+                try:
+                    zf.write(qa_file, f"qa_batch_results/{qa_file.name}")
+                except Exception:
+                    pass
+            # Include vote summary if it exists
+            vote_summary = qa_dir / "vote_summary.json"
+            if vote_summary.exists():
+                try:
+                    zf.write(vote_summary, "qa_batch_results/vote_summary.json")
+                except Exception:
+                    pass
+            # Include ledger files (per-pass verdicts per QID)
+            ledger_dir = qa_dir / "ledgers"
+            if ledger_dir.exists():
+                for lf in sorted(ledger_dir.glob("*.json")):
+                    try:
+                        zf.write(lf, f"qa_batch_results/ledgers/{lf.name}")
+                    except Exception:
+                        pass
         # Pipeline stats
         stats_csv = stage.generate_pipeline_stats_csv()
         if stats_csv:
