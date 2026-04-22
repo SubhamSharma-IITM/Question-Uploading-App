@@ -71,6 +71,32 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 # OAuth credentials (shared with YouTube — same project)
 OAUTH_CLIENT_SECRET = Path(settings.data_dir) / "youtube_client_secret.json"
 OAUTH_TOKEN_FILE = Path(settings.data_dir) / "youtube_token.json"
+
+# Env var fallback: if YOUTUBE_TOKEN_JSON is set, seed the file from it on startup.
+# This lets us rotate expired refresh_tokens by just updating the Render env var
+# instead of needing SSH/shell access to overwrite the file.
+# Runtime auto-refresh (of the 1-hour access_token) still writes to the file.
+# On each process start, env var is re-applied as source of truth.
+_env_token = os.environ.get("YOUTUBE_TOKEN_JSON", "").strip()
+if _env_token:
+    try:
+        # Validate it parses as JSON before writing
+        json.loads(_env_token)
+        OAUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        OAUTH_TOKEN_FILE.write_text(_env_token, encoding="utf-8")
+    except Exception:
+        pass  # malformed env var — fall back to whatever's on disk
+
+# Env var fallback for client secret (same pattern)
+_env_client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET_JSON", "").strip()
+if _env_client_secret:
+    try:
+        json.loads(_env_client_secret)
+        OAUTH_CLIENT_SECRET.parent.mkdir(parents=True, exist_ok=True)
+        OAUTH_CLIENT_SECRET.write_text(_env_client_secret, encoding="utf-8")
+    except Exception:
+        pass
+
 OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
