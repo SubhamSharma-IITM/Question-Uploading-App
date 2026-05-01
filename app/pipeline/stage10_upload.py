@@ -679,26 +679,25 @@ class UploadStage(BasePipelineStage):
 
         self.log("info", f"Current index: {index.ntotal} vectors, adding {len(db_entries)} new...")
 
-        # Extract text for embedding (same method as Stage 8)
-        from app.pipeline.stage8_duplicates import _strip_html_keep_images, MATHML_RE, HTML_TAG_RE, IMG_SRC_RE
-        import re
+        # Extract text for embedding using the SHARED extractor — single source
+        # of truth shared with Stage 8 self/cross-check. Ensures the embedding
+        # text written to FAISS here matches what Stage 8 would generate, so
+        # dedup is consistent across the pipeline. Critical for matchQuestion
+        # (rows mapping summary) and passageQuestion (passage body, not the
+        # absent `question` field).
+        from app.pipeline.stage8_duplicates import extract_text_for_embedding
 
         texts = []
         new_ids = []
         for meta_qid, mongo_id, db_entry in db_entries:
-            # Extract question text (same logic as DuplicateCheckStage._extract_question_text)
-            parts = []
-            qtype = db_entry.get("questionType", "")
-            qdata = db_entry.get(qtype, {})
-            if isinstance(qdata, dict):
-                q_text = qdata.get("question", "") or qdata.get("ques", "")
-                if q_text:
-                    parts.append(_strip_html_keep_images(q_text))
-
-            text = " ".join(parts)
+            text = extract_text_for_embedding(db_entry)
             if text and len(text) >= 10:
-                texts.append(text[:8000])
+                texts.append(text)
                 new_ids.append(mongo_id)
+            else:
+                self.log("warning",
+                         f"Empty embedding text for {meta_qid} (qtype={db_entry.get('questionType')}) — "
+                         "skipping FAISS vector for this entry")
 
         if not texts:
             self.log("info", "No texts extracted for embedding")

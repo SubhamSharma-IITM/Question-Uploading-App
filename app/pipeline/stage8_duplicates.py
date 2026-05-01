@@ -110,6 +110,75 @@ def _strip_html_keep_images(html: str) -> str:
     return text
 
 
+def extract_text_for_embedding(entry: Dict) -> str:
+    """Extract plain text from a metadata entry for embedding/comparison.
+
+    Single source of truth — used by Stage 8 (self + cross-check) AND Stage 10
+    (FAISS absorption after upload). Both must produce IDENTICAL text for the
+    same entry so dedup is consistent.
+
+    Embedding strategy per question type:
+      - flat (scq/mcq/integerQuestion/subjective): question HTML stripped
+      - matchQuestion: table cell text + canonical rows mapping summary
+        (e.g., "1->C; 2->A,E; ..."). Both cell content AND mapping are strong
+        dedup signals — two match questions with same cells but different
+        mappings are NOT duplicates.
+      - passageQuestion: main passage stem + FIRST sub-question stem.
+        Subsequent sub-questions are correlated with first; embedding only
+        the first keeps the signal focused without inflating noise.
+    """
+    parts = []
+    strip_fn = _strip_html_keep_images
+    qtype = entry.get("questionType", "")
+    qtypes_to_check = [qtype] if qtype else [
+        "scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion", "subjective"
+    ]
+
+    for qt in qtypes_to_check:
+        qdata = entry.get(qt)
+        if not isinstance(qdata, dict):
+            continue
+
+        q_text = qdata.get("question", "") or qdata.get("ques", "")
+        if q_text:
+            parts.append(strip_fn(q_text))
+
+        # matchQuestion: append canonical rows mapping summary so the
+        # embedding distinguishes two questions with same cells but
+        # different answer mappings.
+        if qt == "matchQuestion":
+            rows = qdata.get("rows") or []
+            if isinstance(rows, list) and rows:
+                mapping_summary = "; ".join(
+                    f"{i+1}->{','.join(r) if isinstance(r, list) else str(r)}"
+                    for i, r in enumerate(rows)
+                )
+                parts.append(mapping_summary)
+
+        # passageQuestion: passage stem + FIRST sub-question only
+        if qt == "passageQuestion":
+            passage = qdata.get("passage", "")
+            if passage:
+                parts.append(strip_fn(passage))
+            sub_qs = qdata.get("questions", [])
+            if isinstance(sub_qs, list) and sub_qs:
+                first_sq = sub_qs[0]
+                if isinstance(first_sq, dict):
+                    for sub_type in ("scq", "mcq", "integerQuestion"):
+                        sub_data = first_sq.get(sub_type, {})
+                        if isinstance(sub_data, dict):
+                            st = sub_data.get("ques", "") or sub_data.get("question", "")
+                            if st:
+                                parts.append(strip_fn(st))
+                                break
+
+        if parts:
+            break
+
+    text = " ".join(parts)
+    return text[:MAX_TEXT_LENGTH] if len(text) > MAX_TEXT_LENGTH else text
+
+
 def _normalize_for_comparison(text: str) -> str:
     """Aggressively normalize text for trigram similarity."""
     if not text:
@@ -244,49 +313,8 @@ class DuplicateCheckStage(BasePipelineStage):
         return all_entries
 
     def _extract_question_text(self, entry: Dict) -> str:
-        """Extract plain text from a metadata entry for comparison.
-
-        Forked from production PCMB_Duplicate_Checker.py:extract_question_text()
-        Uses image URL fingerprints + passage sub-question extraction.
-        """
-        parts = []
-        strip_fn = _strip_html_keep_images
-        qtype = entry.get("questionType", "")
-        qtypes_to_check = [qtype] if qtype else [
-            "scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion", "subjective"
-        ]
-
-        for qt in qtypes_to_check:
-            qdata = entry.get(qt)
-            if not isinstance(qdata, dict):
-                continue
-
-            q_text = qdata.get("question", "") or qdata.get("ques", "")
-            if q_text:
-                parts.append(strip_fn(q_text))
-
-            # passageQuestion: passage + sub-questions
-            if qt == "passageQuestion":
-                passage = qdata.get("passage", "")
-                if passage:
-                    parts.append(strip_fn(passage))
-                sub_qs = qdata.get("questions", [])
-                if isinstance(sub_qs, list):
-                    for sq in sub_qs[:2]:
-                        if isinstance(sq, dict):
-                            for sub_type in ("scq", "mcq", "integerQuestion"):
-                                sub_data = sq.get(sub_type, {})
-                                if isinstance(sub_data, dict):
-                                    st = sub_data.get("ques", "") or sub_data.get("question", "")
-                                    if st:
-                                        parts.append(strip_fn(st))
-                                        break
-
-            if parts:
-                break
-
-        text = " ".join(parts)
-        return text[:MAX_TEXT_LENGTH] if len(text) > MAX_TEXT_LENGTH else text
+        """Method wrapper for the module-level extract_text_for_embedding."""
+        return extract_text_for_embedding(entry)
 
     def _lookup_db_flags(self, db_qids: Set[str]) -> Dict[str, Dict]:
         """Look up protected flags for matched DB question IDs.
@@ -532,10 +560,12 @@ class DuplicateCheckStage(BasePipelineStage):
                 qid = q.get("qid", "?")
                 ids.append(qid)
                 subjects.append(q.get("subject", "?"))
-                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"):
                     obj = q.get(qt)
                     if isinstance(obj, dict):
                         q_html = obj.get("question", obj.get("ques", ""))
+                        # passage: fall back to passage body if `question`/`ques` empty
+                        # match: question field IS the table HTML, no fallback needed
                         if not q_html and qt == "passageQuestion":
                             q_html = obj.get("passage", "")
                         if q_html:
@@ -743,8 +773,8 @@ class DuplicateCheckStage(BasePipelineStage):
                 qid = entry.get("qid", "?")
                 sess_ids.append(qid)
                 sess_subjects.append(entry.get("subject", "Unknown"))
-                # Extract question HTML for preview
-                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+                # Extract question HTML for preview pane (incl. match table HTML)
+                for qt in ("scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"):
                     obj = entry.get(qt)
                     if isinstance(obj, dict):
                         q_html = obj.get("question", obj.get("ques", ""))

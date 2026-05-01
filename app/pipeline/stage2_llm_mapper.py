@@ -113,8 +113,14 @@ def _normalize_subject(subject: str) -> Optional[str]:
 
 
 # ── Garbage detection (matched to production) ──────────────────────────────
-def _is_garbage(text: Optional[str]) -> bool:
-    """Check if extracted text is garbage. Matched to production is_garbage()."""
+def _is_garbage(text: Optional[str], qtype: Optional[str] = None) -> bool:
+    """Check if extracted text is garbage. Matched to production is_garbage().
+
+    For matchQuestion content, the LaTeX `\\begin{tabular}` block IS the
+    question shape — so do NOT classify it as garbage. The leading
+    "N. Match the following:" line also triggers the option-fragment
+    heuristic falsely; bypass remaining heuristics for matchQuestion.
+    """
     if not text:
         return True
     stripped = text.strip()
@@ -130,8 +136,14 @@ def _is_garbage(text: Optional[str]) -> bool:
     # Tabular answer rows (\\hline patterns from answer key tables)
     if re.match(r"^\s*(?:\\hline\s*)+\d+\s*&", stripped):
         return True
+    # `\begin{tabular}` is garbage for non-match types, but valid match content
     if re.match(r"^\s*\\begin\{tabular\}", stripped):
-        return True
+        if qtype != "matchQuestion":
+            return True
+    # matchQuestion content starts with "N. Match the following:" — bypass
+    # remaining heuristics that would flag it as an option fragment.
+    if qtype == "matchQuestion":
+        return False
     # Image-only lines (no question text)
     if re.match(r"^!\[.*?\]\(.*?\)\s*$", stripped):
         return True
@@ -143,6 +155,15 @@ def _is_garbage(text: Optional[str]) -> bool:
             return True
     # Fragment starting with options (A)/(B)/(1)/(2) without a question stem before them
     if lines and re.match(r"^\s*\(?[A-Da-d1-4]\s*[\.\)]\s", lines[0]):
+        # Numbered question stems (e.g. "9. The electric field...") look like
+        # options to the regex above. Distinguish:
+        #   - first digit > 4 -> question stem (Q5/Q6/...) not an option
+        #   - first line > 30 chars -> substantial stem text, not just an option
+        first_digit_match = re.match(r"^\s*\(?(\d+)", lines[0])
+        if first_digit_match and int(first_digit_match.group(1)) > 4:
+            return False
+        if len(lines[0]) > 30:
+            return False
         # Check if there's ANY question-like text before the first option
         first_option_idx = 0
         has_question_stem = False
@@ -348,6 +369,7 @@ EXTRACTION RULES:
    - Under "NUMERICAL VALUE TYPE" -> "integerQuestion"
    - Multiple correct options -> "mcq"
    - Passage/comprehension with sub-questions -> "passageQuestion" (NOT "subjective" or "comprehension")
+   - Under "Matrix - Match Type", "Matching List Type", "Match the Following" with two-column matching -> "matchQuestion"
 6. Do NOT skip questions. Return every question you encounter after the start line until you reach the requested count.
 7. ACCURACY: Each JSON entry must correspond to EXACTLY ONE question. Do NOT combine multiple questions into one entry.
    If Q116 ends at line 500 and Q117 starts at line 501, they must be SEPARATE entries with distinct line ranges.
@@ -408,6 +430,72 @@ OUTPUT FORMAT (JSON):
   }}
   NOTE: "passage" holds the shared text/stem line range. Each sub_question has its own question/solution ranges and type.
   The passage entry counts as 1 + len(sub_questions) towards the batch count.
+
+- For MATCH-TYPE questions (type="matchQuestion"):
+  Match-type questions have TWO columns to be matched: items in Column-I against items in Column-II.
+  Section headers vary: "Matrix - Match Type", "Matrix Match Type", "Matching List Type", "List Match Type", "Match the Following", "Match the Columns".
+
+  Each match question has THREE distinct components in the document, possibly separated:
+
+  COMPONENT 1 — Q-block (the question table itself):
+    Usually a LaTeX `\\begin{{tabular}}...\\end{{tabular}}` table with rows like:
+      \\hline (A) & <left content> & (p) & <right content> \\\\
+      \\hline (B) & <left content> & (q) & <right content> \\\\
+    OR may appear as plain text "Column-I / Column-II" sections with (A)..(D) and (p)..(t) lists.
+    Capture this entire block as `question.start..end` line range.
+
+  COMPONENT 2 — Solution explanation (REQUIRED — search the (S)-suffix solution section):
+    For FIITJEE-style match questions, a solution block ALWAYS exists in the document — find it.
+    The solution section is identified by paper-code suffix `(S)` (e.g. `AIITS-PT-III(Paper-2)-PCM(S)-JEE(Adv)/14`)
+    or by section headers like "ANSWERS, HINTS & SOLUTIONS", "Solution", or by re-stated "Matrix - Match Type" headers
+    appearing AFTER the answer-key tables.
+    Inside that section, find the matching question by its number (e.g. "1. Matching Column I with Column II:" for Q1)
+    and capture its full content range as `solution.start..end`.
+    The solution content RESTATES Column-I and Column-II with their full descriptions / formulas / step-by-step working.
+    DO NOT confuse the solution explanation block (which has descriptive Column-I/Column-II content) with the
+    answer-mapping block (which only has terse "(A) -> (p)" notation — that is COMPONENT 3, not COMPONENT 2).
+    Return solution=null ONLY if you have searched the entire (S) section and verified no solution block exists for this question.
+
+  COMPONENT 3 — Answer mapping (in answer key / hints block):
+    Lives in a dedicated answer table or `$$\\begin{{aligned}}...\\end{{aligned}}$$` block.
+    Variations of how match answers are written in source OCR — RECOGNIZE ALL OF THESE:
+      a. Arrow notation:    "(A) -> (p, s, t); (B) -> (q, r); (C) -> (p, q); (D) -> (s, t)"
+      b. Aligned LaTeX:     "$$\\begin{{aligned}} (A) \\rightarrow (p) \\\\ (B) \\rightarrow (q,r) \\end{{aligned}}$$"
+      c. Dash notation:     "A-p,s,t; B-q,r; C-p,q; D-s,t"
+      d. Colon notation:    "A:p,s,t  B:q,r  C:p,q  D:s,t"
+      e. New JEE format:    "(1) -> (B,D); (2) -> (A,C)"  (already 1234<->ABCD)
+      f. Inline text:       "If correct matches are A-p,s and t; B-q and r; ..."
+      g. Pipe notation:     "(A) | (p,s)" or table cells "A | p,s"
+
+  EMIT answer_mapping AS-IS in source labels (do NOT convert):
+    {{
+      "A": ["p", "s", "t"],   // multi-match: list of right-side labels
+      "B": ["q", "r"],
+      "C": ["p", "q"],
+      "D": ["s", "t"]
+    }}
+    Keys: source left-column labels (A,B,C,D OR 1,2,3,4 — whichever the source uses)
+    Values: lists of source right-column labels (p,q,r,s,t OR A,B,C,D — whichever the source uses)
+    Empty value list if no answer found for that key — do NOT omit the key.
+    Multi-match REQUIRED — never collapse to a single label even if only one match.
+
+  Output schema:
+    {{
+      "subject": "Mathematics",
+      "type": "matchQuestion",
+      "level": "MEDIUM",
+      "question": {{"start": 72, "end": 82}},
+      "solution": {{"start": 209, "end": 221}},
+      "answer_mapping_source": {{
+        "A": ["r"],
+        "B": ["p", "s"],
+        "C": ["p", "q", "r", "s"],
+        "D": ["p"]
+      }}
+    }}
+
+  CRITICAL: Return labels EXACTLY as they appear in the source document. Do NOT convert A->1 or p->A.
+  A separate post-processing step performs the canonical conversion.
 
 - If NO questions remain (end of document), return:
 {{"eof": true, "last_content_line": 1234}}
@@ -761,6 +849,139 @@ def _process_item(
     }
 
 
+# ── Match-type label canonicalization (post-processing) ───────────────────
+# Source labels (left, right) -> canonical labels.
+# Old JEE Adv: A,B,C,D | p,q,r,s,t   |   New JEE Adv: 1,2,3,4 | A,B,C,D
+_LEFT_LABEL_MAP = {
+    "A": "1", "B": "2", "C": "3", "D": "4",
+    "1": "1", "2": "2", "3": "3", "4": "4",
+}
+_RIGHT_LABEL_MAP = {
+    # lowercase (FIITJEE old format)
+    "p": "A", "q": "B", "r": "C", "s": "D", "t": "E",
+    # uppercase (sometimes appears)
+    "P": "A", "Q": "B", "R": "C", "S": "D", "T": "E",
+    # already canonical (newer JEE format)
+    "A": "A", "B": "B", "C": "C", "D": "D", "E": "E",
+}
+
+
+def _convert_match_answer_mapping(source_map: Dict) -> List[List[str]]:
+    """Convert source labels to canonical 1234 <-> ABCDE list-of-lists.
+
+    Input (source labels — what LLM emits):
+        {"A": ["r"], "B": ["p","s"], "C": ["p","q","r","s"], "D": ["p"]}
+    Output (canonical, indexed by left ordering):
+        [["C"], ["A","D"], ["A","B","C","D"], ["A"]]
+    """
+    if not isinstance(source_map, dict) or not source_map:
+        return []
+
+    keys = list(source_map.keys())
+    try:
+        if all(str(k).strip().isdigit() for k in keys):
+            keys = sorted(keys, key=lambda k: int(str(k).strip()))
+        else:
+            keys = sorted(keys, key=lambda k: str(k).strip().upper())
+    except Exception:
+        keys = sorted(keys)
+
+    rows: List[List[str]] = []
+    for k in keys:
+        raw_values = source_map.get(k, [])
+        if isinstance(raw_values, str):
+            raw_values = [raw_values]
+        if not isinstance(raw_values, list):
+            raw_values = []
+
+        canonical_values: List[str] = []
+        for v in raw_values:
+            v_str = str(v).strip().strip("()").strip()
+            if not v_str:
+                continue
+            mapped = _RIGHT_LABEL_MAP.get(v_str)
+            if mapped is None:
+                mapped = _RIGHT_LABEL_MAP.get(v_str.upper(), _RIGHT_LABEL_MAP.get(v_str.lower()))
+            if mapped:
+                canonical_values.append(mapped)
+        rows.append(canonical_values)
+
+    return rows
+
+
+def _process_match_item(
+    item: Dict,
+    raw_lines: List[str],
+    processed_uids: set,
+    accepted_ranges: List[Tuple[int, int]],
+    cursor_line: int,
+) -> Optional[Dict]:
+    """Process a matchQuestion LLM item into output format.
+
+    Expected LLM input (source labels preserved by LLM):
+        {"type": "matchQuestion", "subject": "Mathematics", "level": "MEDIUM",
+         "question": {"start": 72, "end": 82},
+         "solution": {"start": 209, "end": 221},
+         "answer_mapping_source": {"A": ["r"], "B": ["p","s"], ...}}
+
+    Output:
+        {"questionType": "matchQuestion", "subject": ..., "level": ...,
+         "question_content": "<raw LaTeX>", "solution_content": "<raw LaTeX>",
+         "answer_mapping": [[...],[...],...],   # canonical list-of-lists
+         "answer_mapping_source": {...},        # preserved for downstream/debug
+         "line_start": q_start, "line_end": q_end}
+    """
+    q_range = item.get("question", {})
+    s_range = item.get("solution") or {}
+    answer_source = item.get("answer_mapping_source", {})
+
+    if not isinstance(q_range, dict):
+        return None
+    q_start = q_range.get("start")
+    q_end = q_range.get("end")
+    if q_start is None or q_end is None:
+        return None
+
+    q_start_idx = int(q_start) - 1
+    q_end_idx = int(q_end) - 1
+
+    if q_start_idx < 0 or q_end_idx >= len(raw_lines) or q_start_idx > q_end_idx:
+        return None
+
+    # Slice question content (matchQuestion -> tabular content allowed)
+    q_content = _slice_content(raw_lines, q_start_idx, q_end_idx)
+    if _is_garbage(q_content, qtype="matchQuestion"):
+        return None
+
+    # Slice solution if available
+    s_content = ""
+    if isinstance(s_range, dict):
+        s_start = s_range.get("start")
+        s_end = s_range.get("end")
+        if s_start is not None and s_end is not None:
+            s_start_idx = int(s_start) - 1
+            s_end_idx = int(s_end) - 1
+            if 0 <= s_start_idx <= s_end_idx < len(raw_lines):
+                s_content = _slice_content(raw_lines, s_start_idx, s_end_idx)
+
+    # Convert source labels -> canonical list-of-lists
+    answer_mapping = _convert_match_answer_mapping(answer_source)
+
+    accepted_ranges.append((q_start_idx, q_end_idx))
+
+    return {
+        "questionType": "matchQuestion",
+        "subject": item.get("subject", ""),
+        "level": (item.get("level") or "MEDIUM").upper(),
+        "question_content": q_content,
+        "solution_content": s_content,
+        "answer_mapping": answer_mapping,
+        "answer_mapping_source": answer_source,
+        "line_start": int(q_start),
+        "line_end": int(q_end),
+    }
+
+
 def _process_passage_item(
     item: Dict,
     raw_lines: List[str],
@@ -803,8 +1024,9 @@ def _process_passage_item(
 
     p_start = int(p_start) if isinstance(p_start, (int, float, str)) else 0
     p_end = int(p_end) if isinstance(p_end, (int, float, str)) else 0
-    p_start = max(0, p_start)
-    p_end = min(p_end, len(raw_lines) - 1)
+    # LLM emits 1-indexed line numbers; _slice_content uses 0-indexed.
+    p_start_idx = max(0, p_start - 1)
+    p_end_idx = min(p_end - 1, len(raw_lines) - 1)
 
     # Dedup by passage start line
     uid = f"PL{p_start}"
@@ -815,8 +1037,8 @@ def _process_passage_item(
     if p_start < cursor_line - SAFETY_OVERLAP_LINES - 10:
         return None
 
-    # Slice passage stem content
-    passage_content = _slice_content(raw_lines, p_start, p_end)
+    # Slice passage stem content (0-indexed)
+    passage_content = _slice_content(raw_lines, p_start_idx, p_end_idx)
     if not passage_content or len(passage_content.strip()) < 10:
         return None
 
@@ -837,10 +1059,11 @@ def _process_passage_item(
 
         sq_start = int(sq_start) if isinstance(sq_start, (int, float, str)) else 0
         sq_end = int(sq_end) if isinstance(sq_end, (int, float, str)) else 0
-        sq_start = max(0, sq_start)
-        sq_end = min(sq_end, len(raw_lines) - 1)
+        # 1-indexed -> 0-indexed for slicing
+        sq_start_idx = max(0, sq_start - 1)
+        sq_end_idx = min(sq_end - 1, len(raw_lines) - 1)
 
-        q_content = _slice_content(raw_lines, sq_start, sq_end)
+        q_content = _slice_content(raw_lines, sq_start_idx, sq_end_idx)
         if not q_content or _is_garbage(q_content):
             continue
 
@@ -853,7 +1076,9 @@ def _process_passage_item(
             ss_start = int(ss_start) if isinstance(ss_start, (int, float, str)) else None
             ss_end = int(ss_end) if isinstance(ss_end, (int, float, str)) else None
             if ss_start is not None and ss_end is not None:
-                s_content = _slice_content(raw_lines, ss_start, ss_end)
+                ss_start_idx = ss_start - 1
+                ss_end_idx = ss_end - 1
+                s_content = _slice_content(raw_lines, ss_start_idx, ss_end_idx)
                 if ss_end > overall_end:
                     overall_end = ss_end
 
@@ -1339,9 +1564,11 @@ class LLMMapperStage(BasePipelineStage):
                 if total_extracted + new_count >= max_q:
                     break
 
-                # Route passageQuestion items to the nested handler
+                # Route by question type
                 if item.get("type") == "passageQuestion" and "passage" in item:
                     result = _process_passage_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
+                elif item.get("type") == "matchQuestion":
+                    result = _process_match_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
                 else:
                     result = _process_item(item, raw_lines, processed_uids, accepted_ranges, cursor_line)
                 if result is None:

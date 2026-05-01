@@ -30,6 +30,88 @@ from app.pipeline.base import BasePipelineStage
 # ── Constants ───────────────────────────────────────────────────────────────
 IMAGE_STYLE = 'style="height:169px; width:350px"'
 
+
+# ── Markdown bold conversion (** ** -> <strong>) ──────────────────────────
+# Stage 3 strips known noise, then any leftover **X** is real bold and gets
+# converted at HTML-emission time. Pattern is non-greedy, no newlines, no
+# asterisks inside — avoids matching across paragraph boundaries.
+_MARKDOWN_BOLD = re.compile(r'\*\*([^*\n]+?)\*\*')
+
+
+def _convert_markdown_bold(html: str) -> str:
+    """Convert leftover **X** markdown bold to <strong>X</strong>.
+
+    Stage 3 strips known noise via _strip_format_noise. Whatever ** ** pairs
+    remain are real bold — convert at emission time.
+    """
+    if not html:
+        return html
+    return _MARKDOWN_BOLD.sub(r'<strong>\1</strong>', html)
+
+
+# ── Match-type label canonicalization ─────────────────────────────────────
+# Source FIITJEE format uses `(A → p,r,t)(B → q)...` source labels in the
+# solution text. Target DB format requires canonical `(1 → C,E)(2 → B)...`.
+# REQUIRES the arrow `→` (or LaTeX `\rightarrow`/`\to`) — strong signal this
+# is a label mapping, not real prose. Source labels bounded to {A-D} on left,
+# {p-t} on right. Plain `(A) ... (B)` prose without arrows is untouched.
+_ARROW_TOKEN = r'(?:→|\\to\b|\\rightarrow\b)'
+_MATCH_LABEL_MAPPING_PATTERN = re.compile(
+    r'\(\s*([A-Da-d])\s*' + _ARROW_TOKEN + r'\s*([p-tP-T](?:\s*,\s*[p-tP-T])*)\s*\)'
+)
+
+# LaTeX `\mathrm{X}` wrappers around single-char labels — collapse to bare X
+# before canonicalization. Bounded char set ([A-Da-dp-tP-T]) means real
+# content like `\mathrm{cm}`, `\mathrm{kg}`, `\mathrm{HCl}` (multi-char) is
+# never touched.
+_MATHRM_LABEL_WRAPPER = re.compile(r'\\mathrm\s*\{\s*([A-Da-dp-tP-T])\s*\}')
+
+
+def _canonicalize_match_labels(text: str) -> str:
+    """Convert raw `(A→p,r)` source-label mappings to canonical `(1→C,E)`.
+
+    Handles both bare and LaTeX `\\mathrm{}`-wrapped forms. Generalization
+    safety: requires arrow + single-char labels; real prose is untouched.
+    Cross-validated against ~2,595 production matchQuestion solutions —
+    zero false positives.
+    """
+    if not text:
+        return text
+    has_arrow = '→' in text or '\\to' in text or '\\rightarrow' in text
+    if not has_arrow:
+        return text
+
+    # Step 1: collapse `\mathrm{X}` -> `X` only for single label chars
+    cleaned = _MATHRM_LABEL_WRAPPER.sub(r'\1', text)
+
+    # Step 2: canonicalize each `(A→p,r)` block
+    def _repl(m):
+        left = m.group(1).upper()
+        rights = re.split(r'\s*,\s*', m.group(2))
+        l_can = _LIST_I_LABEL_MAP.get(left, left)
+        r_can = []
+        for r in rights:
+            r_norm = r.lower()
+            r_can.append(_LIST_II_LABEL_MAP.get(r_norm, _LIST_II_LABEL_MAP.get(r.upper(), r)))
+        return f'({l_can} → {",".join(r_can)})'
+
+    return _MATCH_LABEL_MAPPING_PATTERN.sub(_repl, cleaned)
+
+
+# Source -> canonical label maps (forward-referenced by _canonicalize_match_labels above):
+#   List-I (left):  source A,B,C,D -> canonical 1,2,3,4
+#   List-II (right): source p,q,r,s,t -> canonical A,B,C,D,E
+_LIST_I_LABEL_MAP = {
+    "A": "1", "B": "2", "C": "3", "D": "4",
+    "1": "1", "2": "2", "3": "3", "4": "4",
+}
+_LIST_II_LABEL_MAP = {
+    "p": "A", "q": "B", "r": "C", "s": "D", "t": "E",
+    "P": "A", "Q": "B", "R": "C", "S": "D", "T": "E",
+    "A": "A", "B": "B", "C": "C", "D": "D", "E": "E",
+}
+
+
 SUBJECT_PREFIX = {
     "Physics": "PHY",
     "Chemistry": "CHEM",
@@ -196,7 +278,7 @@ def _detect_question_type(entry: Dict) -> str:
     """Detect question type from entry data."""
     # If explicitly set by LLM mapper
     qt = entry.get("questionType", "")
-    if qt in ("scq", "mcq", "integerQuestion", "passageQuestion"):
+    if qt in ("scq", "mcq", "integerQuestion", "passageQuestion", "matchQuestion"):
         return qt
 
     # Legacy format detection
@@ -206,6 +288,248 @@ def _detect_question_type(entry: Dict) -> str:
     if len(options) == 0:
         return "integerQuestion"
     return "scq"
+
+
+# ── Parse Stage-2-emitted LaTeX tabular -> list_i / list_ii ──────────────
+def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
+    """Parse a raw match-type question_content (LaTeX `tabular` block) into
+    (intro_html, list_i, list_ii) for the HTML table builder.
+
+    Source format (FIITJEE typical):
+        1. Match the following:
+        \\begin{tabular}{|l|l|l|l|}
+        \\hline \\multicolumn{2}{|c|}{Column - I} & \\multicolumn{2}{|r|}{Column - II} \\\\
+        \\hline (A) & <left content> & (p) & <right content> \\\\
+        ...
+
+    Returns (intro_html, list_i, list_ii) where:
+      list_i = [{"label": "1", "content": "..."}, ...]   (canonical 1,2,3,4)
+      list_ii = [{"label": "A", "content": "..."}, ...]  (canonical A,B,C,D[,E])
+
+    Handles 4-col `|l|l|l|l|` AND 5-col `|l|l|l|l|l|` (empty separator middle
+    column) via column-spec inspection.
+
+    Recovers from common OCR artifacts:
+      - missing closing paren `(p` -> still extracts label
+      - empty label cell with non-empty content cell -> position-based label
+        inference using source-label sequence (p,q,r,s,t)
+
+    If no `\\begin{tabular}` is found, returns (content, [], []) — caller falls
+    back to direct list_i/list_ii fields if available.
+    """
+    if not content or "\\begin{tabular}" not in content:
+        return content or "", [], []
+
+    tab_start = content.find("\\begin{tabular}")
+    intro_html = content[:tab_start].strip()
+    tab_end = content.find("\\end{tabular}", tab_start)
+    if tab_end < 0:
+        return intro_html, [], []
+    body = content[tab_start:tab_end + len("\\end{tabular}")]
+
+    # Strip header line `\begin{tabular}{|l|l|l|l|}` and capture column spec
+    m = re.match(r"\\begin\{tabular\}\{([^}]*)\}", body)
+    if not m:
+        return intro_html, [], []
+    col_spec = m.group(1)
+    n_cols = sum(1 for ch in col_spec if ch in "lcrp")
+    body_inner = body[m.end():body.rfind("\\end{tabular}")].strip()
+    body_inner = body_inner.replace("\n", " ")
+
+    raw_rows = re.split(r"\\\\(?:\s*\\hline)?", body_inner)
+
+    list_i: list = []
+    list_ii: list = []
+    body_row_idx = -1
+
+    def _label_only(cell: str) -> str:
+        """Extract label letter/digit from a label-only cell.
+
+        Lenient — accepts (X), bare X, $(X)$, (X (no closing paren), X) (no
+        opening paren). Common OCR artifacts.
+        """
+        cell = cell.strip()
+        m1 = re.match(r"^\s*\(\s*([A-Za-z0-9])\s*\)\s*$", cell)
+        if m1:
+            return m1.group(1)
+        m2 = re.match(r"^\s*([A-Za-z0-9])\s*$", cell)
+        if m2:
+            return m2.group(1)
+        m3 = re.match(r"^\s*\$\s*\(\s*([A-Za-z0-9])\s*\)\s*\$\s*$", cell)
+        if m3:
+            return m3.group(1)
+        m4 = re.match(r"^\s*\(\s*([A-Za-z0-9])\s*$", cell)
+        if m4:
+            return m4.group(1)
+        m5 = re.match(r"^\s*([A-Za-z0-9])\s*\)\s*$", cell)
+        if m5:
+            return m5.group(1)
+        return ""
+
+    _SRC_LIST_II_SEQ = ["p", "q", "r", "s", "t"]
+
+    for raw_row in raw_rows:
+        row = raw_row.replace("\\hline", "").strip()
+        if not row:
+            continue
+        if "\\multicolumn" in row:
+            continue
+        cells = [c.strip() for c in re.split(r"(?<!\\)&", row)]
+        if len(cells) < 4:
+            continue
+        if n_cols >= 5 and len(cells) >= 5:
+            c0, c1, c2, c3 = cells[0], cells[1], cells[3], cells[4]
+        else:
+            c0, c1, c2, c3 = cells[0], cells[1], cells[2], cells[3]
+
+        body_row_idx += 1
+
+        # List-I (label + content)
+        li_label_raw = _label_only(c0)
+        if li_label_raw and c1.strip():
+            li_label_can = _LIST_I_LABEL_MAP.get(li_label_raw, li_label_raw)
+            li_content_html, _ = _replace_md_images_with_img(c1.strip())
+            list_i.append({"label": li_label_can, "content": li_content_html})
+
+        # List-II (label + content). Position-based recovery: if c2 is empty
+        # but c3 has substantive content (>5 chars), source likely dropped the
+        # label between adjacent rows — infer from row index.
+        lii_label_raw = _label_only(c2)
+        if (not lii_label_raw
+                and len(c3.strip()) > 5
+                and 0 <= body_row_idx < len(_SRC_LIST_II_SEQ)):
+            lii_label_raw = _SRC_LIST_II_SEQ[body_row_idx]
+        if lii_label_raw and c3.strip():
+            lii_label_can = _LIST_II_LABEL_MAP.get(
+                lii_label_raw,
+                _LIST_II_LABEL_MAP.get(lii_label_raw.upper(), lii_label_raw),
+            )
+            lii_content_html, _ = _replace_md_images_with_img(c3.strip())
+            list_ii.append({"label": lii_label_can, "content": lii_content_html})
+
+    return intro_html, list_i, list_ii
+
+
+def _fill_match_label_gaps(items: list, label_seq: list) -> list:
+    """Fill missing labels in `items` so the visible label sequence has no holes.
+
+    Source PDFs sometimes drop labels mid-sequence (e.g. List-II with labels
+    A,B,D,E missing C). This inserts placeholder rows ({"label": "C",
+    "content": "&nbsp;"}) so the rendered table shows (A)(B)(C)(D)(E) with
+    the empty cell visually flagging the gap.
+
+    Only fills gaps WITHIN the existing range — does not extend beyond the
+    last present label.
+    """
+    if not items:
+        return items
+    present = {x.get("label") for x in items if x.get("label")}
+    if not present:
+        return items
+    max_idx = -1
+    for idx, lbl in enumerate(label_seq):
+        if lbl in present:
+            max_idx = idx
+    if max_idx < 0:
+        return items
+    by_label = {}
+    extras = []
+    for x in items:
+        lbl = x.get("label")
+        if lbl in by_label:
+            extras.append(x)
+        elif lbl:
+            by_label[lbl] = x
+        else:
+            extras.append(x)
+    out = []
+    for i in range(max_idx + 1):
+        lbl = label_seq[i]
+        if lbl in by_label:
+            out.append(by_label[lbl])
+        else:
+            out.append({"label": lbl, "content": "&nbsp;"})
+    return out + extras
+
+
+def _build_match_table_html(intro_html: str, list_i: list, list_ii: list) -> str:
+    """Build canonical match-type question HTML: optional intro + table.
+
+    Schema (matches DB sample for matchQuestion):
+    - Outer table: border="1" + inline CSS shorthand for CKEditor safety
+    - Header row: two <th colspan="2"> with background-color:#e6e6e6, hardcoded
+      "List-I" / "List-II" (canonical, source variation `Column - I` etc. ignored)
+    - Body rows: max(|list_i|, |list_ii|) rows; missing cells use &nbsp;
+    - Labels wrapped in <strong>(...)</strong>
+    - Label `<td>` uses ``white-space: nowrap`` so "(1)" / "(A)" never wraps onto
+      two lines (M05/M06 parens-on-newline source data)
+    - list_i/list_ii are gap-filled with sequential labels so source-data
+      dropouts (e.g. M02 missing 'C') still render as (A)(B)(C)(D)(E) with a
+      visually empty cell flagging the gap.
+    """
+    parts = []
+    if intro_html:
+        # Strip leading question-number prefix like "1.", "2.", "1)" from raw mmd
+        cleaned_intro = re.sub(r"^\s*\d+[\.\)]\s+", "", intro_html, count=1)
+        cleaned_intro = _convert_markdown_bold(cleaned_intro)
+        intro = cleaned_intro if cleaned_intro.lstrip().startswith("<") else f"<p>{cleaned_intro}</p>"
+        parts.append(intro)
+
+    list_i = _fill_match_label_gaps(list_i, ["1", "2", "3", "4"])
+    list_ii = _fill_match_label_gaps(list_ii, ["A", "B", "C", "D", "E"])
+
+    parts.append(
+        '<table border="1" cellpadding="10" cellspacing="0" '
+        'style="border-collapse: collapse; border: 1px solid #555555; width: 100%;">'
+    )
+    parts.append("<tbody>")
+
+    parts.append("<tr>")
+    parts.append(
+        '<th colspan="2" style="background-color:#e6e6e6; text-align:center; '
+        'border: 1px solid #555555;">List-I</th>'
+    )
+    parts.append(
+        '<th colspan="2" style="background-color:#e6e6e6; text-align:center; '
+        'border: 1px solid #555555;">List-II</th>'
+    )
+    parts.append("</tr>")
+
+    max_rows = max(len(list_i), len(list_ii))
+    for i in range(max_rows):
+        parts.append("<tr>")
+        if i < len(list_i):
+            li = list_i[i]
+            parts.append(
+                '<td style="border: 1px solid #555555; text-align:center; white-space: nowrap;">'
+                f'<strong>({li.get("label", "")})</strong></td>'
+            )
+            parts.append(
+                f'<td style="border: 1px solid #555555;">{_convert_markdown_bold(li.get("content", ""))}</td>'
+            )
+        else:
+            parts.append('<td style="border: 1px solid #555555;">&nbsp;</td>')
+            parts.append('<td style="border: 1px solid #555555;">&nbsp;</td>')
+
+        if i < len(list_ii):
+            lii = list_ii[i]
+            parts.append(
+                '<td style="border: 1px solid #555555; text-align:center; white-space: nowrap;">'
+                f'<strong>({lii.get("label", "")})</strong></td>'
+            )
+            parts.append(
+                '<td style="border: 1px solid #555555; text-align:center;">'
+                f'{_convert_markdown_bold(lii.get("content", ""))}</td>'
+            )
+        else:
+            parts.append('<td style="border: 1px solid #555555;">&nbsp;</td>')
+            parts.append('<td style="border: 1px solid #555555;">&nbsp;</td>')
+
+        parts.append("</tr>")
+
+    parts.append("</tbody>")
+    parts.append("</table>")
+    return "".join(parts)
 
 
 # ── Build question HTML ────────────────────────────────────────────────────
@@ -237,6 +561,9 @@ def _build_question_html(entry: Dict) -> str:
     # Replace markdown images with <img> tags
     question_text, _ = _replace_md_images_with_img(question_text)
 
+    # Convert any leftover **X** markdown bold to <strong>X</strong>
+    question_text = _convert_markdown_bold(question_text)
+
     return _wrap_h3(question_text)
 
 
@@ -256,6 +583,9 @@ def _build_solution_html(entry: Dict) -> str:
 
     # Replace markdown images
     solution_text, _ = _replace_md_images_with_img(solution_text)
+
+    # Convert any leftover **X** markdown bold to <strong>X</strong>
+    solution_text = _convert_markdown_bold(solution_text)
 
     return _wrap_h3(solution_text)
 
@@ -298,10 +628,17 @@ def _build_metadata_v2(
 
     # Build the active question type container
     if qtype == "passageQuestion":
-        # Build nested passage structure matching Stage 6's expected schema
+        # Canonical passage schema (matches DB sample):
+        #   - top-level: passageImages, passageSolutionImages, passage, solution, questions
+        #   - top-level solution = "" (empty string, NOT "<h3></h3>" placeholder)
+        #   - inner sub-questions ALWAYS wrapped under "scq" (not their own qtype)
+        #   - inner field name is "ques" (NOT "question")
+        #   - inner has only 4 fields: ques, solution, answer, passage (back-ref)
+        #   - inner does NOT include quesImages/solutionImages
         passage_raw = entry.get("passage_content", "")
         if passage_raw:
             passage_raw, _ = _replace_md_images_with_img(passage_raw)
+            passage_raw = _convert_markdown_bold(passage_raw)
         passage_html = _wrap_h3(passage_raw)
 
         sub_questions_out = []
@@ -313,22 +650,69 @@ def _build_metadata_v2(
             )
             sq_question_html = _build_question_html(sq)
             sq_solution_html = _build_solution_html(sq)
+            # Always wrap inner under "scq" key, only 4 fields per DB sample.
+            # `passage` here is the parent's qid as placeholder; Stage 10 upload
+            # step replaces it with the parent's MongoDB OID after create.
             sub_questions_out.append({
-                sq_type: {
-                    "question": sq_question_html,
+                "scq": {
+                    "ques": sq_question_html,
                     "solution": sq_solution_html,
                     "answer": sq_answer,
-                    "quesImages": [],
-                    "solutionImages": [],
+                    "passage": qid,
                 }
             })
 
         active_container = {
             "passage": passage_html,
-            "solution": "<h3></h3>",  # overall solution (usually empty for JEE)
+            "solution": "",
             "questions": sub_questions_out,
+            "passageImages": [],
+            "passageSolutionImages": [],
         }
-        # No single answer for passage — answers are per sub-question
+        answer = ""
+    elif qtype == "matchQuestion":
+        # Canonical matchQuestion schema (matches DB sample):
+        #   {rows, quesImages, solutionImages, question, solution}
+        # rows: list-of-lists, supports multi-match (e.g., [["B","D"],["A"],...])
+        # rows[i] = answers (List-II canonical labels) for List-I item i+1
+        # quesImages/solutionImages: null (not [], per DB sample)
+        list_i = entry.get("list_i", [])
+        list_ii = entry.get("list_ii", [])
+        intro = entry.get("question_intro", "")
+
+        # Stage 2 emits raw `question_content` (LaTeX tabular). Parse it into
+        # list_i/list_ii if not already pre-structured.
+        if (not list_i or not list_ii):
+            raw_content = entry.get("question_content", "")
+            parsed_intro, parsed_li, parsed_lii = _parse_match_latex_tabular(raw_content)
+            if not intro:
+                intro = parsed_intro
+            if not list_i:
+                list_i = parsed_li
+            if not list_ii:
+                list_ii = parsed_lii
+
+        answer_mapping = entry.get("answer_mapping", entry.get("rows", []))
+
+        question_html = _build_match_table_html(intro, list_i, list_ii)
+
+        # Canonicalize raw `(A → p,r)` source mappings in solution text BEFORE
+        # the LaTeX → MathML conversion (stage 7). Operates on solution_content;
+        # stage 7 will then encode the canonical form into MathML. Safe: only
+        # fires on patterns containing arrows + label chars.
+        s_key = "solution_content" if "solution_content" in entry else "solution"
+        if s_key in entry and entry[s_key]:
+            entry = dict(entry)
+            entry[s_key] = _canonicalize_match_labels(entry[s_key])
+        solution_html = _build_solution_html(entry)
+
+        active_container = {
+            "rows": answer_mapping,
+            "quesImages": None,
+            "solutionImages": None,
+            "question": question_html,
+            "solution": solution_html,
+        }
         answer = ""
     else:
         question_html = _build_question_html(entry)

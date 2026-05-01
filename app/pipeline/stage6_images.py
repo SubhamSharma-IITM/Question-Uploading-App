@@ -213,7 +213,15 @@ def _svg_to_png(svg_path: str) -> Optional[str]:
 
 
 def _extract_img_srcs_from_question(q: dict) -> List[str]:
-    """Extract all local image src values from a question entry."""
+    """Extract all local image src values from a question entry.
+
+    Walks every container shape that can hold HTML with <img> tags:
+      - flat:    scq/mcq/integerQuestion/subjective.{question, solution}
+      - match:   matchQuestion.{question, solution}   (table cells often hold
+                 List-I figures and solution figures)
+      - passage: passageQuestion.{passage, solution} +
+                 passageQuestion.questions[i].scq.{ques, question, solution}
+    """
     srcs = []
     for container_key in ("scq", "mcq", "integerQuestion", "subjective"):
         container = q.get(container_key)
@@ -221,6 +229,11 @@ def _extract_img_srcs_from_question(q: dict) -> List[str]:
             continue
         for field in ("question", "solution"):
             srcs.extend(_extract_img_srcs_from_text(container.get(field, "")))
+
+    mq = q.get("matchQuestion")
+    if isinstance(mq, dict):
+        for field in ("question", "solution"):
+            srcs.extend(_extract_img_srcs_from_text(mq.get(field, "")))
 
     pq = q.get("passageQuestion")
     if isinstance(pq, dict):
@@ -269,7 +282,11 @@ def _replace_img_tags_in_text(text: str, cdn_cache: Dict[str, Dict]) -> Tuple[st
 
 
 def _replace_in_question(q: dict, cdn_cache: Dict[str, Dict]) -> int:
-    """Replace image tags in a single question entry. Returns replacement count."""
+    """Replace image tags in a single question entry. Returns replacement count.
+
+    Mirrors the field walk of _extract_img_srcs_from_question — every container
+    shape that can hold images must be substituted in-place.
+    """
     total = 0
 
     for container_key in ("scq", "mcq", "integerQuestion", "subjective"):
@@ -282,6 +299,16 @@ def _replace_in_question(q: dict, cdn_cache: Dict[str, Dict]) -> int:
                 new_text, n = _replace_img_tags_in_text(text, cdn_cache)
                 if n > 0:
                     container[field] = new_text
+                    total += n
+
+    mq = q.get("matchQuestion")
+    if isinstance(mq, dict):
+        for field in ("question", "solution"):
+            text = mq.get(field, "")
+            if text:
+                new_text, n = _replace_img_tags_in_text(text, cdn_cache)
+                if n > 0:
+                    mq[field] = new_text
                     total += n
 
     pq = q.get("passageQuestion")

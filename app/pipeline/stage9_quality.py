@@ -157,31 +157,60 @@ PRIME DIRECTIVE: Find every REAL error. Never flag a non-error.
 - Zero false positives: if you cannot PROVE a rule is violated, output has_error=false.
 
 ================================================================================
-SECTION 0: MATCH-TYPE GATE (EXECUTE FIRST --BEFORE ALL OTHER CHECKS)
+SECTION 0: MATCH-TYPE QUESTIONS — VERBOSE EVALUATION RULES
 ================================================================================
 
-BEFORE any other inspection, scan the question text for match-type content.
-If detected, REJECT IMMEDIATELY. Do NOT evaluate any other dimension.
+Match-type questions (questionType="matchQuestion") ARE supported. Use the same
+content-quality bar as other types — do NOT auto-reject based on table format.
 
-MATCH-TYPE DETECTION PATTERNS (flag if ANY pattern is present):
-- "Match List-I with List-II" or any "Match List-* with List-*"
-- "Match the following" or "Match the columns"
-- "Column-I" / "Column-II" or "Column I" / "Column II" table structure
-- "List-I" / "List-II" paired with mapping options
-- Tabular grids with (A)→(I), (B)→(II), (P)→(1) style correspondence mappings
-- "Choose the correct match" or "correct matching" or "correctly matched"
-- Any structure where two parallel lists must be cross-mapped
-- Options presented as combinations like "(A)-(IV), (B)-(III), (C)-(I), (D)-(II)"
+CANONICAL SCHEMA (what you will see in matchQuestion entries):
 
-IF DETECTED:
-  Return: {"qid": "<qid>", "has_error": true, "errors": [
-    {"field": "question", "type": "match_format_content",
-     "detail": "Match-type question detected: <quote the triggering phrase>"}
-  ]}
-  STOP HERE. No further checks.
+    "matchQuestion": {
+      "rows": [["B"], ["D"], ["A"], ["E"]],         // mapping: rows[i] = answers for List-I item i+1
+      "quesImages": null,                            // null is canonical (NOT [])
+      "solutionImages": null,                        // null is canonical
+      "question": "<HTML table with List-I and List-II>",
+      "solution": "<HTML or empty string>"
+    }
 
-IF NOT DETECTED:
-  Proceed to Section 1.
+VALID RECOGNITION PATTERNS (these are CORRECT, not errors):
+
+  - Section headers: "Matrix - Match Type", "Matching List Type", "Match the Following".
+  - HTML table structure: header row with <th colspan="2">List-I</th> and <th colspan="2">List-II</th>;
+    body rows containing label cells (<strong>(1)</strong>, <strong>(A)</strong>, etc.) and content cells.
+  - Border styling: inline `style="border: 1px solid #555555;"` on every td/th — required for CKEditor.
+  - Header background `#e6e6e6` — required.
+  - Body row count: typically 4 rows (when List-II has 4 entries) or 5 rows (when List-II has 5 entries
+    A-E and the 5th row has empty List-I cells). Both shapes are CORRECT.
+
+MAPPING SOURCES (how rows is derived — for understanding only):
+
+  - Old JEE Advanced source: Column-I labels A,B,C,D ↔ Column-II labels p,q,r,s,t.
+    Converted to canonical: 1,2,3,4 ↔ A,B,C,D,E during ingestion (Stage 2).
+  - New JEE Advanced source: Column-I labels 1,2,3,4 ↔ Column-II labels A,B,C,D.
+    Already canonical, no conversion.
+  - Multi-match supported: an item can map to multiple List-II labels.
+    Example: source "(B) → (p, s)" becomes rows[1] = ["A", "D"] (p->A, s->D).
+
+VALIDATION RULES:
+
+  - rows is a non-empty list. Each rows[i] is a non-empty list of single-character
+    labels from {A, B, C, D, E}. Flag {field:"question", type:"invalid_match_rows"}
+    if structure malformed.
+  - If the HTML table is missing (no <table> tag in question field), flag missing_options.
+  - The `rows` length should equal the number of List-I items in the table (commonly 4).
+  - For each rows[i] with multi-match: ensure all listed labels actually appear in List-II
+    (don't allow rows[0]=["F"] when List-II only goes A-E).
+  - Math content inside cells: same MathML/LaTeX checks as other types (malformed_mathml,
+    math_logic_error, latex_not_converted, etc.).
+  - Solution can be empty "" (some FIITJEE papers have answer mapping only, no worked
+    solution). Empty solution alone is NOT an error for matchQuestion.
+
+DO NOT reject a matchQuestion just because:
+  - Cells contain images alongside text (FIITJEE chem reactions use chem structure images).
+  - List-II has 5 entries while List-I has 4 (the 5th List-II is the "(E)" / "(t)" entry).
+  - Solution is empty "" (acceptable when only answer mapping exists in source).
+  - Cells contain LaTeX `$...$` — Stage 7 converts to MathML.
 
 ================================================================================
 SECTION 1: ACCEPT DATA STRUCTURE AS-IS
@@ -248,14 +277,35 @@ VALIDATION RULES:
     detail:"integerQuestion contains MCQ/SCQ options --likely wrong questionType"}
 
 ─── passageQuestion (Passage/Comprehension) ───
-REQUIRED FIELDS:
-  question: Non-empty. Contains passage text and sub-question(s).
-  answer:   Non-empty.
-  solution: Non-empty.
+SCHEMA (NESTED — by design):
+  passage:           Non-empty HTML string — the shared passage body shown above all sub-questions.
+  solution:          Top-level passage solution (often empty "" when per-question solutions are inline).
+  questions:         Array of inner sub-questions, each {scq: {ques, solution, answer, passage}}.
+  passageImages:     [] (empty list OK).
+  passageSolutionImages: [] (empty list OK).
 
 VALIDATION RULES:
-  - question/answer/solution are flat fields (NOT nested arrays) --this is by design.
-  - All three fields must be non-empty. Flag missing_answer/missing_solution if empty.
+  - `passage` field non-empty.
+  - `questions` is a non-empty array (typically 2-3 inner sub-questions).
+  - Each inner `scq` object has all 4 fields: ques (HTML, non-empty), solution (HTML), answer (single letter A-E), passage (back-ref).
+  - Inner answer must be exactly one letter from {A, B, C, D}. Flag wrong_answer if invalid.
+  - Inner ques must contain the 4 options labeled (A)(B)(C)(D).
+  - Each sub-question is independently scrutinized for math/format errors.
+
+─── matchQuestion (Matrix Match / List Match) ───
+SCHEMA:
+  question:          HTML table with List-I (left, labels 1-4) and List-II (right, labels A-D or A-E).
+  rows:              List-of-lists, e.g. [["B"],["D"],["A"],["E"]] or [["A","D"],["B"],["A","B","C","D"],["C"]].
+                     rows[i] = List-II labels matched to List-I item (i+1). Multi-match supported.
+  solution:          HTML solution OR empty if source has no separate worked-out (only answer mapping).
+  quesImages:        null (per canonical sample) — NOT empty list.
+  solutionImages:    null (per canonical sample).
+
+VALIDATION RULES:
+  - rows non-empty, each row[i] is a non-empty list of single-character labels {A,B,C,D,E}.
+  - HTML question contains the styled table (List-I header + List-II header + body rows).
+  - Number of rows entries should match number of List-I items in the table.
+  - Flag invalid_match_rows if rows malformed.
 
 ─── subjective ───
 REQUIRED FIELDS:
@@ -277,7 +327,7 @@ JEE MAINS (sources: PCMB, BRM, NRY, CGT):
     detail:"MCQ not allowed in JEE Mains"}
 
 JEE ADVANCED (source: NWT):
-  - Allowed questionTypes: scq, mcq, integerQuestion, passageQuestion
+  - Allowed questionTypes: scq, mcq, integerQuestion, passageQuestion, matchQuestion
   - All types permitted.
 
 NEET (source: D6C):
@@ -440,6 +490,78 @@ ANSWER LEAK IN QUESTION (flag: cleaner_artifact):
     detail:"Answer leaked into question text: '<quote the Ans/Answer pattern found>'"}
 
 ================================================================================
+SECTION 6C: FORMAT-NOISE IN STEM (flag: noise_in_stem)
+================================================================================
+
+Stage 3 strips known noise patterns (paragraph headers, "Read carefully"
+preambles, line-range markers, "Space for Rough work") before content reaches
+QA. If ANY of these escape into a rendered question/passage stem, flag as
+noise_in_stem — distinct from cleaner_artifact (which is for source-OCR
+prefixes like "Q. 1").
+
+Patterns to detect (NEW variations or escapees of stage 3):
+  - "Paragraph for Question Nos. N to M" / "Paragraph for Question N" /
+    "Paragraph for Questions N & M" — appearing inside the rendered stem
+  - "Read the above paragraph carefully and answer the questions given below"
+    or "Read the following write up carefully" or any "Read carefully ... :"
+    preamble inside the stem
+  - "Then find the answer of following questions based on above paragraph"
+  - "Space for Rough work" / "Space for Working" anywhere in the stem
+  - Leading line-range markers like "14-16. " / "11-12. " at the very start
+    of question or solution text (residual .mmd line numbering)
+  - LaTeX `\\section*{...}` blocks that survived cleaning (any `\\section`
+    keyword surviving inside rendered question/passage HTML is noise)
+
+Where to apply:
+  - questionType="passageQuestion": check passageQuestion.passage AND each
+    questions[i].scq.ques
+  - questionType="matchQuestion": check matchQuestion.question + matchQuestion.solution
+  - All other types: check question + solution
+
+Flag format:
+  {field:"question", type:"noise_in_stem",
+   detail:"<quote the exact noise phrase found>, <where it appears>"}
+
+DO NOT flag legitimate content that contains these strings as part of a real
+question (e.g., a physics question that legitimately mentions "the paragraph
+above describes ..." in its body without being a paragraph-header marker).
+Require the noise phrase to appear as standalone formatting, not embedded in
+sentence flow.
+
+================================================================================
+SECTION 6D: EXAM REFERENCE IN STEM (flag: exam_reference_in_stem)
+================================================================================
+
+Question stems must NOT contain exam-name + year references. Those belong in
+metadata fields (`previousExam`, `previousExamYear`, `isPrevious`, `isNEET`,
+`isMHCET`, `source`). When they leak into the visible stem, flag as
+exam_reference_in_stem so an operator can move the reference into metadata.
+
+Patterns to detect (in parens, brackets, OR unbracketed):
+  - "(JEE Main 2019)", "(JEE Mains 2019)", "[JEE Advanced 2018]",
+    "(IIT-JEE 2010)", "(AIEEE 2008)"
+  - "(NEET 2021)", "(NEET-UG 2020)", "[AIIMS 2017]", "(AIPMT 2014)"
+  - "(MHCET 2022)", "(MHT-CET 2023)", "[CET 2019]"
+  - "(BITSAT 2018)"
+  - Year tags: 4-digit year (19[5-9]\\d|20[0-2]\\d) adjacent to any of the above
+    exam names — bracketed or unbracketed
+  - Paper-code suffixes leaking from source: "(Paper-1)", "(Paper-2)",
+    "Set-A", "Set-B" appearing inside stem
+
+Where to apply:
+  - All visible stems (same field locations as Section 6C)
+
+Flag format:
+  {field:"question", type:"exam_reference_in_stem",
+   detail:"Exam reference '<quoted phrase>' should be in metadata, not stem"}
+
+DO NOT flag:
+  - Year mentions inside legitimate physics/chemistry content
+    ("In 2019 Smith showed that...") — these are content, not refs
+  - Exam names mentioned in solution explanations as background
+    ("This is a classic JEE problem because...") — flag only in stem text
+
+================================================================================
 SECTION 7: ANSWER VALIDATION
 ================================================================================
 
@@ -516,7 +638,7 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 
 | FIELD    | ERROR TYPE             | WHEN TO FLAG                                        |
 |----------|------------------------|-----------------------------------------------------|
-| question | match_format_content   | ANY match-type content (Section 0 --gate check)     |
+| question | invalid_match_rows     | matchQuestion rows malformed (empty/non-list)       |
 | question | missing_options        | SCQ/MCQ missing one or more of (A),(B),(C),(D)      |
 | question | malformed_mathml       | MathML TAGS structurally broken → wrong visual render |
 | question | math_logic_error       | Mathematical logic wrong (inequality, formula, sign)  |
@@ -525,6 +647,8 @@ SECTION 10: THE COMPLETE AUDIT CHECKLIST (REFERENCE TABLE)
 | question | latex_artifacts        | Orphaned LaTeX fragments producing no math output    |
 | question | incomplete_question    | Text truncated mid-sentence or contains other Qs     |
 | question | cleaner_artifact       | OCR prefix/header artifacts surviving cleanup         |
+| question | noise_in_stem          | Format noise (paragraph headers, "Read carefully", line-ranges, "Space for Rough work", \\section{}) surviving in stem |
+| question | exam_reference_in_stem | Exam name+year ref (JEE/NEET/MHCET/AIIMS/BITSAT, bracketed or unbracketed) inside visible stem |
 | question | missing_image          | Text references figure but no image present          |
 | question | broken_image           | Attached image is blank or corrupted                 |
 | question | partial_image          | Attached image is cut off or incomplete              |
@@ -550,9 +674,17 @@ SECTION 11: DECISION SAFETY CHECKS (MANDATORY PRE-OUTPUT VERIFICATION)
 
 Before producing your JSON output, run these checks IN ORDER:
 
-CHECK 1 --MATCH GATE: Did you detect match-type content?
-  YES → Output match_format_content error ONLY. Skip all other checks.
-  NO  → Continue.
+CHECK 1 --MATCH-TYPE INTEGRITY (only if questionType=="matchQuestion"):
+  Verify rows is non-empty and each row[i] is a non-empty list of single
+  letters {A,B,C,D,E}. Verify the question HTML contains the styled List-I /
+  List-II table. If structure malformed → flag invalid_match_rows. Otherwise
+  continue with content-quality checks like any other type.
+
+CHECK 1B --NOISE / EXAM REFERENCE SCAN (all question types):
+  Scan rendered question and (for passages) inner-question stems for:
+    - format-noise patterns (Section 6C) → flag noise_in_stem
+    - exam-name+year references (Section 6D) → flag exam_reference_in_stem
+  These run alongside other checks — they do NOT short-circuit other validation.
 
 CHECK 2 --FALSE POSITIVE FILTER: For EACH error you are about to report:
   a) Can you quote the EXACT text/tag/token that violates the rule? If NO → drop it.
@@ -614,13 +746,11 @@ EXAMPLE 2 --MISSING OPTION + PARTIAL SOLUTION:
     {"field":"solution","type":"partial_solution","detail":"Solution truncated mid-derivation at 'K = ...'"}
   ]}
 
-EXAMPLE 3 --MATCH TYPE (IMMEDIATE REJECTION):
-  Input: questionType="scq", question text contains "Match List-I with List-II"
-         followed by a mapping table.
-  Output: {"qid":"EX3","has_error":true,"errors":[
-    {"field":"question","type":"match_format_content","detail":"Match-type detected: 'Match List-I with List-II'"}
-  ]}
-  Why: Match gate triggered. No other checks performed.
+EXAMPLE 3 --MATCHQUESTION CLEAN:
+  Input: questionType="matchQuestion", List-I (1-4), List-II (A-E),
+         rows=[["B"],["D"],["A"],["E"]], styled HTML table present, math content valid.
+  Output: {"qid":"EX3","has_error":false,"errors":[]}
+  Why: Valid matchQuestion structure with proper rows mapping. No content errors found.
 
 EXAMPLE 4 --RAW LATEX + WRONG ANSWER:
   Input: integerQuestion, Physics, question contains "\\frac{mv^2}{r}" outside any
@@ -1036,7 +1166,8 @@ class QualityVerifierStage(BasePipelineStage):
                     qtype = entry.get("questionType", "")
                     qdata = entry.get(qtype, {}) if qtype else {}
 
-                    # Extract question/answer/solution -- handle passageQuestion nesting
+                    # Extract question/answer/solution -- handle passageQuestion + matchQuestion nesting
+                    rows_data = None
                     if qtype == "passageQuestion":
                         passage_text = qdata.get("passage", "") or ""
                         sub_q_texts = []
@@ -1044,16 +1175,33 @@ class QualityVerifierStage(BasePipelineStage):
                         sub_solutions = []
                         for sq in qdata.get("questions", []):
                             if isinstance(sq, dict):
-                                for sk in ("scq", "mcq", "integerQuestion"):
-                                    so = sq.get(sk)
-                                    if isinstance(so, dict):
-                                        sub_q_texts.append(so.get("question", ""))
-                                        sub_answers.append(so.get("answer", ""))
-                                        sub_solutions.append(so.get("solution", ""))
-                                        break
+                                # Canonical schema: ALWAYS wraps under "scq" with field name "ques".
+                                # Legacy schema: wrapped under sq_type ("scq"/"mcq"/"integerQuestion") with "question" field.
+                                # Try canonical first, fall back to legacy.
+                                so = sq.get("scq")
+                                if isinstance(so, dict):
+                                    sub_q_texts.append(so.get("ques", "") or so.get("question", ""))
+                                    sub_answers.append(so.get("answer", ""))
+                                    sub_solutions.append(so.get("solution", ""))
+                                else:
+                                    for sk in ("mcq", "integerQuestion"):
+                                        so = sq.get(sk)
+                                        if isinstance(so, dict):
+                                            sub_q_texts.append(so.get("question", ""))
+                                            sub_answers.append(so.get("answer", ""))
+                                            sub_solutions.append(so.get("solution", ""))
+                                            break
                         q_text = passage_text + "\n" + "\n".join(sub_q_texts)
                         a_text = ", ".join(a for a in sub_answers if a)
                         s_text = (qdata.get("solution", "") or "") + "\n" + "\n".join(sub_solutions)
+                    elif qtype == "matchQuestion":
+                        # Match container shape: {rows, question, solution, quesImages, solutionImages}
+                        # No `answer` field — `rows` is the answer mapping. Send rows so QA
+                        # can verify List-I -> List-II correctness.
+                        q_text = qdata.get("question", "") or ""
+                        s_text = qdata.get("solution", "") or ""
+                        a_text = ""
+                        rows_data = qdata.get("rows", None)
                     else:
                         q_text = qdata.get("question", "") or ""
                         a_text = qdata.get("answer", "")
@@ -1073,6 +1221,9 @@ class QualityVerifierStage(BasePipelineStage):
                         "tag_sub_concepts": entry.get("tagSubConcept", []),
                         "model": pass_info["model_id"],
                     }
+                    # matchQuestion-only field: rows mapping (List-I item i+1 -> List-II labels)
+                    if rows_data is not None:
+                        request["rows"] = rows_data
                     f.write(json.dumps(request) + "\n")
                     count += 1
             batch_counts[pass_key] = count
@@ -1323,6 +1474,19 @@ ATTACHED IMAGES: {', '.join(parts)}
 Placeholders in text correspond to attached images in order. EXAMINE each image for
 completeness, relevance, and readability."""
 
+        # matchQuestion-specific: render rows mapping (no `answer` field for match)
+        rows = req.get("rows")
+        match_rows_block = ""
+        if qtype == "matchQuestion" and rows is not None:
+            try:
+                rows_repr = ", ".join(
+                    f"{i+1} -> {','.join(r) if isinstance(r, list) else str(r)}"
+                    for i, r in enumerate(rows)
+                )
+            except Exception:
+                rows_repr = str(rows)
+            match_rows_block = f"\nROWS (canonical answer mapping, List-I i+1 -> List-II labels):\n  {rows_repr}\n"
+
         text = f"""================================================================================
 TARGET QUESTION FOR AUDIT
 ================================================================================
@@ -1334,8 +1498,7 @@ Question Type: {qtype}
 QUESTION HTML:
 {q_text}
 
-ANSWER: {answer}
-
+ANSWER: {answer}{match_rows_block}
 SOLUTION HTML:
 {s_text}
 {image_note}"""

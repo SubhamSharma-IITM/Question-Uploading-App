@@ -1092,24 +1092,32 @@ class LatexTagStage(BasePipelineStage):
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
 
-                # Extract text for tagging — handle passageQuestion nested structure
+                # Extract text for tagging — handle passageQuestion + matchQuestion shapes.
+                # passage canonical schema wraps inner questions under "scq" with field
+                # name "ques"; legacy schema used "question". Read canonical first, fall
+                # back to legacy for back-compat.
                 if qtype == "passageQuestion":
                     passage_text = qdata.get("passage", "")
-                    # Combine passage + all sub-question texts for tagging context
                     sub_texts = []
                     sub_answers = []
                     for sq in qdata.get("questions", []):
                         if isinstance(sq, dict):
-                            for sk in ("scq", "mcq", "integerQuestion"):
-                                so = sq.get(sk)
-                                if isinstance(so, dict):
-                                    sub_texts.append(so.get("question", ""))
-                                    sub_answers.append(so.get("answer", ""))
-                                    break
+                            so = sq.get("scq")
+                            if isinstance(so, dict):
+                                sub_texts.append(so.get("ques", "") or so.get("question", ""))
+                                sub_answers.append(so.get("answer", ""))
+                            else:
+                                for sk in ("mcq", "integerQuestion"):
+                                    so = sq.get(sk)
+                                    if isinstance(so, dict):
+                                        sub_texts.append(so.get("question", ""))
+                                        sub_answers.append(so.get("answer", ""))
+                                        break
                     question_text = passage_text + "\n" + "\n".join(sub_texts)
                     solution_text = qdata.get("solution", "")
                     answer = ", ".join(a for a in sub_answers if a)
                 else:
+                    # matchQuestion + scq/mcq/integerQuestion all use flat {question, solution}
                     question_text = qdata.get("question", "")
                     solution_text = qdata.get("solution", "")
                     answer = entry.get("answer", qdata.get("answer", ""))
@@ -1227,15 +1235,23 @@ class LatexTagStage(BasePipelineStage):
                 qtype = entry.get("questionType", "")
                 qdata = entry.get(qtype, {})
 
-                # Collect all text fields for LaTeX check
+                # Collect all text fields for LaTeX check (canonical "ques" first)
                 if qtype == "passageQuestion":
                     all_texts = [qdata.get("passage", ""), qdata.get("solution", "")]
                     for sq in qdata.get("questions", []):
                         if isinstance(sq, dict):
-                            for sk in ("scq", "mcq", "integerQuestion"):
-                                so = sq.get(sk)
-                                if isinstance(so, dict):
-                                    all_texts.extend([so.get("question", ""), so.get("solution", "")])
+                            so = sq.get("scq")
+                            if isinstance(so, dict):
+                                all_texts.extend([
+                                    so.get("ques", "") or so.get("question", ""),
+                                    so.get("solution", ""),
+                                ])
+                            else:
+                                for sk in ("mcq", "integerQuestion"):
+                                    so = sq.get(sk)
+                                    if isinstance(so, dict):
+                                        all_texts.extend([so.get("question", ""), so.get("solution", "")])
+                                        break
                     question_text = "\n".join(t for t in all_texts if t)
                 else:
                     question_text = qdata.get("question", "")
@@ -1251,21 +1267,29 @@ class LatexTagStage(BasePipelineStage):
                 if needs_latex:
                     # Send question + solution as structured JSON (production format)
                     if qtype == "passageQuestion":
-                        # For passages, send passage + all sub-question content
+                        # For passages, send passage + all sub-question content.
+                        # Canonical schema: questions[i].scq.ques; legacy: .question.
                         solution_text = qdata.get("solution", "")
                         combined_q = qdata.get("passage", "")
                         for sq in qdata.get("questions", []):
                             if isinstance(sq, dict):
-                                for sk in ("scq", "mcq", "integerQuestion"):
-                                    so = sq.get(sk)
-                                    if isinstance(so, dict):
-                                        combined_q += "\n" + so.get("question", "")
-                                        solution_text += "\n" + so.get("solution", "")
+                                so = sq.get("scq")
+                                if isinstance(so, dict):
+                                    combined_q += "\n" + (so.get("ques", "") or so.get("question", ""))
+                                    solution_text += "\n" + so.get("solution", "")
+                                else:
+                                    for sk in ("mcq", "integerQuestion"):
+                                        so = sq.get(sk)
+                                        if isinstance(so, dict):
+                                            combined_q += "\n" + so.get("question", "")
+                                            solution_text += "\n" + so.get("solution", "")
+                                            break
                         input_json = json.dumps({
                             "question": _one_line_html(combined_q),
                             "solution": _one_line_html(solution_text),
                         }, ensure_ascii=False)
                     else:
+                        # matchQuestion + flat types share this branch
                         solution_text = qdata.get("solution", "")
                         input_json = json.dumps({
                             "question": _one_line_html(question_text),

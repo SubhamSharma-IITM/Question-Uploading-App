@@ -340,6 +340,82 @@ def _insert_line_breaks_safely(text: str) -> str:
     return result
 
 
+# ── Format noise strip (paragraph headers, line ranges, rough work) ───────
+# Patterns identified during v2 match/passage rollout. Each pattern is noise
+# from the source PDF that has no semantic meaning to the database — the
+# metadata schema already captures the question order, paper code, etc. Must
+# run BEFORE bold conversion in stage4 so noise gets removed instead of
+# converted to <strong>. See tests/integration/test_stage3_noise_strip.py.
+#
+# Range separator that allows "to", "&", LaTeX-escaped "\&", "-", "–", "and".
+# Used inside paragraph header patterns. `\\?&` permits both `12 & 13` and
+# `12 \& 13` (LaTeX-escaped ampersand from .mmd output).
+_RANGE_SEP = r'(?:to|\\?&|-|–|and)'
+
+_NOISE_PATTERNS = [
+    # LaTeX `\section*{Paragraph for ...}` form. MUST run BEFORE the bare
+    # bold/plain pattern below — otherwise the bare pattern strips the inner
+    # content first and leaves the empty `\section*{}` shell behind.
+    (r'\\section\*\s*\{\s*Paragraph\s+for\s+[Qq]uestion[s]?\s+(?:Nos?\.\s*)?\d+\s*' + _RANGE_SEP + r'\s*\d+\s*[:.]?\s*\}',
+     re.IGNORECASE),
+    # LaTeX `\section*{Read the (above|following) ...}` form. Same reason as above —
+    # must precede bare Read pattern so the wrapper braces get consumed.
+    (r'\\section\*\s*\{\s*Read\s+the\s+(?:above|following)\s+(?:paragraph|write\s*up)\s+carefully[^{}\n]{1,160}?\s*\}',
+     re.IGNORECASE),
+    # LaTeX `\section*{Read carefully ...}` form (generic, no paragraph/write-up).
+    (r'\\section\*\s*\{\s*Read\s+carefully[^{}\n]{1,100}?\s*\}',
+     re.IGNORECASE),
+    # Paragraph header (with or without ** wrapper):
+    #   **Paragraph for Question Nos. 9 to 10**
+    #   **Paragraph for question Nos. 11 to 12**
+    #   **Paragraph for Questions 12 & 13**, Paragraph for Questions 12 \& 13
+    #   Paragraph for Question Nos. 14 to 16
+    (r'\*{0,2}\s*Paragraph\s+for\s+[Qq]uestion[s]?\s+(?:Nos?\.\s*)?\d+\s*' + _RANGE_SEP + r'\s*\d+\s*[:.]?\s*\*{0,2}',
+     re.IGNORECASE),
+    # "Read the (above|following) (paragraph|write up) carefully ... :"
+    # Requires terminator `:` or `.` (not optional) so lazy match doesn't stop
+    # too early at "answer". Body bounded to 140 chars to limit blast radius.
+    (r'\*{0,2}\s*Read\s+the\s+(?:above|following)\s+(?:paragraph|write\s*up)\s+carefully[^*\n]{1,140}?[:.]\s*\*{0,2}',
+     re.IGNORECASE),
+    # Generic "Read carefully and answer ..." (no paragraph/write-up):
+    (r'\*{0,2}\s*Read\s+carefully[^*\n]{1,80}?[:.]\s*\*{0,2}',
+     re.IGNORECASE),
+    # "Then find the answer of following questions based on above paragraph."
+    (r'Then\s+find\s+the\s+answer\s+of\s+(?:the\s+)?following\s+question[s]?\s+based\s+on\s+(?:the\s+)?above\s+paragraph\.?',
+     re.IGNORECASE),
+    # Printer artifact: "Space for Rough work" (with optional trailing punctuation)
+    (r'Space\s+for\s+Rough\s+work[:.]?',
+     re.IGNORECASE),
+]
+
+# Line-range numbering leak at start of solution text. Anchored — runs after
+# pattern list. Removes "14-16. iBℓ=0.5" -> "iBℓ=0.5".
+_LINE_RANGE_PREFIX = re.compile(r'^\s*\d+\s*[-–]\s*\d+\s*\.\s*')
+
+
+def _strip_format_noise(text: str) -> str:
+    """Remove formatting-noise patterns from source PDFs.
+
+    Noise = formatting artifacts (paragraph headers, "Read carefully..."
+    preambles, line-range markers, "Space for Rough work") that have no
+    semantic meaning. Real bold and real content are never touched — every
+    pattern is anchored to specific keywords + structural markers.
+
+    Apply BEFORE math protection: noise is pure prose, never inside math.
+    Apply BEFORE the stage4 ``**`` -> <strong> conversion so noise gets
+    removed instead of bolded.
+    """
+    if not text:
+        return text
+
+    cleaned = text
+    for pattern, flags in _NOISE_PATTERNS:
+        cleaned = re.sub(pattern, '', cleaned, flags=flags)
+
+    cleaned = _LINE_RANGE_PREFIX.sub('', cleaned)
+    return cleaned
+
+
 # ── MathPIX artifact cleanup ────────────────────────────────────────────────
 def _clean_mathpix_artifacts(text: str) -> str:
     """Clean common MathPIX OCR artifacts."""
@@ -466,6 +542,11 @@ def _clean_text(text: str, is_solution: bool = False) -> str:
         r'<em><strong><span[^>]*>THIS QUESTION CONTAINS IMAGES</span></strong></em><br\s*/?>',
         '', cleaned, flags=re.IGNORECASE)
 
+    # Step 0.4: Strip format-noise patterns (paragraph headers, "Read carefully"
+    # preambles, line-range markers, "Space for Rough work"). Run BEFORE math
+    # protection — noise is pure prose, never inside math.
+    cleaned = _strip_format_noise(cleaned)
+
     # Step 0.5: Protect math blocks EARLY — before number stripping and header removal
     # This prevents regex from eating math content that starts with digits or "Q".
     # We'll restore them after steps 1-3, before br injection (which has its own protection).
@@ -525,10 +606,17 @@ def _clean_question_entry(entry: Dict) -> Dict:
     q_key = "question_content" if "question_content" in entry else "question"
     s_key = "solution_content" if "solution_content" in entry else "solution"
 
-    # Clean question
-    cleaned[q_key] = _clean_text(entry.get(q_key, ""), is_solution=False)
+    # matchQuestion: preserve raw LaTeX tabular question_content. _clean_text
+    # would inject <br/> for newlines and mangle the tabular row structure.
+    # Stage 4's _parse_match_latex_tabular parses the raw block directly. We
+    # still strip noise patterns from the surrounding intro/header text.
+    qtype = entry.get("questionType", "")
+    if qtype == "matchQuestion":
+        cleaned[q_key] = _strip_format_noise(entry.get(q_key, ""))
+    else:
+        cleaned[q_key] = _clean_text(entry.get(q_key, ""), is_solution=False)
 
-    # Clean solution
+    # Clean solution (safe for all types — no LaTeX tabular blocks expected)
     cleaned[s_key] = _clean_text(entry.get(s_key, ""), is_solution=True)
 
     # Clean options if present as separate dict (legacy format)
