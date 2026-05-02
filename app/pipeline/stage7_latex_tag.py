@@ -979,7 +979,10 @@ class LatexTagStage(BasePipelineStage):
                             file_modified = True
 
                 if qtype == "passageQuestion":
-                    # Traverse passage + sub-questions
+                    # Traverse passage + sub-questions.
+                    # Canonical schema (Stage 4 _build_metadata_v2 line ~658)
+                    # uses field "ques" for sub-Q; legacy schema used "question".
+                    # Convert whichever is present so both shapes work.
                     _convert_field(qdata, "passage")
                     _convert_field(qdata, "solution")
                     for sq in qdata.get("questions", []):
@@ -987,7 +990,10 @@ class LatexTagStage(BasePipelineStage):
                             for sk in ("scq", "mcq", "integerQuestion"):
                                 so = sq.get(sk)
                                 if isinstance(so, dict):
-                                    _convert_field(so, "question")
+                                    if "ques" in so:
+                                        _convert_field(so, "ques")
+                                    if "question" in so:
+                                        _convert_field(so, "question")
                                     _convert_field(so, "solution")
                 else:
                     for field in ["question", "solution"]:

@@ -396,6 +396,15 @@ _NOISE_PATTERNS = [
      re.IGNORECASE),
     (r'\\section\*\s*\{\s*MATRIX\s+MATCH\s+TYPE\s+QUESTIONS?\s*\}',
      re.IGNORECASE),
+    # Combined slash form (e.g. EDM_MATH_Q25):
+    #   \section*{MATRIX MATCH/MATCHING LIST TYPE QUESTION}
+    # Cross-validated 2026-05-03: this exact pattern survived all 3 QA models'
+    # `noise_in_stem` flags. Bounded character class (anything but `}`) with
+    # required slash + the two banner words ensures we never strip real content.
+    (r'\\section\*\s*\{\s*MATRIX\s+MATCH\s*/\s*MATCHING\s+LIST\s+TYPE\s+QUESTIONS?\s*\}',
+     re.IGNORECASE),
+    (r'\\section\*\s*\{\s*MATCHING\s+LIST\s*/\s*MATRIX\s+MATCH\s+TYPE\s+QUESTIONS?\s*\}',
+     re.IGNORECASE),
     # `\section*{List-I}` / `\section*{List - I}` / `\section*{List I}` (and II).
     # Bounded `[III]+` allows I, II, III, IV.
     (r'\\section\*\s*\{\s*Lists?\s*[-– ]?\s*[III]+\s*\}',

@@ -21,6 +21,10 @@ def test_match_section_markers_stripped():
         (r'\section*{MATCHING LIST TYPE QUESTIONS}', ''),
         (r'\section*{MATRIX MATCH TYPE QUESTION}', ''),
         (r'\section*{MATRIX MATCH TYPE QUESTIONS}', ''),
+        # Combined slash form (real case from EDM_MATH_Q25 — Determinants session)
+        (r'\section*{MATRIX MATCH/MATCHING LIST TYPE QUESTION}', ''),
+        (r'\section*{MATRIX MATCH / MATCHING LIST TYPE QUESTIONS}', ''),
+        (r'\section*{MATCHING LIST/MATRIX MATCH TYPE QUESTION}', ''),
         (r'\section*{List-I}', ''),
         (r'\section*{List-II}', ''),
         (r'\section*{List - I}', ''),

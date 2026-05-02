@@ -31,6 +31,7 @@ SUITES = [
     "test_stage5_match_passage",
     "test_stage6_match_passage",
     "test_stage7_match_passage",
+    "test_stage7_passage_subq_latex_conversion",
     "test_stage8_match_passage",
     "test_stage9_match_gate",
     "test_stage9_batch_builder",
