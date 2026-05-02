@@ -82,9 +82,32 @@ def test_promotion_setting_default_on():
     assert getattr(settings, "stage10_promote_err34", None) is True
 
 
+def test_scan_does_not_NameError_on_missing_settings_import():
+    """Regression for hotfix: scan() and upload() reference settings inline.
+    Earlier commit added `getattr(settings, ...)` without importing settings at
+    module or function scope, causing NameError → 500 → frontend 'Scanning...'
+    button hang. This test calls scan() with a non-existent session_dir; it
+    should return a structured error dict, NOT raise NameError.
+    """
+    from app.pipeline.stage10_upload import UploadStage
+    from pathlib import Path
+    inst = UploadStage.__new__(UploadStage)
+    inst.session_id = "TEST_NOSESSION"
+    inst.session_dir = Path("/nonexistent_session_dir_for_test")
+    inst.log = lambda lvl, msg: None
+    inst._stop_requested = False
+    try:
+        r = inst.scan()
+    except NameError as e:
+        assert False, f"scan() raised NameError (settings import missing?): {e}"
+    # Expected: structured error response, no NameError
+    assert isinstance(r, dict)
+
+
 if __name__ == "__main__":
     test_promotion_note_format_canonical()
     test_csv_fieldnames_include_promotion_columns()
     test_db_absorption_mirrors_promotion()
     test_promotion_setting_default_on()
+    test_scan_does_not_NameError_on_missing_settings_import()
     print("OK")

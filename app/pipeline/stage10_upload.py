@@ -116,7 +116,8 @@ class UploadStage(BasePipelineStage):
 
         # upload_ready: when promote_err34 is on (default), err3/4 are also uploaded
         # (as err=2). When off (legacy), only err1+err2.
-        promote_err34 = bool(getattr(settings, "stage10_promote_err34", True))
+        from app.config import settings as _stg
+        promote_err34 = bool(getattr(_stg, "stage10_promote_err34", True))
         upload_ready = live["err1"] + live["err2"]
         if promote_err34:
             upload_ready += live.get("err_other", 0)
@@ -200,7 +201,8 @@ class UploadStage(BasePipelineStage):
         promoted_err4 = 0       # err=4 promoted to upload as err=2
         all_csv_rows = []
         upload_map = dict(prev_map)  # Start with previous uploads for absorption
-        promote_err34 = bool(getattr(settings, "stage10_promote_err34", True))
+        from app.config import settings as _stg
+        promote_err34 = bool(getattr(_stg, "stage10_promote_err34", True))
 
         for filepath, entries in file_groups:
             file_name = filepath.stem
