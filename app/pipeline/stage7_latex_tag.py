@@ -545,19 +545,25 @@ class LatexTagStage(BasePipelineStage):
         return all_entries
 
     def _count_latex_blocks(self, html: str) -> int:
-        """Count LaTeX blocks ($...$, $$...$$, \\(...\\), \\[...\\], \\begin{tabular}) in HTML."""
+        """Count LaTeX blocks ($...$, $$...$$, \\(...\\), \\[...\\], \\begin{tabular}) in HTML.
+
+        Uses LAZY matching for paren/bracket forms because math content commonly
+        contains parens like ``\\(f(x)=g(x)\\)``. A greedy ``[^)]`` class would
+        bail on the first inner ``)`` and miss the block. ``(.+?)\\\\)`` matches
+        until the FIRST literal ``\\)`` close-delimiter.
+        """
         if not html:
             return 0
         patterns = [
-            r'\$\$[^$]+\$\$',
-            r'\$[^$]+\$',
-            r'\\\([^)]+\\\)',
-            r'\\\[[^\]]+\\\]',
+            r'\$\$([^$]+)\$\$',
+            r'(?<!\$)\$(?!\$)[^$]+\$(?!\$)',
+            r'\\\((.+?)\\\)',
+            r'\\\[(.+?)\\\]',
             r'\\begin\{tabular\}',
         ]
         count = 0
         for pat in patterns:
-            count += len(re.findall(pat, html))
+            count += len(re.findall(pat, html, re.DOTALL))
         return count
 
     # Common hex entities from latex2mathml that CKEditor may not handle.
@@ -723,16 +729,23 @@ class LatexTagStage(BasePipelineStage):
         success_count = 0
         fail_count = 0
 
-        # Define patterns in order: longer delimiters first to avoid partial matches
-        # Each tuple: (regex_pattern, group_extractor_for_raw_latex)
-        # We process $$...$$ before $...$ to avoid double-matching
+        # Define patterns in order: longer delimiters first to avoid partial matches.
+        # Each tuple: (regex_pattern, is_display_math)
+        # We process $$...$$ before $...$ to avoid double-matching.
+        #
+        # PAREN/BRACKET FORMS use LAZY match because math commonly contains the
+        # delimiter character itself, e.g. \(f(x)=g(x)\). A greedy [^)] class
+        # would terminate the moment it saw an inner `)`, before reaching the
+        # actual close-delimiter `\)`. (.+?)\) lazy-matches until the FIRST
+        # literal `\)` which is exactly what we want.
+        # DOTALL is needed because math expressions may span lines.
         latex_patterns = [
             # $$...$$ (display math)
             (r'\$\$([^$]+)\$\$', True),
             # \[...\] (display math)
-            (r'\\\[([^\]]+)\\\]', True),
+            (r'\\\[(.+?)\\\]', True),
             # \(...\) (inline math)
-            (r'\\\(([^)]+)\\\)', False),
+            (r'\\\((.+?)\\\)', False),
             # $...$ (inline math) --last to avoid matching $$ content
             (r'(?<!\$)\$(?!\$)([^$]+)\$(?!\$)', False),
         ]
@@ -808,7 +821,7 @@ class LatexTagStage(BasePipelineStage):
                     fail_count += 1
                     return match.group(0)
 
-            html = re.sub(pattern, _replace_match, html)
+            html = re.sub(pattern, _replace_match, html, flags=re.DOTALL)
 
         return html, success_count, fail_count
 
