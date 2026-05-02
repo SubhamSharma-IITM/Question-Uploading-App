@@ -82,6 +82,50 @@ def test_promotion_setting_default_on():
     assert getattr(settings, "stage10_promote_err34", None) is True
 
 
+def test_effective_quarantined_excludes_qa_failure_when_promote_on():
+    """The promotion path was completely broken before this fix: Stage 9
+    qa_failure quarantines blocked err3/4 from reaching the promotion logic
+    in upload(). The effective-quarantined set must EXCLUDE qa_failure when
+    promote_err34=True, INCLUDE it when off, and ALWAYS include hard
+    quarantines (non_triplet, duplicate, empty_tags).
+    """
+    from unittest.mock import patch
+    from app.pipeline.stage10_upload import UploadStage
+    from pathlib import Path
+
+    inst = UploadStage.__new__(UploadStage)
+    inst.session_id = "X"
+    inst.session_dir = Path("/tmp/x")
+
+    fake_records = [
+        {"qid": "Q_QA_3", "reason": "qa_failure"},     # Stage 9 err=3 — should promote
+        {"qid": "Q_QA_4", "reason": "qa_failure"},     # Stage 9 err=4 — should promote
+        {"qid": "Q_DUP",  "reason": "duplicate"},      # hard quar — must skip
+        {"qid": "Q_TRIP", "reason": "non_triplet"},    # hard quar — must skip
+        {"qid": "Q_EMPTY","reason": "empty_tags"},     # hard quar — must skip
+    ]
+    with patch("app.db.get_quarantine", return_value=fake_records):
+        # promote on (default)
+        skip_set = inst._load_effective_quarantined_qids()
+        assert "Q_QA_3" not in skip_set, "qa_failure must NOT be in skip set when promote on"
+        assert "Q_QA_4" not in skip_set, "qa_failure must NOT be in skip set when promote on"
+        assert "Q_DUP" in skip_set, "duplicate must be in skip set"
+        assert "Q_TRIP" in skip_set, "non_triplet must be in skip set"
+        assert "Q_EMPTY" in skip_set, "empty_tags must be in skip set"
+
+        # promote off (legacy)
+        from app.config import settings
+        original = settings.stage10_promote_err34
+        settings.stage10_promote_err34 = False
+        try:
+            skip_set_off = inst._load_effective_quarantined_qids()
+            assert "Q_QA_3" in skip_set_off, "qa_failure must be in skip set when promote OFF"
+            assert "Q_QA_4" in skip_set_off, "qa_failure must be in skip set when promote OFF"
+            assert "Q_DUP" in skip_set_off
+        finally:
+            settings.stage10_promote_err34 = original
+
+
 def test_scan_does_not_NameError_on_missing_settings_import():
     """Regression for hotfix: scan() and upload() reference settings inline.
     Earlier commit added `getattr(settings, ...)` without importing settings at

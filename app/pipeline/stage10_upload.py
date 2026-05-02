@@ -57,6 +57,25 @@ class UploadStage(BasePipelineStage):
         from app.db import get_quarantined_qids
         return get_quarantined_qids(self.session_id)
 
+    def _load_effective_quarantined_qids(self) -> set:
+        """Quarantined qids that should be SKIPPED at upload.
+
+        With settings.stage10_promote_err34=True (default): Stage 9 qa_failure
+        entries are NOT in the skip set — they're promoted to err=2 and
+        uploaded. With False: legacy behavior, all quarantined are skipped.
+
+        Hard quarantines (non_triplet, duplicate, empty_tags, smiles_failure,
+        etc.) are ALWAYS skipped regardless of promotion setting.
+        """
+        from app.db import get_quarantine
+        from app.config import settings as _stg
+        promote = bool(getattr(_stg, "stage10_promote_err34", True))
+        records = get_quarantine(self.session_id)
+        if promote:
+            return {r["qid"] for r in records
+                    if r.get("qid") and r.get("reason") != "qa_failure"}
+        return {r["qid"] for r in records if r.get("qid")}
+
     def _load_all_metadata(self) -> Tuple[List[Tuple[Path, List[Dict]]], int]:
         """Load all metadata_v2 entries, grouped by file.
 
@@ -108,7 +127,10 @@ class UploadStage(BasePipelineStage):
         """
         from app.pipeline.metadata_stats import compute_live_stats
 
-        quarantined_qids = self._load_quarantined_qids()
+        # Use the *effective* quarantined set — when promote_err34 is on, this
+        # excludes Stage 9 qa_failure entries so they count as live (err=3/4)
+        # and feed into upload_ready below.
+        quarantined_qids = self._load_effective_quarantined_qids()
         live = compute_live_stats(self.session_dir, quarantined_qids)
 
         if live["total"] == 0:
@@ -181,7 +203,9 @@ class UploadStage(BasePipelineStage):
         if total == 0:
             return {"error": "No metadata_v2 files found"}
 
-        quarantined = self._load_quarantined_qids()
+        # Effective quarantined set: when promote_err34 is on, qa_failure qids
+        # are NOT in the skip set (they get promoted to err=2 + uploaded).
+        quarantined = self._load_effective_quarantined_qids()
         upload_dir = self._get_upload_dir()
         qa_ledger = self._load_qa_ledger()
         if qa_ledger:
@@ -508,7 +532,9 @@ class UploadStage(BasePipelineStage):
 
         # Step 2: Load metadata entries for uploaded QIDs
         file_groups, _ = self._load_all_metadata()
-        quarantined = self._load_quarantined_qids()
+        # Effective quarantined: skip hard quarantines only. When promotion is
+        # on, qa_failure entries WERE uploaded as err=2 so they need absorption.
+        quarantined = self._load_effective_quarantined_qids()
         entries_to_absorb = []
 
         for _, entries in file_groups:
