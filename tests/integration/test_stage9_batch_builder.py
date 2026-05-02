@@ -26,25 +26,43 @@ def _extract_request_payload(entry):
 
     if qtype == "passageQuestion":
         passage_text = qdata.get("passage", "") or ""
-        sub_q_texts, sub_answers, sub_solutions = [], [], []
-        for sq in qdata.get("questions", []):
-            if isinstance(sq, dict):
-                so = sq.get("scq")
-                if isinstance(so, dict):
-                    sub_q_texts.append(so.get("ques", "") or so.get("question", ""))
-                    sub_answers.append(so.get("answer", ""))
-                    sub_solutions.append(so.get("solution", ""))
-                else:
-                    for sk in ("mcq", "integerQuestion"):
-                        so = sq.get(sk)
-                        if isinstance(so, dict):
-                            sub_q_texts.append(so.get("question", ""))
-                            sub_answers.append(so.get("answer", ""))
-                            sub_solutions.append(so.get("solution", ""))
-                            break
-        q_text = passage_text + "\n" + "\n".join(sub_q_texts)
-        a_text = ", ".join(a for a in sub_answers if a)
-        s_text = (qdata.get("solution", "") or "") + "\n" + "\n".join(sub_solutions)
+        passage_solution = qdata.get("solution", "") or ""
+        sub_q_blocks, sub_sol_blocks, sub_answers = [], [], []
+        for sq_idx, sq in enumerate(qdata.get("questions", []), start=1):
+            if not isinstance(sq, dict):
+                continue
+            so = sq.get("scq")
+            inner_type = "scq"
+            if not isinstance(so, dict):
+                for sk in ("mcq", "integerQuestion"):
+                    so = sq.get(sk)
+                    if isinstance(so, dict):
+                        inner_type = sk
+                        break
+            if not isinstance(so, dict):
+                continue
+            ques_text = so.get("ques", "") or so.get("question", "")
+            ans_text = so.get("answer", "") or ""
+            sol_text = so.get("solution", "") or ""
+            sub_q_blocks.append(
+                f"=== SUB-QUESTION {sq_idx} (type={inner_type}) ===\n"
+                f"QUESTION:\n{ques_text}\n"
+                f"ANSWER: {ans_text}"
+            )
+            sub_sol_blocks.append(
+                f"=== SUB-QUESTION {sq_idx} SOLUTION ===\n{sol_text}"
+            )
+            sub_answers.append(f"sub_q{sq_idx}={ans_text}" if ans_text else "")
+        q_text = (
+            f"=== PASSAGE STEM ===\n{passage_text}\n\n"
+            + "\n\n".join(sub_q_blocks)
+        )
+        s_parts = []
+        if passage_solution:
+            s_parts.append(f"=== PASSAGE-LEVEL SOLUTION ===\n{passage_solution}")
+        s_parts.extend(sub_sol_blocks)
+        s_text = "\n\n".join(s_parts)
+        a_text = "; ".join(a for a in sub_answers if a)
     elif qtype == "matchQuestion":
         q_text = qdata.get("question", "") or ""
         s_text = qdata.get("solution", "") or ""
@@ -108,15 +126,22 @@ def test_passage_canonical_extraction():
         },
     }
     req = _extract_request_payload(entry)
-    # The passage HTML + each inner ques HTML must be concatenated in question
+    # Explicit delimiters must demarcate stem vs each sub-Q (so the QA model can
+    # attribute errors per-sub-Q instead of seeing one undifferentiated blob).
+    assert "=== PASSAGE STEM ===" in req["question"]
     assert "Passage body math" in req["question"]
+    assert "=== SUB-QUESTION 1 (type=scq) ===" in req["question"]
     assert "Inner Q1" in req["question"]
+    assert "=== SUB-QUESTION 2 (type=scq) ===" in req["question"]
     assert "Inner Q2" in req["question"]
-    # Inner answers must be aggregated
-    assert "C" in req["answer"] and "B" in req["answer"]
-    # Inner solutions must be in solution
-    assert "Sol1" in req["solution"] and "Sol2" in req["solution"]
-    print("  PASS passage canonical extraction: nested ques+solution+answer aggregated")
+    # Per-sub-Q answers must be tagged so model knows which is which
+    assert "sub_q1=C" in req["answer"] and "sub_q2=B" in req["answer"]
+    # Solutions delimited per sub-Q
+    assert "=== SUB-QUESTION 1 SOLUTION ===" in req["solution"]
+    assert "Sol1" in req["solution"]
+    assert "=== SUB-QUESTION 2 SOLUTION ===" in req["solution"]
+    assert "Sol2" in req["solution"]
+    print("  PASS passage canonical extraction: stem + sub-Q's delimited per-section")
 
 
 def test_passage_legacy_fallback():
@@ -136,8 +161,9 @@ def test_passage_legacy_fallback():
         },
     }
     req = _extract_request_payload(entry)
+    assert "=== SUB-QUESTION 1 (type=integerQuestion) ===" in req["question"]
     assert "Legacy Q" in req["question"]
-    assert "42" in req["answer"]
+    assert "sub_q1=42" in req["answer"]
     assert "Legacy Sol" in req["solution"]
     print("  PASS legacy passage fallback: integerQuestion subshape still extracts")
 
@@ -173,9 +199,27 @@ def test_user_content_renders_match_rows():
         "chapter": "", "concept": "", "subConcept": "", "tag_sub_concepts": [],
     }
     text, _ = inst._build_user_content(req)
-    assert "ROWS" in text and "1 -> B" in text and "4 -> E" in text, \
-        f"rows block missing or malformed:\n{text[:500]}"
+    assert "ROWS" in text, f"rows block missing:\n{text[:500]}"
+    assert "Row 1 (List-I item 1) -> List-II {B}" in text, f"missing row 1:\n{text[:500]}"
+    assert "Row 4 (List-I item 4) -> List-II {E}" in text, f"missing row 4:\n{text[:500]}"
     print("  PASS user-content renders ROWS block for matchQuestion")
+
+
+def test_user_content_flags_empty_match_rows():
+    """Empty rows must be visually marked so the QA model flags invalid_match_rows."""
+    from app.pipeline.stage9_quality import QualityVerifierStage
+    inst = QualityVerifierStage.__new__(QualityVerifierStage)
+    req = {
+        "qid": "TEST_M_EMPTY", "subject": "Math", "questionType": "matchQuestion",
+        "question": "<table>q</table>", "answer": "", "solution": "<h3>s</h3>",
+        "rows": [["B"], [], ["A"], []],   # rows 2 and 4 are empty/orphan
+        "chapter": "", "concept": "", "subConcept": "", "tag_sub_concepts": [],
+    }
+    text, _ = inst._build_user_content(req)
+    assert "Row 2 (List-I item 2) -> List-II {}" in text, f"row 2 empty marker missing:\n{text[:600]}"
+    assert "EMPTY" in text and "invalid_match_rows" in text, \
+        f"empty-row annotation missing:\n{text[:600]}"
+    print("  PASS user-content marks empty match rows for QA flagging")
 
 
 def test_user_content_passage_no_rows_block():
@@ -200,5 +244,6 @@ if __name__ == "__main__":
     test_passage_legacy_fallback()
     test_scq_unchanged()
     test_user_content_renders_match_rows()
+    test_user_content_flags_empty_match_rows()
     test_user_content_passage_no_rows_block()
     print("ALL TESTS PASSED")

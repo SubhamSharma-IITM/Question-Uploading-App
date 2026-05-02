@@ -386,6 +386,33 @@ _NOISE_PATTERNS = [
     # Printer artifact: "Space for Rough work" (with optional trailing punctuation)
     (r'Space\s+for\s+Rough\s+work[:.]?',
      re.IGNORECASE),
+    # Match-type section markers that leak into question content for non-tabular
+    # FIITJEE/JEE-Adv "List-I/List-II" interleaved format. Strip ONLY the
+    # `\section*{...}` wrappers — the (I)/(P) labels inside the body remain so
+    # the table parser can still see the labels.
+    # Cross-validated: 78 occurrences in vector_algebra.mmd; all are pure section
+    # headers, never wrap question math. Safe to strip.
+    (r'\\section\*\s*\{\s*MATCHING\s+LIST\s+TYPE\s+QUESTIONS?\s*\}',
+     re.IGNORECASE),
+    (r'\\section\*\s*\{\s*MATRIX\s+MATCH\s+TYPE\s+QUESTIONS?\s*\}',
+     re.IGNORECASE),
+    # `\section*{List-I}` / `\section*{List - I}` / `\section*{List I}` (and II).
+    # Bounded `[III]+` allows I, II, III, IV.
+    (r'\\section\*\s*\{\s*Lists?\s*[-– ]?\s*[III]+\s*\}',
+     re.IGNORECASE),
+    # `\section*{Column-I}` / `\section*{Column-II}` / etc.
+    (r'\\section\*\s*\{\s*Columns?\s*[-– ]?\s*[III]+\s*\}',
+     re.IGNORECASE),
+    # JEE / NEET PYQ year reference brackets — pure citation, never content.
+    # Examples: [JEE (Advanced) 2017], [JEE (Main) 2020], [JEE-Adv 2018],
+    # [NEET 2019], [JEE Main 2021]. Year required (4 digits) so we never
+    # match "[JEE Advanced]" without a year (which could be a section header).
+    (r'\[\s*JEE\s*[-\s]*\(?\s*(?:Advanced?|Mains?)\s*\)?[\s,]*(?:19|20)\d{2}\s*\]',
+     re.IGNORECASE),
+    (r'\[\s*NEET\s*[\s,]*(?:19|20)\d{2}\s*\]',
+     re.IGNORECASE),
+    (r'\[\s*AIEEE\s*[\s,]*(?:19|20)\d{2}\s*\]',
+     re.IGNORECASE),
 ]
 
 # Line-range numbering leak at start of solution text. Anchored — runs after

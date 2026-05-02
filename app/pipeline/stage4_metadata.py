@@ -925,6 +925,12 @@ class MetadataMapperStage(BasePipelineStage):
             if qtype == "passageQuestion":
                 subs = m.get(qtype, {}).get("questions", [])
                 return any(sq.get(list(sq.keys())[0], {}).get("answer", "") for sq in subs if sq)
+            if qtype == "matchQuestion":
+                # Match container has answer="" by design — the answer is `rows`.
+                rows = m.get(qtype, {}).get("rows", [])
+                return isinstance(rows, list) and any(
+                    isinstance(r, list) and r for r in rows
+                )
             return bool(m.get(qtype, {}).get("answer", ""))
 
         def _meta_has_solution(m):
@@ -950,10 +956,22 @@ class MetadataMapperStage(BasePipelineStage):
                         return False
                     sq_type = list(sq.keys())[0]
                     sq_data = sq[sq_type]
-                    if not (sq_data.get("question", "").replace("<h3></h3>", "")
+                    # Canonical sub-Q schema field is "ques" (per _build_metadata_v2);
+                    # legacy/orchestration variants used "question" — accept both.
+                    sq_q = sq_data.get("ques", sq_data.get("question", ""))
+                    if not (sq_q.replace("<h3></h3>", "")
                             and sq_data.get("answer", "")):
                         return False
                 return True
+            if qtype == "matchQuestion":
+                # Match canonical: question table HTML + non-empty rows. Solution may be empty.
+                mq = m.get(qtype, {})
+                has_q = bool((mq.get("question", "") or "").replace("<h3></h3>", ""))
+                rows = mq.get("rows", [])
+                has_rows = isinstance(rows, list) and any(
+                    isinstance(r, list) and r for r in rows
+                )
+                return has_q and has_rows
             qdata = m.get(qtype, {})
             return (bool(qdata.get("question", "").replace("<h3></h3>", ""))
                     and bool(qdata.get("answer", ""))

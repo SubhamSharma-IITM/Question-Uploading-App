@@ -292,6 +292,19 @@ VALIDATION RULES:
   - Inner ques must contain the 4 options labeled (A)(B)(C)(D).
   - Each sub-question is independently scrutinized for math/format errors.
 
+CONTENT FORMAT YOU WILL RECEIVE FOR THIS TYPE:
+  The QUESTION block is delimited so you can attribute errors per sub-question:
+      === PASSAGE STEM ===
+      <passage HTML>
+      === SUB-QUESTION 1 (type=scq) ===
+      QUESTION: <inner Q HTML>
+      ANSWER: <letter>
+      === SUB-QUESTION 2 (type=...) ===
+      ...
+  The SOLUTION block uses === PASSAGE-LEVEL SOLUTION === then === SUB-QUESTION i SOLUTION ===.
+  When flagging, mention which segment the issue lives in (e.g. "passage stem cleaner_artifact"
+  vs "sub_q2 math_logic_error"). Sub-Q answers are tagged sub_q1=X; sub_q2=Y.
+
 ─── matchQuestion (Matrix Match / List Match) ───
 SCHEMA:
   question:          HTML table with List-I (left, labels 1-4) and List-II (right, labels A-D or A-E).
@@ -305,7 +318,18 @@ VALIDATION RULES:
   - rows non-empty, each row[i] is a non-empty list of single-character labels {A,B,C,D,E}.
   - HTML question contains the styled table (List-I header + List-II header + body rows).
   - Number of rows entries should match number of List-I items in the table.
-  - Flag invalid_match_rows if rows malformed.
+  - Flag invalid_match_rows if rows malformed: empty row arrays (orphan), non-list values,
+    labels outside {A..E}, length mismatch with List-I.
+  - Inspect the table HTML for missing/empty cells, unmatched parentheses, broken MathML,
+    or empty equations in either List-I or List-II content; flag with the appropriate
+    field/type (cleaner_artifact, malformed_mathml, mathml_parsing_error).
+
+CONTENT FORMAT YOU WILL RECEIVE FOR THIS TYPE:
+  The user message contains a ROWS block enumerating each row:
+      Row 1 (List-I item 1) -> List-II {C}
+      Row 2 (List-I item 2) -> List-II {}  <- EMPTY (orphan row, flag invalid_match_rows)
+      Row 3 (List-I item 3) -> List-II {A,B,C,D}
+  Empty rows are pre-marked. Verify count matches the table's List-I rows.
 
 ─── subjective ───
 REQUIRED FIELDS:
@@ -1169,31 +1193,49 @@ class QualityVerifierStage(BasePipelineStage):
                     # Extract question/answer/solution -- handle passageQuestion + matchQuestion nesting
                     rows_data = None
                     if qtype == "passageQuestion":
+                        # Render passage with EXPLICIT DELIMITERS so the QA model can attribute
+                        # cleaner_artifact / math_logic_error to the specific sub-question.
+                        # Without delimiters, stem + sub-Q's were one undifferentiated blob.
                         passage_text = qdata.get("passage", "") or ""
-                        sub_q_texts = []
+                        passage_solution = qdata.get("solution", "") or ""
+                        sub_q_blocks = []
+                        sub_sol_blocks = []
                         sub_answers = []
-                        sub_solutions = []
-                        for sq in qdata.get("questions", []):
-                            if isinstance(sq, dict):
-                                # Canonical schema: ALWAYS wraps under "scq" with field name "ques".
-                                # Legacy schema: wrapped under sq_type ("scq"/"mcq"/"integerQuestion") with "question" field.
-                                # Try canonical first, fall back to legacy.
-                                so = sq.get("scq")
-                                if isinstance(so, dict):
-                                    sub_q_texts.append(so.get("ques", "") or so.get("question", ""))
-                                    sub_answers.append(so.get("answer", ""))
-                                    sub_solutions.append(so.get("solution", ""))
-                                else:
-                                    for sk in ("mcq", "integerQuestion"):
-                                        so = sq.get(sk)
-                                        if isinstance(so, dict):
-                                            sub_q_texts.append(so.get("question", ""))
-                                            sub_answers.append(so.get("answer", ""))
-                                            sub_solutions.append(so.get("solution", ""))
-                                            break
-                        q_text = passage_text + "\n" + "\n".join(sub_q_texts)
-                        a_text = ", ".join(a for a in sub_answers if a)
-                        s_text = (qdata.get("solution", "") or "") + "\n" + "\n".join(sub_solutions)
+                        for sq_idx, sq in enumerate(qdata.get("questions", []), start=1):
+                            if not isinstance(sq, dict):
+                                continue
+                            so = sq.get("scq")
+                            inner_type = "scq"
+                            if not isinstance(so, dict):
+                                for sk in ("mcq", "integerQuestion"):
+                                    so = sq.get(sk)
+                                    if isinstance(so, dict):
+                                        inner_type = sk
+                                        break
+                            if not isinstance(so, dict):
+                                continue
+                            ques_text = so.get("ques", "") or so.get("question", "")
+                            ans_text = so.get("answer", "") or ""
+                            sol_text = so.get("solution", "") or ""
+                            sub_q_blocks.append(
+                                f"=== SUB-QUESTION {sq_idx} (type={inner_type}) ===\n"
+                                f"QUESTION:\n{ques_text}\n"
+                                f"ANSWER: {ans_text}"
+                            )
+                            sub_sol_blocks.append(
+                                f"=== SUB-QUESTION {sq_idx} SOLUTION ===\n{sol_text}"
+                            )
+                            sub_answers.append(f"sub_q{sq_idx}={ans_text}" if ans_text else "")
+                        q_text = (
+                            f"=== PASSAGE STEM ===\n{passage_text}\n\n"
+                            + "\n\n".join(sub_q_blocks)
+                        )
+                        s_parts = []
+                        if passage_solution:
+                            s_parts.append(f"=== PASSAGE-LEVEL SOLUTION ===\n{passage_solution}")
+                        s_parts.extend(sub_sol_blocks)
+                        s_text = "\n\n".join(s_parts)
+                        a_text = "; ".join(a for a in sub_answers if a)
                     elif qtype == "matchQuestion":
                         # Match container shape: {rows, question, solution, quesImages, solutionImages}
                         # No `answer` field — `rows` is the answer mapping. Send rows so QA
@@ -1474,18 +1516,28 @@ ATTACHED IMAGES: {', '.join(parts)}
 Placeholders in text correspond to attached images in order. EXAMINE each image for
 completeness, relevance, and readability."""
 
-        # matchQuestion-specific: render rows mapping (no `answer` field for match)
+        # matchQuestion-specific: render rows mapping (no `answer` field for match).
+        # Explicit per-row annotation so empty/orphan rows are obvious to the model
+        # (it should flag invalid_match_rows on empty arrays).
         rows = req.get("rows")
         match_rows_block = ""
         if qtype == "matchQuestion" and rows is not None:
+            row_lines = []
             try:
-                rows_repr = ", ".join(
-                    f"{i+1} -> {','.join(r) if isinstance(r, list) else str(r)}"
-                    for i, r in enumerate(rows)
-                )
+                for i, r in enumerate(rows):
+                    if isinstance(r, list):
+                        if not r:
+                            row_lines.append(f"  Row {i+1} (List-I item {i+1}) -> List-II {{}}  <- EMPTY (orphan row, flag invalid_match_rows)")
+                        else:
+                            row_lines.append(f"  Row {i+1} (List-I item {i+1}) -> List-II {{{','.join(r)}}}")
+                    else:
+                        row_lines.append(f"  Row {i+1} (List-I item {i+1}) -> {r}  <- NON-LIST (flag invalid_match_rows)")
             except Exception:
-                rows_repr = str(rows)
-            match_rows_block = f"\nROWS (canonical answer mapping, List-I i+1 -> List-II labels):\n  {rows_repr}\n"
+                row_lines = [f"  {rows}"]
+            match_rows_block = (
+                "\nROWS (canonical answer mapping, List-I i+1 -> List-II labels):\n"
+                + "\n".join(row_lines) + "\n"
+            )
 
         text = f"""================================================================================
 TARGET QUESTION FOR AUDIT

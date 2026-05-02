@@ -863,6 +863,9 @@ _RIGHT_LABEL_MAP = {
     "P": "A", "Q": "B", "R": "C", "S": "D", "T": "E",
     # already canonical (newer JEE format)
     "A": "A", "B": "B", "C": "C", "D": "D", "E": "E",
+    # digits — when source uses (P,Q,R,S) as left labels and (1,2,3,4) on the right,
+    # which is a valid New-JEE-Adv variant. Without this, canonical comes out empty.
+    "1": "A", "2": "B", "3": "C", "4": "D", "5": "E",
 }
 
 
@@ -969,6 +972,17 @@ def _process_match_item(
 
     accepted_ranges.append((q_start_idx, q_end_idx))
 
+    # Capture solution line range (parity with _process_item / passage sub-questions).
+    sol_ls = None
+    sol_le = None
+    if isinstance(s_range, dict) and s_content:
+        try:
+            sol_ls = int(s_range.get("start"))
+            sol_le = int(s_range.get("end"))
+        except (TypeError, ValueError):
+            sol_ls = None
+            sol_le = None
+
     return {
         "questionType": "matchQuestion",
         "subject": item.get("subject", ""),
@@ -979,6 +993,8 @@ def _process_match_item(
         "answer_mapping_source": answer_source,
         "line_start": int(q_start),
         "line_end": int(q_end),
+        "sol_line_start": sol_ls,
+        "sol_line_end": sol_le,
     }
 
 
@@ -1079,8 +1095,9 @@ def _process_passage_item(
                 ss_start_idx = ss_start - 1
                 ss_end_idx = ss_end - 1
                 s_content = _slice_content(raw_lines, ss_start_idx, ss_end_idx)
-                if ss_end > overall_end:
-                    overall_end = ss_end
+                # Do NOT pull solution end into overall_end — solutions live in a
+                # separate section far below questions; using ss_end as the cursor
+                # advance signal causes the chunker to skip whole exercises.
 
         # Sub-question type (must be scq/mcq/integerQuestion)
         sq_type = sq.get("type", "integerQuestion")

@@ -21,8 +21,13 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # Order: smaller → bigger; run pipeline parity LAST as the end-to-end gate
 SUITES = [
     "test_stage2_match_processing",
+    "test_stage2_passage_cursor_advance",
+    "test_stage2_match_canonical_digits",
+    "test_stage2_match_real_data",
     "test_stage3_noise_strip",
+    "test_stage3_match_passage_noise",
     "test_stage4_match_passage",
+    "test_stage4_triplet_match_passage",
     "test_stage5_match_passage",
     "test_stage6_match_passage",
     "test_stage7_match_passage",
@@ -30,6 +35,8 @@ SUITES = [
     "test_stage9_match_gate",
     "test_stage9_batch_builder",
     "test_stage10_match_passage",
+    "test_stage10_promote_err34",
+    "test_stage10_promotion_csv_columns",
     "test_stage3_4_pipeline_parity",  # end-to-end gate, last
 ]
 

@@ -114,8 +114,12 @@ class UploadStage(BasePipelineStage):
         if live["total"] == 0:
             return {"error": "No metadata_v2 files found"}
 
-        # upload_ready = err1 + err2 (both are uploaded)
+        # upload_ready: when promote_err34 is on (default), err3/4 are also uploaded
+        # (as err=2). When off (legacy), only err1+err2.
+        promote_err34 = bool(getattr(settings, "stage10_promote_err34", True))
         upload_ready = live["err1"] + live["err2"]
+        if promote_err34:
+            upload_ready += live.get("err_other", 0)
 
         # Per-subject breakdown for upload-ready (err1+err2 only)
         by_subject = {}
@@ -133,7 +137,7 @@ class UploadStage(BasePipelineStage):
                 if qid in quarantined_qids:
                     continue
                 error_val = entry.get("error", 2)
-                if isinstance(error_val, int) and error_val >= 3:
+                if isinstance(error_val, int) and error_val >= 3 and not promote_err34:
                     continue
                 qtype = entry.get("questionType", "unknown")
                 by_type[qtype] = by_type.get(qtype, 0) + 1
@@ -192,8 +196,11 @@ class UploadStage(BasePipelineStage):
         total_skipped = 0
         posted_err1 = 0
         posted_err2 = 0
+        promoted_err3 = 0       # err=3 promoted to upload as err=2
+        promoted_err4 = 0       # err=4 promoted to upload as err=2
         all_csv_rows = []
         upload_map = dict(prev_map)  # Start with previous uploads for absorption
+        promote_err34 = bool(getattr(settings, "stage10_promote_err34", True))
 
         for filepath, entries in file_groups:
             file_name = filepath.stem
@@ -224,20 +231,31 @@ class UploadStage(BasePipelineStage):
                     })
                     continue
 
-                # Skip error >= 3
+                # Handle error >= 3: either promote to err=2 upload OR skip (legacy).
+                # Default behavior (settings.stage10_promote_err34=True): err=3/4
+                # are uploaded as err=2 with full audit trail. Faculty fixes via
+                # the err=2 review queue. Nothing dies in quarantine.
+                original_error_val = error_val
                 if isinstance(error_val, int) and error_val >= 3:
-                    total_skipped += 1
-                    csv_rows.append({
-                        "Question META ID": qid,
-                        "UploadedQuestionID": f"SKIPPED_ERROR_{error_val}",
-                        "Subject": subject,
-                        "Question Type": qtype,
-                        "View Link": view_link,
-                        "Question Link": "N/A",
-                        "Error Level": error_val,
-                        "IMAGE": "FALSE",
-                    })
-                    continue
+                    if not promote_err34:
+                        total_skipped += 1
+                        csv_rows.append({
+                            "Question META ID": qid,
+                            "UploadedQuestionID": f"SKIPPED_ERROR_{error_val}",
+                            "Subject": subject,
+                            "Question Type": qtype,
+                            "View Link": view_link,
+                            "Question Link": "N/A",
+                            "Error Level": error_val,
+                            "IMAGE": "FALSE",
+                        })
+                        continue
+                    # Promote: override to err=2 for upload, track separately
+                    if error_val == 3:
+                        promoted_err3 += 1
+                    elif error_val == 4:
+                        promoted_err4 += 1
+                    error_val = 2
 
                 # Check for images
                 qdata = entry.get(entry.get("questionType", ""), {})
@@ -284,8 +302,8 @@ class UploadStage(BasePipelineStage):
                 if dry_run:
                     status = "DRY_RUN"
                 else:
-                    # POST to API
-                    ok, uploaded_id = self._post_question(req_lib, entry)
+                    # POST to API. error_val may have been promoted from 3/4 to 2 above.
+                    ok, uploaded_id = self._post_question(req_lib, entry, error_override=error_val)
                     if ok and uploaded_id:
                         posted += 1
                         total_posted += 1
@@ -310,7 +328,13 @@ class UploadStage(BasePipelineStage):
                         status = "FAILED"
                         self.log("warning", f"FAILED to upload {qid}")
 
-                # Build row with QA ledger columns
+                # Build row with QA ledger columns. If err=3/4 was promoted to
+                # err=2 for upload, surface the original error so faculty can
+                # filter the err=2 review queue by promotion source.
+                promoted_note = ""
+                if (isinstance(original_error_val, int)
+                        and original_error_val >= 3 and error_val == 2):
+                    promoted_note = f"PROMOTED_FROM_ERR{original_error_val}"
                 row = {
                     "Question META ID": qid,
                     "UploadedQuestionID": status,
@@ -319,6 +343,8 @@ class UploadStage(BasePipelineStage):
                     "View Link": view_link,
                     "Question Link": link,
                     "Error Level": error_val,
+                    "Original Error Level": original_error_val,
+                    "Promotion Note": promoted_note,
                     "IMAGE": "TRUE" if has_img else "FALSE",
                 }
                 # Add model-wise QA verdicts + error descriptions
@@ -353,9 +379,13 @@ class UploadStage(BasePipelineStage):
             self.log("info", f"Saved {len(upload_map)} upload ID mappings to {map_path.name}")
 
         mode = "DRY RUN" if dry_run else "UPLOAD"
+        promote_msg = ""
+        if promoted_err3 or promoted_err4:
+            promote_msg = (f", promoted err3->2={promoted_err3}, "
+                          f"promoted err4->2={promoted_err4}")
         self.log("success",
                  f"{mode} complete: posted={total_posted}, failed={total_failed}, "
-                 f"skipped={total_skipped}, CSV at {combined_path.name}")
+                 f"skipped={total_skipped}{promote_msg}, CSV at {combined_path.name}")
 
         # Count err1 vs err2 and per-subject for dashboard stats
         posted_err1 = 0
@@ -379,6 +409,8 @@ class UploadStage(BasePipelineStage):
             "posted": total_posted,
             "posted_err1": posted_err1,
             "posted_err2": posted_err2,
+            "promoted_err3": promoted_err3,
+            "promoted_err4": promoted_err4,
             "failed": total_failed,
             "skipped": total_skipped,
             "dry_run": dry_run,
@@ -425,6 +457,8 @@ class UploadStage(BasePipelineStage):
             "posted": total_posted,
             "posted_err1": posted_err1,
             "posted_err2": posted_err2,
+            "promoted_err3": promoted_err3,
+            "promoted_err4": promoted_err4,
             "failed": total_failed,
             "skipped": total_skipped,
             "total": total,
@@ -483,7 +517,11 @@ class UploadStage(BasePipelineStage):
                 if qid in quarantined:
                     continue
                 error_val = entry.get("error", 2)
-                if isinstance(error_val, int) and error_val >= 3:
+                # Skip err3/4 from absorption ONLY if promotion is off. When
+                # promote_err34=True, those entries were uploaded as err=2 so
+                # absorbing them keeps the local DB + FAISS in sync.
+                promote_err34 = bool(getattr(settings, "stage10_promote_err34", True))
+                if isinstance(error_val, int) and error_val >= 3 and not promote_err34:
                     continue
                 entries_to_absorb.append((qid, upload_map[qid], entry))
 
@@ -566,7 +604,16 @@ class UploadStage(BasePipelineStage):
         entry["level"] = metadata_entry.get("level", "MEDIUM")
         entry["questionType"] = qtype
         entry["difficulty"] = metadata_entry.get("difficulty", 1)
-        entry["error"] = metadata_entry.get("error", 2)
+        # Mirror the promotion that happened at upload time: when err3/4 was
+        # uploaded as err=2 to the API, the local DB JSONL must reflect err=2
+        # too, otherwise FAISS dedup + admin dashboard see stale err=3/4 for
+        # entries that are actually live as err=2 in the production DB.
+        from app.config import settings as _stg
+        err = metadata_entry.get("error", 2)
+        if (isinstance(err, int) and err >= 3
+                and bool(getattr(_stg, "stage10_promote_err34", True))):
+            err = 2
+        entry["error"] = err
 
         # Tags
         entry["tagSubConcept"] = metadata_entry.get("tagSubConcept", [])
@@ -770,8 +817,13 @@ class UploadStage(BasePipelineStage):
         self.log("success", f"FAISS index updated: {index.ntotal} total vectors (added {len(new_ids)})")
         return len(new_ids)
 
-    def _post_question(self, req_lib, entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    def _post_question(self, req_lib, entry: Dict[str, Any],
+                       error_override: Optional[int] = None) -> Tuple[bool, Optional[str]]:
         """Post a single question to the Acadza API with JWT auth.
+
+        Args:
+            error_override: If set, overrides the entry's error field in the
+                payload. Used when promoting err=3/4 → err=2 at upload time.
 
         Uses authenticated_request for automatic 401 retry with token refresh.
         Forked from post_processor_uploader.py:post_question_to_api()
@@ -782,7 +834,9 @@ class UploadStage(BasePipelineStage):
 
         try:
             payload = dict(entry)
-            if "error" not in payload:
+            if error_override is not None:
+                payload["error"] = error_override
+            elif "error" not in payload:
                 payload["error"] = 2
 
             resp = authenticated_request(
@@ -871,7 +925,8 @@ class UploadStage(BasePipelineStage):
             return
         fieldnames = [
             "Question META ID", "UploadedQuestionID", "Question Type",
-            "View Link", "Question Link", "Error Level", "IMAGE",
+            "View Link", "Question Link", "Error Level",
+            "Original Error Level", "Promotion Note", "IMAGE",
             "Pass1 Model", "Pass1 Verdict", "Pass1 Errors",
             "Pass2 Model", "Pass2 Verdict", "Pass2 Errors",
             "Pass3 Model", "Pass3 Verdict", "Pass3 Errors",

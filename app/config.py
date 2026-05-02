@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # ── Video Service API ──
     video_api_token: str = ""
 
+    # ── Stage 10 behavior ──
+    # When True, err=3 and err=4 questions from Stage 9 are auto-promoted to
+    # err=2 and uploaded (with audit trail in the CSV) instead of being skipped.
+    # Faculty review the err=2 queue and fix; nothing dies in quarantine.
+    stage10_promote_err34: bool = True
+
     # ── AWS S3 CDN ──
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
