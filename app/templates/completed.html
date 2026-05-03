@@ -201,11 +201,79 @@ document.addEventListener('DOMContentLoaded', async () => {
             `;
             const uploadBtn = document.getElementById('upload-db-btn');
             if (uploadBtn) { uploadBtn.textContent = 'Uploaded'; uploadBtn.disabled = true; }
+            // Resume path: surface absorption status from checkpoint. If absorb already
+            // succeeded (status='ok' or absent-but-embedded>0), show the success state.
+            // If status indicates skip/lock/etc, show the warning banner with retry button.
+            const absStatus = data.absorption_status;
+            const absorbed = data.absorbed || 0;
+            const embedded = data.embedded || 0;
+            if (absStatus || absorbed > 0 || embedded > 0) {
+                renderAbsorbResult({
+                    status: absStatus || (embedded > 0 ? 'ok' : 'unknown'),
+                    absorbed: absorbed,
+                    embedded: embedded,
+                    free_mb: data.absorption_free_mb,
+                    needed_mb: data.absorption_needed_mb,
+                    reason: data.absorption_reason,
+                });
+            }
             document.getElementById('stats-zip-btn').disabled = false;
             document.getElementById('post-upload-actions').style.display = 'block';
         }
     }
 });
+
+// Render absorb result. status='ok' = green success; anything else = orange warning
+// banner with details + a manual Retry button (no auto-retry by design — RAM state
+// rarely changes within seconds, so retry is operator-initiated).
+function renderAbsorbResult(ad) {
+    const el = document.getElementById('absorb-result');
+    if (!el) return;
+    el.style.display = 'block';
+    const status = (ad && ad.status) || 'unknown';
+    if (status === 'ok') {
+        el.innerHTML = `
+            <div style="font-size:12px; color:var(--success); margin-top:6px;">
+                Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
+            </div>
+        `;
+        return;
+    }
+    // Failure / skip — show details + retry button
+    let reasonHtml = '';
+    if (status === 'skipped_oom') {
+        reasonHtml = `<div style="font-size:12px;">Reason: insufficient memory at the moment of absorb (${ad.free_mb || '?'} MB allocatable, needed ${ad.needed_mb || '?'} MB). DB entries WERE saved — only the FAISS vector step skipped.</div>`;
+    } else if (status === 'locked') {
+        reasonHtml = `<div style="font-size:12px;">Reason: another session was writing the FAISS index. DB entries WERE saved — try again in 30s.</div>`;
+    } else if (status === 'unavailable') {
+        reasonHtml = `<div style="font-size:12px;">Reason: FAISS index or OpenAI key unavailable on the server (${ad.reason || ''}).</div>`;
+    } else {
+        reasonHtml = `<div style="font-size:12px;">Reason: ${ad.reason || status}.</div>`;
+    }
+    el.innerHTML = `
+        <div style="background:#fff3cd; border:1px solid #ffeeba; color:#856404; padding:10px 12px; border-radius:4px; margin-top:6px; font-size:13px;">
+            <div style="font-weight:600; margin-bottom:4px;">Absorption incomplete (status: ${status})</div>
+            <div style="font-size:12px; margin-bottom:4px;">DB entries absorbed: ${ad.absorbed || 0} | FAISS vectors added: ${ad.embedded || 0}</div>
+            ${reasonHtml}
+            <div style="margin-top:6px; font-size:11px; color:#6c5500;">This session's uploaded questions are live on Acadza DB but won't be visible to Stage 8 dedup until back-filled. ZIP download is still available below.</div>
+            <button class="btn" style="margin-top:8px; padding:4px 10px; font-size:12px;" onclick="retryAbsorption()">Retry Absorption</button>
+        </div>
+    `;
+}
+
+async function retryAbsorption() {
+    appendLog('info', 'Retrying absorption...');
+    try {
+        const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
+        if (ar.success) {
+            renderAbsorbResult(ar.data || {status: 'unknown'});
+        } else {
+            appendLog('warning', 'Retry failed: ' + (ar.error?.message || 'unknown'));
+        }
+    } catch (e) {
+        appendLog('warning', 'Retry exception: ' + e.message);
+    }
+}
 
 async function loadSummary() {
     appendLog('info', 'Loading pipeline summary...');
@@ -484,27 +552,34 @@ async function pollUploadToDB(btn) {
                     </div>
                 `;
                 btn.textContent = 'Uploaded';
-                document.getElementById('stats-zip-btn').disabled = false;
+                // ZIP button stays DISABLED until absorb completes (success OR known-skip).
+                // This prevents operators from leaving the page before FAISS is updated,
+                // which was the root cause of orphaned absorptions accumulating to 8,338.
 
                 // Auto-trigger local DB absorption
                 appendLog('info', 'Auto-absorbing into local DB + FAISS index...');
+                let absorbStatus = 'unknown';
                 try {
                     const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
                     if (ar.success) {
-                        const ad = ar.data;
-                        appendLog('success', `Absorbed ${ad.absorbed || 0} entries to local DB, ${ad.embedded || 0} vectors to FAISS`);
-                        document.getElementById('absorb-result').style.display = 'block';
-                        document.getElementById('absorb-result').innerHTML = `
-                            <div style="font-size:12px; color:var(--success); margin-top:6px;">
-                                Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
-                            </div>
-                        `;
+                        const ad = ar.data || {};
+                        absorbStatus = ad.status || (ad.embedded > 0 ? 'ok' : 'unknown');
+                        renderAbsorbResult(ad);
                     } else {
-                        appendLog('warning', 'DB absorption failed: ' + (ar.error?.message || 'unknown'));
+                        absorbStatus = 'http_error';
+                        appendLog('warning', 'DB absorption call failed: ' + (ar.error?.message || 'unknown'));
+                        renderAbsorbResult({status: 'http_error', reason: ar.error?.message || 'unknown'});
                     }
                 } catch (ae) {
-                    appendLog('warning', 'DB absorption error: ' + ae.message);
+                    absorbStatus = 'exception';
+                    appendLog('warning', 'DB absorption exception: ' + ae.message);
+                    renderAbsorbResult({status: 'exception', reason: ae.message});
                 }
+                // ALWAYS enable ZIP after absorb attempt. The result is shown above; if
+                // it failed, the warning banner makes the operator aware and an EOD
+                // back-fill can heal it. Blocking ZIP forever would be worse than
+                // letting the operator finish the workflow with full visibility.
+                document.getElementById('stats-zip-btn').disabled = false;
                 document.getElementById('post-upload-actions').style.display = 'block';
                 window._activeProcess = false;  // Upload done, clear nav guard
                 return;

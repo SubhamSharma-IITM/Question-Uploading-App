@@ -38,6 +38,7 @@ SUITES = [
     "test_stage10_match_passage",
     "test_stage10_promote_err34",
     "test_stage10_promotion_csv_columns",
+    "test_stage10_oom_guard",
     "test_stage3_4_pipeline_parity",  # end-to-end gate, last
 ]
 

@@ -578,11 +578,25 @@ class UploadStage(BasePipelineStage):
         self.log("success", f"Step 3/4: Appended {absorbed} entries to {db_path.name}")
 
         # Step 4: Generate embeddings and update FAISS index
-        embedded = self._update_faiss_index(db_entries)
+        fx = self._update_faiss_index(db_entries)
+        embedded = fx.get("embedded", 0)
+        absorption_status = fx.get("status", "ok")
 
-        self.log("success", f"Step 4/4: Added {embedded} vectors to FAISS index")
+        if absorption_status == "ok":
+            self.log("success", f"Step 4/4: Added {embedded} vectors to FAISS index")
+        else:
+            # Failure surface: log structured warning. The CSV/dashboard EOD query
+            # filters on data.absorption_status != 'ok' to find sessions that
+            # uploaded but skipped the FAISS step (so Stage 8 dedup is blind to
+            # those OIDs until a back-fill runs).
+            self.log("warning",
+                f"Step 4/4: FAISS update returned status={absorption_status} "
+                f"(reason={fx.get('reason')}, free_mb={fx.get('free_mb')}, "
+                f"needed_mb={fx.get('needed_mb')}). DB entries WERE appended; "
+                f"only the FAISS vector step was skipped. Manual back-fill needed.")
 
-        # Merge absorption data with existing "completed" checkpoint — don't overwrite status
+        # Merge absorption data with existing "completed" checkpoint — don't overwrite status.
+        # absorption_status is the load-bearing field for EOD failure tracking.
         from app.db import get_checkpoint
         existing = get_checkpoint(self.session_id, self.stage_name)
         existing_data = existing.get("data", {}) if existing else {}
@@ -590,6 +604,10 @@ class UploadStage(BasePipelineStage):
             **existing_data,
             "absorbed": absorbed,
             "embedded": embedded,
+            "absorption_status": absorption_status,
+            "absorption_reason": fx.get("reason"),
+            "absorption_free_mb": fx.get("free_mb"),
+            "absorption_needed_mb": fx.get("needed_mb"),
             "db_path": str(db_path),
         }
         self.save_checkpoint("completed", merged)
@@ -597,6 +615,10 @@ class UploadStage(BasePipelineStage):
         return {
             "absorbed": absorbed,
             "embedded": embedded,
+            "status": absorption_status,
+            "reason": fx.get("reason"),
+            "free_mb": fx.get("free_mb"),
+            "needed_mb": fx.get("needed_mb"),
             "db_path": str(db_path),
         }
 
@@ -686,14 +708,71 @@ class UploadStage(BasePipelineStage):
 
         return entry
 
-    def _update_faiss_index(self, db_entries: List[Tuple[str, str, Dict]]) -> int:
+    @staticmethod
+    def _parse_cgroup_anon_allocatable(memory_max_str: str, memory_stat_str: str) -> Optional[float]:
+        """Pure parser — testable without filesystem mocking.
+
+        Returns allocatable MB after subtracting only NON-RECLAIMABLE categories
+        from the cgroup limit (anon + slab + kernel + sock + pagetables).
+        File page cache is reclaimable; kernel auto-evicts it on allocation
+        pressure, so it must NOT be counted as used.
+
+        Returns None when the limit is unbounded ("max") or input is malformed.
+        """
+        raw = memory_max_str.strip()
+        if raw in ("max", ""):
+            return None
+        try:
+            limit = int(raw)
+        except ValueError:
+            return None
+        stat = {}
+        for line in memory_stat_str.splitlines():
+            parts = line.strip().split(" ", 1)
+            if len(parts) == 2:
+                try:
+                    stat[parts[0]] = int(parts[1])
+                except ValueError:
+                    pass
+        non_reclaimable = (stat.get("anon", 0)
+                           + stat.get("slab", 0)
+                           + stat.get("kernel", 0)
+                           + stat.get("sock", 0)
+                           + stat.get("pagetables", 0))
+        return (limit - non_reclaimable) / (1024 * 1024)
+
+    @staticmethod
+    def _read_cgroup_anon_allocatable_mb() -> Optional[float]:
+        """Real allocatable memory: cgroup limit minus only NON-RECLAIMABLE memory.
+
+        cgroup memory.current includes file page cache, which the kernel
+        reclaims on demand and does not constitute memory pressure. The old
+        guard read memory.current and reported ~1 GB free when ~3 GB was
+        actually allocatable, falsely blocking absorption. (Verified
+        2026-05-04 on live Render: anon=0.65 GB while memory.current=2.84 GB
+        due to ~3 GB reclaimable page cache.)
+
+        Returns None on non-cgroup systems (Windows local dev) — caller skips
+        the guard entirely.
+        """
+        try:
+            with open("/sys/fs/cgroup/memory.max") as f:
+                mm = f.read()
+            with open("/sys/fs/cgroup/memory.stat") as f:
+                ms = f.read()
+            return UploadStage._parse_cgroup_anon_allocatable(mm, ms)
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+
+    def _update_faiss_index(self, db_entries: List[Tuple[str, str, Dict]]) -> Dict[str, Any]:
         """Generate embeddings for absorbed entries and add to global FAISS index.
 
         Args:
             db_entries: List of (meta_qid, mongo_id, db_entry) tuples
 
         Returns:
-            Number of vectors added to index
+            {"embedded": int, "status": "ok"|"skipped_oom"|"locked"|"unavailable",
+             "free_mb": int|None, "needed_mb": int|None, "reason": str|None}
         """
         from app.config import settings
 
@@ -703,12 +782,12 @@ class UploadStage(BasePipelineStage):
             import numpy as np
         except ImportError:
             self.log("warning", "FAISS not available — skipping embedding update")
-            return 0
+            return {"embedded": 0, "status": "unavailable", "reason": "faiss_not_installed"}
 
         openai_key = getattr(settings, "openai_api_key", None) or ""
         if not openai_key or len(openai_key) < 10:
             self.log("warning", "OpenAI API key not configured — skipping embedding update")
-            return 0
+            return {"embedded": 0, "status": "unavailable", "reason": "openai_key_missing"}
 
         # Load global FAISS index
         global_dir = Path(getattr(settings, "db_index_dir", ""))
@@ -717,31 +796,26 @@ class UploadStage(BasePipelineStage):
 
         if not index_path.exists():
             self.log("warning", f"Global FAISS index not found at {index_path} — skipping")
-            return 0
+            return {"embedded": 0, "status": "unavailable", "reason": "index_missing"}
 
-        # Check available memory before loading ~940MB index into RAM
-        # On Render (2GB cgroup), this is the OOM trigger
-        try:
-            mem_limit_path = "/sys/fs/cgroup/memory.max"
-            mem_usage_path = "/sys/fs/cgroup/memory.current"
-            import os as _os
-            if _os.path.exists(mem_limit_path) and _os.path.exists(mem_usage_path):
-                limit = int(open(mem_limit_path).read().strip())
-                current = int(open(mem_usage_path).read().strip())
-                available_mb = (limit - current) / (1024 * 1024)
-                index_size_mb = index_path.stat().st_size / (1024 * 1024)
-                self.log("info", f"Memory: {available_mb:.0f}MB free, index: {index_size_mb:.0f}MB")
-                # Need 1.5x index (load + modify + write back).
-                # On 4GB Render: ~3200MB free vs ~1400MB needed = safe.
-                needed_mb = index_size_mb * 1.5
-                if available_mb < needed_mb:
-                    self.log("warning",
-                        f"Skipping FAISS absorption -- insufficient memory "
-                        f"({available_mb:.0f}MB free, need {needed_mb:.0f}MB = 1.5x index). "
-                        f"Index will be updated on next manual rebuild.")
-                    return 0
-        except Exception:
-            pass  # not on cgroup system, proceed normally
+        # Memory guard: use anon-based accounting (file cache is reclaimable).
+        # Need ~1.5x index size (load full index into RAM + modify + write back).
+        index_size_mb = index_path.stat().st_size / (1024 * 1024)
+        needed_mb = index_size_mb * 1.5
+        allocatable_mb = self._read_cgroup_anon_allocatable_mb()
+        if allocatable_mb is not None:
+            self.log("info",
+                f"Memory check: {allocatable_mb:.0f}MB allocatable (anon-based), "
+                f"need {needed_mb:.0f}MB (1.5x of {index_size_mb:.0f}MB index)")
+            if allocatable_mb < needed_mb:
+                self.log("warning",
+                    f"Skipping FAISS absorption -- insufficient anon memory "
+                    f"({allocatable_mb:.0f}MB allocatable, need {needed_mb:.0f}MB = "
+                    f"1.5x of {index_size_mb:.0f}MB index). "
+                    f"Operator should retry from the session page after RAM frees up.")
+                return {"embedded": 0, "status": "skipped_oom",
+                        "free_mb": int(allocatable_mb), "needed_mb": int(needed_mb),
+                        "reason": "anon_memory_insufficient"}
 
         self.log("info", "Loading global FAISS index for update...")
         index = faiss.read_index(str(index_path))
@@ -822,7 +896,7 @@ class UploadStage(BasePipelineStage):
         except (IOError, OSError):
             self.log("warning", "FAISS index is locked by another session -- retry in 30s")
             lock_fd.close()
-            return 0
+            return {"embedded": 0, "status": "locked", "reason": "another_session_writing"}
 
         try:
             faiss.write_index(index, str(index_path))
@@ -843,7 +917,7 @@ class UploadStage(BasePipelineStage):
             lock_fd.close()
 
         self.log("success", f"FAISS index updated: {index.ntotal} total vectors (added {len(new_ids)})")
-        return len(new_ids)
+        return {"embedded": len(new_ids), "status": "ok"}
 
     def _post_question(self, req_lib, entry: Dict[str, Any],
                        error_override: Optional[int] = None) -> Tuple[bool, Optional[str]]:

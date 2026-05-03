@@ -164,9 +164,26 @@ async def absorb_to_local_db(session_id: str):
     if "error" not in result:
         from app.db import insert_log
         from app.sse import sse_manager
-        msg = f"Absorbed {result.get('absorbed', 0)} entries to local DB, {result.get('embedded', 0)} vectors added to FAISS"
-        insert_log(session_id, "stage10_upload", "success", msg)
-        sse_manager.emit(session_id, {"type": "log", "level": "success", "message": msg})
+        absorbed = result.get("absorbed", 0)
+        embedded = result.get("embedded", 0)
+        status = result.get("status", "ok")
+        if status == "ok":
+            msg = f"Absorbed {absorbed} entries to local DB, {embedded} vectors added to FAISS"
+            insert_log(session_id, "stage10_upload", "success", msg)
+            sse_manager.emit(session_id, {"type": "log", "level": "success", "message": msg})
+        else:
+            # The DB JSONL was appended but the FAISS vector step was skipped.
+            # Log explicitly so EOD queries (logs table OR checkpoint absorption_status)
+            # can find sessions needing back-fill. Both signals are cheap to query.
+            free_mb = result.get("free_mb")
+            needed_mb = result.get("needed_mb")
+            reason = result.get("reason") or status
+            msg = (f"Absorbed {absorbed} DB entries; FAISS vectors NOT added "
+                   f"(status={status}, reason={reason}, free_mb={free_mb}, "
+                   f"needed_mb={needed_mb}). Operator can retry from this page; "
+                   f"if it persists, EOD batch back-fill required.")
+            insert_log(session_id, "stage10_upload", "warning", msg)
+            sse_manager.emit(session_id, {"type": "log", "level": "warning", "message": msg})
 
     return APIResponse(data=result)
 
