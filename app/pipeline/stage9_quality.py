@@ -1613,9 +1613,60 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             self.log("info", f"{pass_key} already completed -- results in ledger")
             return {"status": "already_completed", "pass": pass_key, "ledger": str(ledger_path)}
 
-        # If previous attempt left empty/broken files, clean them up before re-submit
+        # If a previous batch_id exists, check whether it's STILL ACTIVE on the provider
+        # before declaring the attempt "incomplete". Without this check, every Resubmit
+        # click on a slow-queued batch deletes the local tracking file and submits a
+        # parallel batch, leaving the old one orphaned and billable.
         if v["batch_id"] and (not v["ledger_ok"] or not v["results_ok"]):
-            self.log("warn", f"{pass_key} previous attempt left incomplete data --cleaning up for re-submit")
+            old_api = v["api"] or pass_info["api"]
+            old_batch_id = v["batch_id"]
+            old_state = None
+            try:
+                if old_api == "openai":
+                    from openai import OpenAI
+                    client = OpenAI(api_key=settings.openai_api_key)
+                    try:
+                        old = client.batches.retrieve(old_batch_id)
+                        old_state = old.status   # validating|in_progress|finalizing|completed|failed|cancelled
+                    except Exception as ce:
+                        self.log("warning", f"{pass_key} could not retrieve old OpenAI batch {old_batch_id}: {ce}")
+                elif old_api in ("vertex", "gemini"):
+                    try:
+                        client = self._get_vertex_client()
+                        old_job = client.batches.get(name=old_batch_id)
+                        old_state = old_job.state.name if hasattr(old_job.state, "name") else str(old_job.state)
+                    except Exception as ce:
+                        self.log("warning", f"{pass_key} could not retrieve old Vertex batch {old_batch_id}: {ce}")
+            except Exception as e:
+                self.log("warning", f"{pass_key} pre-resubmit state check errored: {e}")
+
+            ACTIVE_STATES = {
+                # OpenAI
+                "validating", "in_progress", "finalizing",
+                # Vertex
+                "JOB_STATE_PENDING", "JOB_STATE_QUEUED", "JOB_STATE_RUNNING",
+            }
+            if old_state in ACTIVE_STATES:
+                # Batch is still running on the provider. Refuse the resubmit.
+                # Tell caller to wait for the existing batch to finish (or explicitly cancel first).
+                self.log("warn",
+                    f"{pass_key} REFUSING resubmit: previous batch {old_batch_id} is still {old_state}. "
+                    f"Wait for it to complete or use Stop/Cancel first.")
+                return {
+                    "status": "batch_still_running",
+                    "pass": pass_key,
+                    "batch_id": old_batch_id,
+                    "provider_state": old_state,
+                    "message": (
+                        f"Pass {pass_key} batch is still {old_state} on the provider. "
+                        f"Vertex queues can take hours; please wait for completion or click Stop "
+                        f"to cancel before resubmitting."
+                    ),
+                }
+
+            # Batch is in terminal state (failed/cancelled/expired/completed) but local files
+            # are missing/broken. Safe to clean up and resubmit.
+            self.log("warn", f"{pass_key} previous batch {old_batch_id} terminal state={old_state} — cleaning up for re-submit")
             ledger_dir = self._get_ledger_dir()
             ledger_path = ledger_dir / f"qa_{pass_key}_{pass_info['name'].lower().replace(' ', '_')}.json"
             results_path = self._get_qa_dir() / f"{pass_key}_batch_results.jsonl"
