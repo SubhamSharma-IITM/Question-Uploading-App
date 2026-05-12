@@ -510,6 +510,28 @@ IMPORTANT:
 
 
 # ── LLM call wrappers ──────────────────────────────────────────────────────
+def _get_gemini_client():
+    """Return a Gemini client.
+
+    Vertex AI is the primary route (paid quota, stable). AI Studio is fallback
+    only when Vertex credentials are missing -- AI Studio's project-level
+    permission flips can take the whole stage offline (observed 2026-05-12).
+    """
+    import os
+    from google import genai
+
+    cred = getattr(settings, "vertex_ai_credentials", "") or os.environ.get("VERTEX_AI_CREDENTIALS", "")
+    proj = getattr(settings, "vertex_ai_project", "") or os.environ.get("VERTEX_AI_PROJECT", "")
+    loc = getattr(settings, "vertex_ai_location", "") or os.environ.get("VERTEX_AI_LOCATION", "global")
+
+    if cred and os.path.exists(cred) and proj:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cred
+        return genai.Client(vertexai=True, project=proj, location=loc)
+
+    # Fallback: AI Studio (legacy). Will fail if project is denied access.
+    return genai.Client(api_key=settings.gemini_api_key)
+
+
 def _call_gemini(
     decorated_content: str,
     prompt: str,
@@ -520,7 +542,7 @@ def _call_gemini(
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = _get_gemini_client()
 
     response = client.models.generate_content(
         model=model_name,
@@ -551,7 +573,7 @@ def _call_gemini_cached(
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = _get_gemini_client()
 
     if cache_handle is None:
         # Create cache on first call
@@ -1786,6 +1808,22 @@ class LLMMapperStage(BasePipelineStage):
                 has_answer=bool(q.get("answer_key")),
                 has_solution=bool(q.get("solution_content")),
             )
+
+        # Gate: do NOT mark stage 2 as completed if extraction produced 0 questions.
+        # Otherwise the user can advance to stage 3 with an empty input, stage 3
+        # fails silently ("Cannot advance: Stage 3 cleaning is not complete"), and
+        # the session falls into a dead-end. Keep stage 2 as 'failed' so the page
+        # reload lands the user back on stage 2 with the original MMD intact.
+        if total == 0:
+            self.log("error",
+                     "Stage 2 produced 0 questions -- not marking as completed. "
+                     "Please reload the page to retry stage 2.")
+            self.save_checkpoint("failed", {
+                "questions": 0,
+                "reason": "zero_questions_extracted",
+                "provider": provider,
+            })
+            return
 
         self.save_checkpoint("completed", {
             "questions": total,
