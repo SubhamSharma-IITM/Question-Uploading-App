@@ -787,6 +787,96 @@ class DuplicateCheckStage(BasePipelineStage):
         except Exception:
             return None
 
+    def _load_session_embeddings_subset(self, target_ids: List[str]):
+        """Load cached embeddings for a SUBSET of saved qids (e.g. post-Stage-8
+        survivors after quarantine). Returns None if any target qid is missing
+        from the cache. Used by FIX-A2 to avoid re-paying OpenAI cost when
+        the cache is a superset of what we need."""
+        import numpy as np
+        emb_dir = self._get_index_dir() / "session_embeddings"
+        vec_path = emb_dir / "vectors.npy"
+        ids_path = emb_dir / "ids.json"
+        if not vec_path.exists() or not ids_path.exists():
+            return None
+        try:
+            saved_ids = json.loads(ids_path.read_text(encoding="utf-8"))
+            saved_set = set(saved_ids)
+            if not all(qid in saved_set for qid in target_ids):
+                return None
+            vectors = np.load(str(vec_path))
+            id_to_idx = {qid: i for i, qid in enumerate(saved_ids)}
+            return [vectors[id_to_idx[qid]] for qid in target_ids]
+        except Exception:
+            return None
+
+    # ── FIX-A2: in-flight shadow writer (called at Stage 8 -> 9 advance) ───
+    def write_inflight_shadow(self, session_name: str = "",
+                                operator: str = "") -> Dict[str, Any]:
+        """Write this session's surviving (non-quarantined) vectors to
+        ``data/sessions/{sid}/dedup_shadow/inflight.{faiss,json}``. Called
+        once at the Stage 8 -> Stage 9 advance click; the shadow is read
+        by every OTHER session's Stage 8 cross-check to close the race.
+
+        Reuses cached session embeddings from self-check if available
+        (saves a redundant OpenAI batch); regenerates only if cache is
+        missing or stale.
+
+        Removed by the Stage 10 absorb success path (vectors now live in
+        global db_reference). Catches abandonment via the startup stale
+        sweep (24h default).
+        """
+        from app.pipeline.dedup_shadow import write_shadow, delete_shadow
+        from app.config import settings as _cfg
+        import numpy as np
+
+        entries = self._load_all_metadata(filter_quarantine=True)
+        if not entries:
+            # Nothing survived Stage 8 -- clear any stale shadow from earlier.
+            delete_shadow(Path(_cfg.sessions_dir), self.session_id, log=self.log)
+            return {"written": 0, "reason": "no_surviving_entries"}
+
+        qid_text_pairs: List[Tuple[str, str]] = []
+        for entry in entries:
+            qid = entry.get("qid", "")
+            if not qid:
+                continue
+            text = self._extract_question_text(entry)
+            if not text or len(text) < 10:
+                continue
+            qid_text_pairs.append((qid, text))
+
+        if not qid_text_pairs:
+            delete_shadow(Path(_cfg.sessions_dir), self.session_id, log=self.log)
+            return {"written": 0, "reason": "no_extractable_text"}
+
+        qids = [p[0] for p in qid_text_pairs]
+        texts = [p[1] for p in qid_text_pairs]
+
+        # Try cache first (subset of self-check cohort minus quarantined).
+        cached = self._load_session_embeddings_subset(qids)
+        if cached is not None:
+            self.log("info",
+                f"FIX-A2 shadow: reusing {len(cached)} cached embeddings "
+                "from self-check (no OpenAI cost)")
+            embeddings = np.asarray(cached, dtype="float32")
+        else:
+            self.log("info",
+                f"FIX-A2 shadow: cache miss; generating {len(qids)} "
+                "embeddings for in-flight shadow...")
+            embeddings_list = self._generate_embeddings(texts)
+            embeddings = np.asarray(embeddings_list, dtype="float32")
+
+        return write_shadow(
+            sessions_dir=Path(_cfg.sessions_dir),
+            session_id=self.session_id,
+            session_name=session_name or "",
+            operator=operator or "",
+            qids=qids,
+            texts=texts,
+            embeddings=embeddings,
+            log=self.log,
+        )
+
     def _faiss_search(self, index, id_map, query_embedding, k=10, exclude_id=None):
         """Search FAISS index for nearest neighbors."""
         import faiss
@@ -1285,11 +1375,76 @@ class DuplicateCheckStage(BasePipelineStage):
             if (i + 1) % 50 == 0:
                 self.progress(50 + (i / len(sess_ids)) * 45, f"Filtering: {i+1}/{len(sess_ids)}")
 
+        # ── FIX-A2: search against in-flight session shadows ──────────
+        # Closes the Stage 8 -> Stage 10 race window. Other sessions
+        # that have advanced past Stage 8 (and are now in Stage 9 / 10)
+        # have written their surviving vectors to dedup_shadow/. Search
+        # those too so concurrent sessions detect each other's pending
+        # uploads as duplicates BEFORE they land in global db_reference.
+        from app.pipeline.dedup_shadow import read_all_shadows
+        from app.config import settings as _shadow_cfg
+        shadow_pairs = read_all_shadows(
+            Path(_shadow_cfg.sessions_dir),
+            exclude_session_id=self.session_id,
+            log=self.log,
+        )
+        if shadow_pairs:
+            total_inflight_vec = sum(s_idx.ntotal for s_idx, _ in shadow_pairs)
+            self.log("info",
+                f"FIX-A2: searching against {len(shadow_pairs)} in-flight "
+                f"session shadow(s) ({total_inflight_vec} vectors total)...")
+            for sh_idx, sh_meta in shadow_pairs:
+                sh_id_map = sh_meta.get("id_map", []) or []
+                sh_text_map = sh_meta.get("text_map", {}) or {}
+                sh_sid = sh_meta.get("session_id", "?")
+                sh_name = sh_meta.get("session_name", "?")
+                sh_operator = sh_meta.get("operator", "")
+                if sh_idx.ntotal == 0 or not sh_id_map:
+                    continue
+                k_shadow = min(3, sh_idx.ntotal)
+                sh_scores, sh_indices = sh_idx.search(sess_vectors, k_shadow)
+                for i in range(len(sess_ids)):
+                    qid = sess_ids[i]
+                    subj = sess_subjects[i]
+                    for j in range(sh_scores.shape[1]):
+                        idx = int(sh_indices[i][j])
+                        score = float(sh_scores[i][j])
+                        if idx < 0 or idx >= len(sh_id_map):
+                            continue
+                        if score < threshold:
+                            break
+                        matched_qid = sh_id_map[idx]
+                        duplicate_ids.add(qid)
+                        duplicates.append({
+                            "session_qid": qid,
+                            "db_qid": matched_qid,
+                            "db_oid": matched_qid,
+                            "subject": subj,
+                            "similarity": round(score, 3),
+                            "session_text": sess_texts[i][:120],
+                            "db_text": (sh_text_map.get(matched_qid, "")
+                                          or "")[:120],
+                            "session_html": sess_html_map.get(qid, ""),
+                            "is_inflight": True,
+                            "inflight_session_id": sh_sid,
+                            "inflight_session_name": sh_name,
+                            "inflight_operator": sh_operator,
+                            "db_flags": {"has_protected_flag": False,
+                                          "isPrevious": False,
+                                          "positivePick": False,
+                                          "negativePick": False,
+                                          "isSolvedExample": False},
+                            "db_html": "",
+                        })
+                        break  # one inflight match per shadow per qid
+
         # Enrich duplicates with DB entry flags for lock-on-flag feature
-        if duplicates:
-            matched_db_ids = {d["db_qid"] for d in duplicates}
+        # (inflight matches set their own flags above; only enrich db_reference matches)
+        non_inflight_dups = [d for d in duplicates if not d.get("is_inflight")]
+        if non_inflight_dups:
+            matched_db_ids = {d["db_qid"] for d in non_inflight_dups}
             db_flags = self._lookup_db_flags(matched_db_ids)
-            for d in duplicates:
+            for d in non_inflight_dups:
                 flags = db_flags.get(d["db_qid"], {})
                 d["db_flags"] = flags
                 # Copy DB question HTML into pair for preview rendering
@@ -1298,6 +1453,7 @@ class DuplicateCheckStage(BasePipelineStage):
         return {
             "session_questions": len(entries),
             "db_questions": db_count,
+            "inflight_sessions_searched": len(shadow_pairs),
             "pairs_checked": len(sess_ids) * min(5, db_index.ntotal),
             "duplicates_found": len(duplicates),
             "unique_qids_affected": len(duplicate_ids),

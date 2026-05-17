@@ -619,6 +619,25 @@ class UploadStage(BasePipelineStage):
                 f"needed_mb={fx.get('needed_mb')}). DB entries WERE appended; "
                 f"only the FAISS vector step was skipped. Manual back-fill needed.")
 
+        # FIX-A2: remove the in-flight shadow on successful absorption.
+        # Our vectors now live in global db_reference with real mongo_ids;
+        # the shadow has served its purpose. We only do this when the
+        # FAISS write actually succeeded -- otherwise the shadow remains
+        # so concurrent sessions still see our content, and the stale
+        # sweep / next absorb-retry will clear it.
+        if absorption_status == "ok":
+            try:
+                from app.pipeline.dedup_shadow import delete_shadow
+                from app.config import settings as _absorb_cfg
+                delete_shadow(
+                    Path(_absorb_cfg.sessions_dir),
+                    self.session_id,
+                    log=self.log,
+                )
+            except Exception as e:
+                self.log("warning",
+                    f"FIX-A2 shadow cleanup failed (non-fatal): {e}")
+
         # Merge absorption data with existing "completed" checkpoint — don't overwrite status.
         # absorption_status is the load-bearing field for EOD failure tracking.
         from app.db import get_checkpoint

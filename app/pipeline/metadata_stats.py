@@ -271,5 +271,27 @@ def compute_live_stats(session_dir: Path,
             elif error is not None and error >= 3:
                 result["err_other"] += 1
 
+    # Account for quarantined qids that were physically REMOVED from
+    # metadata files by Stage 5 / Stage 8 quarantine. Without this, after
+    # Stage 8 removes 34 of 45 entries, the walk above sees only 11 and
+    # reports total=11, quarantined=0. The truth: total stayed 45, only
+    # 11 are live, 34 are quarantined-and-removed.
+    seen_qids = {
+        entry.get("qid", "")
+        for _, entries in file_groups
+        for entry in entries
+    }
+    removed_quarantined = {
+        q for q in (quarantined_qids or set())
+        if q and q not in seen_qids
+    }
+    if removed_quarantined:
+        n = len(removed_quarantined)
+        result["total"] += n
+        result["quarantined"] += n
+        # Per-subject buckets stay accurate for entries that remain in
+        # metadata. Removed entries have no recoverable subject -- they
+        # contribute only to top-level total/quarantined counts.
+
     result["subjects"] = subject_order
     return result

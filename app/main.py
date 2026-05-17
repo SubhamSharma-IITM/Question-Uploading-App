@@ -378,6 +378,24 @@ async def lifespan(app: FastAPI):
     sse_manager.set_loop(asyncio.get_running_loop())
     _safe_print("[OK] SSE event loop registered")
 
+    # FIX-A2: clean up stale in-flight FAISS shadows (> 24h old).
+    # Catches: abandoned sessions, server crashes between Stage 8 advance
+    # and Stage 10 absorb, sessions whose absorb failed silently.
+    try:
+        from app.pipeline.dedup_shadow import cleanup_stale_shadows
+        from pathlib import Path as _P
+        _shadow_stats = cleanup_stale_shadows(
+            _P(settings.sessions_dir), max_age_hours=24,
+        )
+        _safe_print(
+            f"[OK] In-flight shadow sweep: "
+            f"scanned={_shadow_stats['scanned']}, "
+            f"deleted={_shadow_stats['deleted']}, "
+            f"kept={_shadow_stats['kept']}"
+        )
+    except Exception as _shadow_err:
+        _safe_print(f"[WARN] Stale shadow sweep failed (non-fatal): {_shadow_err}")
+
     # Stage 11 nightly scheduler (err=2 -> err=1 at 00:30 IST daily).
     # Gated by STAGE11_NIGHTLY_ENABLED env var; safe to import unconditionally.
     _stage11_task = None

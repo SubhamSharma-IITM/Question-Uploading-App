@@ -336,9 +336,18 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
               .filter(Boolean).join(', ') + ') — must be quarantined'
             : '';
 
+        // FIX-A2: inflight matches reference a qid in ANOTHER active session,
+        // not a live DB question. /question/details would 404 (the qid isn't
+        // uploaded yet) so we render a session-attribution badge instead.
+        const isInflight = !!dup.is_inflight;
+
         // Build flag badges for cross-check matches
         let flagBadges = '';
-        if (dup.db_qid) {
+        if (isInflight) {
+            const sname = escapeHtml(dup.inflight_session_name || dup.inflight_session_id || '?');
+            const sop = dup.inflight_operator ? ' &middot; ' + escapeHtml(dup.inflight_operator) : '';
+            flagBadges += `<span class="flag-badge" style="background:rgba(244,140,6,0.18);color:#a05a00;border:1px solid #e08700;" title="Match against an in-flight session that has not uploaded yet — Stage 9 / Stage 10 in progress">IN-FLIGHT: ${sname}${sop}</span>`;
+        } else if (dup.db_qid) {
             flagBadges += `<a href="https://www.acadza.com/question/view-question/${dup.db_qid}" target="_blank" class="db-qid-badge" style="text-decoration:none; color:var(--primary);" onclick="event.stopPropagation();">${escapeHtml(dup.db_qid)}</a>`;
             if (flags.isPrevious) flagBadges += '<span class="flag-badge pyq">PYQ</span>';
             if (flags.positivePick) flagBadges += '<span class="flag-badge board">+Pick</span>';
@@ -353,7 +362,9 @@ function renderDuplicatePairs(duplicates, containerId, showFull) {
         // Determine if this is a cross-check (has db_qid/db_oid)
         const isCrossCheck = !!dup.db_qid || !!dup.db_oid;
         const labelA = isCrossCheck ? 'Current Document' : 'Question A';
-        const labelB = isCrossCheck ? 'Database Question' : 'Question B';
+        const labelB = isInflight
+            ? `In-flight Session (${escapeHtml(dup.inflight_session_name || dup.inflight_session_id || '?')})`
+            : (isCrossCheck ? 'Database Question' : 'Question B');
         // Lock reason label (visible, not just tooltip)
         let lockLabel = '';
         if (isLocked) {
@@ -481,6 +492,18 @@ async function crossCheck() {
                         <div class="stat-box"><div class="stat-value">${d.duplicates_found}</div><div class="stat-label">Duplicate Pairs</div></div>
                     </div>
                 `;
+                // FIX-A2: surface in-flight shadow coverage so operators can see the race window is closed.
+                const inflightN = d.inflight_sessions_searched || 0;
+                if (inflightN > 0) {
+                    crossHtml += '<div style="margin-top:8px;font-size:12px;padding:6px 10px;border-radius:4px;background:rgba(244,140,6,0.12);color:#a05a00;border:1px solid #e08700;">' +
+                        '<strong>In-flight check:</strong> also searched ' + inflightN +
+                        ' active session shadow(s) (Stage 9 / Stage 10 in progress on other operators\\' machines). Concurrent-upload race window is closed for this check.' +
+                        '</div>';
+                } else {
+                    crossHtml += '<div style="margin-top:8px;font-size:11px;color:var(--text-muted);">' +
+                        'In-flight check: no other sessions currently between Stage 8 and Stage 10 (no race window to close).' +
+                        '</div>';
+                }
                 crossHtml += '<div id="cross-results-pairs" style="margin-top: 12px;"></div>';
                 document.getElementById('cross-results-content').innerHTML = crossHtml;
 

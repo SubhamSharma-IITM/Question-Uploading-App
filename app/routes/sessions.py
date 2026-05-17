@@ -188,6 +188,39 @@ async def advance_session(session_id: str):
         )
 
     update_session(session_id, current_stage=nxt)
+
+    # ── FIX-A2: write in-flight FAISS shadow on Stage 8 -> Stage 9 advance ──
+    # Closes the Stage 8 -> Stage 10 race window. Concurrent sessions' Stage 8
+    # cross-check reads this shadow, so they see our surviving vectors as
+    # duplicates even though we haven't uploaded yet.
+    # Failure here is NON-fatal: the advance still succeeds. Race window
+    # stays open for this one session only; nightly back-fill/post-day sweep
+    # is the residual safety net.
+    if current == "stage8_duplicates" and nxt == "stage9_quality":
+        try:
+            from app.pipeline.stage8_duplicates import DuplicateCheckStage
+            stage = DuplicateCheckStage(session_id)
+            session_name = session.get("name", "") or ""
+            operator = session.get("created_by", "") or ""
+            result = stage.write_inflight_shadow(
+                session_name=session_name, operator=operator
+            )
+            return APIResponse(data={
+                "session_id": session_id, "stage": nxt,
+                "shadow_written": int(result.get("written", 0)),
+            })
+        except Exception as e:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                f"FIX-A2 shadow write failed for {session_id} on stage8->9 "
+                f"advance: {e}"
+            )
+            return APIResponse(data={
+                "session_id": session_id, "stage": nxt,
+                "shadow_written": 0,
+                "shadow_error": str(e),
+            })
+
     return APIResponse(data={"session_id": session_id, "stage": nxt})
 
 

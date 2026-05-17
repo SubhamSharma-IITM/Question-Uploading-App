@@ -496,10 +496,24 @@ def _compute_pipeline_summary(session_id: str, session_dir: Path) -> dict:
     quarantine_records = get_quarantine(session_id)
     quarantined_by_db = len(quarantine_records)
 
+    # Account for quarantined qids physically REMOVED from metadata files
+    # by Stage 5 / Stage 8 quarantine. Without this, total_processed was the
+    # post-removal count (e.g. 11) and total_ready went negative (11 - 34 =
+    # -23) because we subtracted the full quarantine table from a denominator
+    # that already excluded its removed entries.
+    seen_qids = {q.get("qid", "") for q in all_questions}
+    removed_quarantined_qids = {
+        (r.get("qid") or "")
+        for r in quarantine_records
+        if r.get("qid") and r.get("qid") not in seen_qids
+    }
+    summary["total_processed"] = len(all_questions) + len(removed_quarantined_qids)
     summary["total_quarantined"] = quarantined_by_error + quarantined_by_db
     summary["quarantined_by_error"] = quarantined_by_error
     summary["quarantined_by_duplicate"] = quarantined_by_db
-    summary["total_ready"] = len(all_questions) - quarantined_by_error - quarantined_by_db
+    summary["total_ready"] = (summary["total_processed"]
+                               - quarantined_by_error
+                               - quarantined_by_db)
 
     # Per-stage checkpoint stats
     checkpoints = get_all_checkpoints(session_id)
