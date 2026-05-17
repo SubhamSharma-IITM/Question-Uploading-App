@@ -578,7 +578,31 @@ class UploadStage(BasePipelineStage):
         self.log("success", f"Step 3/4: Appended {absorbed} entries to {db_path.name}")
 
         # Step 4: Generate embeddings and update FAISS index
-        fx = self._update_faiss_index(db_entries)
+        # FIX-A/E/G: the absorber now RAISES typed exceptions on OOM, lock
+        # timeout, and embedding API failure (instead of silent return).
+        # Catch them here, translate to the existing result-dict shape so
+        # the route handler and EOD CSV queries continue to work. The
+        # "loudness" goal is satisfied because:
+        #   - structured warning log + SSE banner fire below
+        #   - absorption_status field in checkpoint != 'ok' for EOD tracking
+        from app.pipeline.stage8_duplicates import (
+            FAISSAbsorptionInsufficientRam, FAISSLockTimeout, EmbeddingBatchFailure,
+        )
+        try:
+            fx = self._update_faiss_index(db_entries)
+        except FAISSAbsorptionInsufficientRam as e:
+            self.log("error", f"FAISS absorption OOM-blocked: {e}")
+            fx = {"embedded": 0, "status": "skipped_oom",
+                  "reason": "anon_memory_insufficient",
+                  "free_mb": int(e.free_mb), "needed_mb": int(e.needed_mb)}
+        except FAISSLockTimeout as e:
+            self.log("error", f"FAISS write lock timeout: {e}")
+            fx = {"embedded": 0, "status": "locked",
+                  "reason": "lock_timeout", "free_mb": None, "needed_mb": None}
+        except EmbeddingBatchFailure as e:
+            self.log("error", f"Embedding batch failed during absorption: {e}")
+            fx = {"embedded": 0, "status": "embedding_failed",
+                  "reason": "openai_batch_failed", "free_mb": None, "needed_mb": None}
         embedded = fx.get("embedded", 0)
         absorption_status = fx.get("status", "ok")
 
@@ -708,216 +732,34 @@ class UploadStage(BasePipelineStage):
 
         return entry
 
+    # FIX-A: cgroup helpers moved to app.pipeline.stage8_duplicates
+    # (absorption ownership). Kept as thin backward-compat wrappers in case
+    # any external script or test still references them on the UploadStage
+    # class. New code should import from stage8_duplicates directly.
+
     @staticmethod
     def _parse_cgroup_anon_allocatable(memory_max_str: str, memory_stat_str: str) -> Optional[float]:
-        """Pure parser — testable without filesystem mocking.
-
-        Returns allocatable MB after subtracting only NON-RECLAIMABLE categories
-        from the cgroup limit (anon + slab + kernel + sock + pagetables).
-        File page cache is reclaimable; kernel auto-evicts it on allocation
-        pressure, so it must NOT be counted as used.
-
-        Returns None when the limit is unbounded ("max") or input is malformed.
-        """
-        raw = memory_max_str.strip()
-        if raw in ("max", ""):
-            return None
-        try:
-            limit = int(raw)
-        except ValueError:
-            return None
-        stat = {}
-        for line in memory_stat_str.splitlines():
-            parts = line.strip().split(" ", 1)
-            if len(parts) == 2:
-                try:
-                    stat[parts[0]] = int(parts[1])
-                except ValueError:
-                    pass
-        non_reclaimable = (stat.get("anon", 0)
-                           + stat.get("slab", 0)
-                           + stat.get("kernel", 0)
-                           + stat.get("sock", 0)
-                           + stat.get("pagetables", 0))
-        return (limit - non_reclaimable) / (1024 * 1024)
+        from app.pipeline.stage8_duplicates import _parse_cgroup_anon_allocatable
+        return _parse_cgroup_anon_allocatable(memory_max_str, memory_stat_str)
 
     @staticmethod
     def _read_cgroup_anon_allocatable_mb() -> Optional[float]:
-        """Real allocatable memory: cgroup limit minus only NON-RECLAIMABLE memory.
-
-        cgroup memory.current includes file page cache, which the kernel
-        reclaims on demand and does not constitute memory pressure. The old
-        guard read memory.current and reported ~1 GB free when ~3 GB was
-        actually allocatable, falsely blocking absorption. (Verified
-        2026-05-04 on live Render: anon=0.65 GB while memory.current=2.84 GB
-        due to ~3 GB reclaimable page cache.)
-
-        Returns None on non-cgroup systems (Windows local dev) — caller skips
-        the guard entirely.
-        """
-        try:
-            with open("/sys/fs/cgroup/memory.max") as f:
-                mm = f.read()
-            with open("/sys/fs/cgroup/memory.stat") as f:
-                ms = f.read()
-            return UploadStage._parse_cgroup_anon_allocatable(mm, ms)
-        except (FileNotFoundError, PermissionError, OSError):
-            return None
+        from app.pipeline.stage8_duplicates import _read_cgroup_anon_allocatable_mb
+        return _read_cgroup_anon_allocatable_mb()
 
     def _update_faiss_index(self, db_entries: List[Tuple[str, str, Dict]]) -> Dict[str, Any]:
-        """Generate embeddings for absorbed entries and add to global FAISS index.
+        """FIX-A: thin wrapper around the canonical absorber in stage8_duplicates.
 
-        Args:
-            db_entries: List of (meta_qid, mongo_id, db_entry) tuples
+        The full absorb implementation lives at
+        `app.pipeline.stage8_duplicates.absorb_db_entries_into_global` --
+        absorption is owned by Stage 8 (single source of truth), Stage 10
+        is just the trigger after API upload completes.
 
-        Returns:
-            {"embedded": int, "status": "ok"|"skipped_oom"|"locked"|"unavailable",
-             "free_mb": int|None, "needed_mb": int|None, "reason": str|None}
+        Carries: FIX-B (LOCK_EX blocking + atomic write), FIX-E (1.2x OOM
+        raise), FIX-G (zero-vec raise), FIX-H (build_rule provenance).
         """
-        from app.config import settings
-
-        # Check if FAISS + OpenAI are available
-        try:
-            import faiss
-            import numpy as np
-        except ImportError:
-            self.log("warning", "FAISS not available — skipping embedding update")
-            return {"embedded": 0, "status": "unavailable", "reason": "faiss_not_installed"}
-
-        openai_key = getattr(settings, "openai_api_key", None) or ""
-        if not openai_key or len(openai_key) < 10:
-            self.log("warning", "OpenAI API key not configured — skipping embedding update")
-            return {"embedded": 0, "status": "unavailable", "reason": "openai_key_missing"}
-
-        # Load global FAISS index
-        global_dir = Path(getattr(settings, "db_index_dir", ""))
-        index_path = global_dir / "db_reference" / "faiss.index"
-        meta_path = global_dir / "db_reference" / "metadata.json"
-
-        if not index_path.exists():
-            self.log("warning", f"Global FAISS index not found at {index_path} — skipping")
-            return {"embedded": 0, "status": "unavailable", "reason": "index_missing"}
-
-        # Memory guard: use anon-based accounting (file cache is reclaimable).
-        # Need ~1.5x index size (load full index into RAM + modify + write back).
-        index_size_mb = index_path.stat().st_size / (1024 * 1024)
-        needed_mb = index_size_mb * 1.5
-        allocatable_mb = self._read_cgroup_anon_allocatable_mb()
-        if allocatable_mb is not None:
-            self.log("info",
-                f"Memory check: {allocatable_mb:.0f}MB allocatable (anon-based), "
-                f"need {needed_mb:.0f}MB (1.5x of {index_size_mb:.0f}MB index)")
-            if allocatable_mb < needed_mb:
-                self.log("warning",
-                    f"Skipping FAISS absorption -- insufficient anon memory "
-                    f"({allocatable_mb:.0f}MB allocatable, need {needed_mb:.0f}MB = "
-                    f"1.5x of {index_size_mb:.0f}MB index). "
-                    f"Operator should retry from the session page after RAM frees up.")
-                return {"embedded": 0, "status": "skipped_oom",
-                        "free_mb": int(allocatable_mb), "needed_mb": int(needed_mb),
-                        "reason": "anon_memory_insufficient"}
-
-        self.log("info", "Loading global FAISS index for update...")
-        index = faiss.read_index(str(index_path))
-        with open(meta_path, "r", encoding="utf-8") as f:
-            metadata = json.load(f)
-
-        id_map = metadata.get("id_map", [])
-        text_map = metadata.get("text_map", {})
-        dimension = metadata.get("dimension", 1536)
-
-        self.log("info", f"Current index: {index.ntotal} vectors, adding {len(db_entries)} new...")
-
-        # Extract text for embedding using the SHARED extractor — single source
-        # of truth shared with Stage 8 self/cross-check. Ensures the embedding
-        # text written to FAISS here matches what Stage 8 would generate, so
-        # dedup is consistent across the pipeline. Critical for matchQuestion
-        # (rows mapping summary) and passageQuestion (passage body, not the
-        # absent `question` field).
-        from app.pipeline.stage8_duplicates import extract_text_for_embedding
-
-        texts = []
-        new_ids = []
-        for meta_qid, mongo_id, db_entry in db_entries:
-            text = extract_text_for_embedding(db_entry)
-            if text and len(text) >= 10:
-                texts.append(text)
-                new_ids.append(mongo_id)
-            else:
-                self.log("warning",
-                         f"Empty embedding text for {meta_qid} (qtype={db_entry.get('questionType')}) — "
-                         "skipping FAISS vector for this entry")
-
-        if not texts:
-            self.log("info", "No texts extracted for embedding")
-            return 0
-
-        # Generate embeddings
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_key)
-
-        BATCH_SIZE = 100
-        all_embeddings = []
-        for i in range(0, len(texts), BATCH_SIZE):
-            batch = texts[i:i + BATCH_SIZE]
-            valid = [t if t.strip() else "empty" for t in batch]
-            try:
-                response = client.embeddings.create(model="text-embedding-3-small", input=valid)
-                for item in response.data:
-                    all_embeddings.append(np.array(item.embedding, dtype="float32"))
-            except Exception as e:
-                self.log("error", f"Embedding batch failed: {e}")
-                for _ in batch:
-                    all_embeddings.append(np.zeros(dimension, dtype="float32"))
-
-        self.log("info", f"Generated {len(all_embeddings)} embeddings")
-
-        # Add to FAISS index
-        vectors = np.array(all_embeddings, dtype="float32")
-        faiss.normalize_L2(vectors)
-        index.add(vectors)
-
-        # Update metadata
-        for i, mongo_id in enumerate(new_ids):
-            id_map.append(mongo_id)
-            text_map[mongo_id] = texts[i][:500]
-
-        # Save updated index back to global cache (with file lock for concurrent safety)
-        lock_path = index_path.parent / ".faiss_write.lock"
-        lock_fd = open(lock_path, "w")
-        try:
-            import sys
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (IOError, OSError):
-            self.log("warning", "FAISS index is locked by another session -- retry in 30s")
-            lock_fd.close()
-            return {"embedded": 0, "status": "locked", "reason": "another_session_writing"}
-
-        try:
-            faiss.write_index(index, str(index_path))
-            metadata["id_map"] = id_map
-            metadata["text_map"] = text_map
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, ensure_ascii=False)
-        finally:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except Exception:
-                pass
-            lock_fd.close()
-
-        self.log("success", f"FAISS index updated: {index.ntotal} total vectors (added {len(new_ids)})")
-        return {"embedded": len(new_ids), "status": "ok"}
+        from app.pipeline.stage8_duplicates import absorb_db_entries_into_global
+        return absorb_db_entries_into_global(db_entries, log=self.log)
 
     def _post_question(self, req_lib, entry: Dict[str, Any],
                        error_override: Optional[int] = None) -> Tuple[bool, Optional[str]]:

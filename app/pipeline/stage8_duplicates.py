@@ -32,10 +32,332 @@ EMBEDDING_DIM = 1536
 EMBEDDING_BATCH_SIZE = 100
 MAX_TEXT_LENGTH = 8000
 
+# FIX-B/H: provenance + locking
+TEXT_EXTRACTOR_VERSION = "v2.mathml-to-latex+img-keys"  # bump when extractor changes
+FAISS_LOCK_TIMEOUT_S = 60.0
+FAISS_LOCK_POLL_S = 0.005
+
 HTML_TAG_RE = re.compile(r'<[^>]+>')
 MATHML_RE = re.compile(r'<math[\s\S]*?</math>')
 WHITESPACE_RE = re.compile(r'\s+')
 IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+# ── Exceptions (typed; surfaced to operator UI) ──────────────────────────
+class EmbeddingBatchFailure(RuntimeError):
+    """FIX-G: raised when an OpenAI embedding batch fails.
+    Halts Stage 8 instead of silently zero-filling (which produced
+    orthogonal vectors that matched nothing -- a silent dedup blindness).
+    Operator should reload to retry."""
+
+
+class FAISSLockTimeout(RuntimeError):
+    """FIX-B: raised when LOCK_SH or LOCK_EX cannot be acquired within
+    FAISS_LOCK_TIMEOUT_S. Operator should wait for active writer to
+    finish (typically 5-10s for a 1 GB index) then reload."""
+
+
+class FAISSAbsorptionInsufficientRam(RuntimeError):
+    """FIX-E: raised when the OOM guard refuses to absorb due to low
+    anon memory. Operator should close other sessions and reload to retry.
+    Carries free_mb, needed_mb, index_mb for diagnostic UI."""
+    def __init__(self, free_mb: float, needed_mb: float, index_mb: float):
+        self.free_mb = free_mb
+        self.needed_mb = needed_mb
+        self.index_mb = index_mb
+        super().__init__(
+            f"FAISS absorption refused: only {free_mb:.0f} MB allocatable anon, "
+            f"need {needed_mb:.0f} MB (1.2x of {index_mb:.0f} MB index). "
+            f"Close other sessions and reload to retry."
+        )
+
+
+class FAISSMetadataDrift(RuntimeError):
+    """FIX-H: raised when metadata.json's build_rule / embedding_model /
+    text_extractor_version doesn't match the code's current expected
+    values. Prevents silent dedup drift when extractor or model is
+    upgraded but the on-disk index is stale."""
+
+
+def _acquire_faiss_lock(lock_fd, mode, timeout_s: float = FAISS_LOCK_TIMEOUT_S):
+    """FIX-B: cross-platform polling lock acquisition with timeout.
+    mode: fcntl.LOCK_SH or fcntl.LOCK_EX (LOCK_NB is OR'd in for polling).
+    Raises FAISSLockTimeout on timeout. Poll interval 5 ms keeps latency
+    overhead negligible vs real production FAISS write time (~5-10s)."""
+    import time as _t
+    import sys
+    start = _t.monotonic()
+    if sys.platform == "win32":
+        import msvcrt
+        mode_arg = msvcrt.LK_NBLCK if mode == "EX" else msvcrt.LK_NBLCK  # Windows has no shared lock
+        while True:
+            try:
+                msvcrt.locking(lock_fd.fileno(), mode_arg, 1)
+                return True
+            except (OSError, IOError):
+                if _t.monotonic() - start > timeout_s:
+                    raise FAISSLockTimeout(
+                        f"Could not acquire {mode} lock within {timeout_s:.0f}s"
+                    )
+                _t.sleep(FAISS_LOCK_POLL_S)
+    else:
+        import fcntl
+        flock_mode = fcntl.LOCK_SH if mode == "SH" else fcntl.LOCK_EX
+        while True:
+            try:
+                fcntl.flock(lock_fd, flock_mode | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                if _t.monotonic() - start > timeout_s:
+                    raise FAISSLockTimeout(
+                        f"Could not acquire {mode} lock within {timeout_s:.0f}s"
+                    )
+                _t.sleep(FAISS_LOCK_POLL_S)
+
+
+def _release_faiss_lock(lock_fd):
+    """FIX-B: release the FAISS lock (cross-platform)."""
+    import sys
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+
+def _atomic_write_faiss_and_metadata(index, metadata: dict, idx_path, meta_path):
+    """FIX-B: atomic tmp + fsync + os.replace + parent-dir fsync.
+    Readers always see either the complete old file or the complete new
+    file -- never a torn intermediate state. Protects against partial
+    writes if the process crashes mid-write."""
+    import faiss
+    idx_tmp = idx_path.with_suffix(idx_path.suffix + ".tmp")
+    meta_tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    faiss.write_index(index, str(idx_tmp))
+    with open(idx_tmp, "rb") as f:
+        os.fsync(f.fileno())
+    with open(meta_tmp, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(idx_tmp, idx_path)
+    os.replace(meta_tmp, meta_path)
+    import sys
+    if sys.platform != "win32":
+        try:
+            dir_fd = os.open(idx_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+
+
+# ── cgroup v2 anon allocatable memory accounting ─────────────────────────
+# Used by the absorber's OOM guard. Lives here because absorption is owned
+# by Stage 8 (FIX-A). Stage 10 imports these for backward compat.
+
+def _parse_cgroup_anon_allocatable(memory_max_str: str, memory_stat_str: str) -> Optional[float]:
+    """Pure parser -- testable without filesystem mocking.
+
+    Returns allocatable MB after subtracting only NON-RECLAIMABLE categories
+    from the cgroup limit (anon + slab + kernel + sock + pagetables).
+    File page cache is reclaimable; kernel auto-evicts it on allocation
+    pressure, so it must NOT be counted as used.
+
+    Returns None when the limit is unbounded ("max") or input is malformed.
+    """
+    raw = memory_max_str.strip()
+    if raw in ("max", ""):
+        return None
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None
+    stat = {}
+    for line in memory_stat_str.splitlines():
+        parts = line.strip().split(" ", 1)
+        if len(parts) == 2:
+            try:
+                stat[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    non_reclaimable = (stat.get("anon", 0)
+                       + stat.get("slab", 0)
+                       + stat.get("kernel", 0)
+                       + stat.get("sock", 0)
+                       + stat.get("pagetables", 0))
+    return (limit - non_reclaimable) / (1024 * 1024)
+
+
+def _read_cgroup_anon_allocatable_mb() -> Optional[float]:
+    """Real allocatable memory: cgroup limit minus only NON-RECLAIMABLE memory.
+
+    Returns None on non-cgroup systems (Windows local dev) -- caller skips
+    the guard entirely.
+    """
+    try:
+        with open("/sys/fs/cgroup/memory.max") as f:
+            mm = f.read()
+        with open("/sys/fs/cgroup/memory.stat") as f:
+            ms = f.read()
+        return _parse_cgroup_anon_allocatable(mm, ms)
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+
+# ── Module-level absorber (FIX-A) ────────────────────────────────────────
+# FIX-A: absorption code lives in this module. Stage 10 calls into it
+# after API upload completes (where mongo_ids are available). Carries
+# FIX-B (LOCK_EX blocking + atomic write), FIX-E (1.2x OOM raise),
+# FIX-G (zero-vec raise), FIX-H (build_rule provenance).
+
+def absorb_db_entries_into_global(
+    db_entries,
+    log=None,
+):
+    """Generate embeddings for new DB entries and absorb them into the
+    global FAISS index. This is the single canonical absorber.
+
+    Args:
+        db_entries: List of (meta_qid, mongo_id, db_entry) tuples. mongo_id
+            is the 24-hex OID returned by the Acadza API after upload --
+            it's the key written into FAISS's id_map.
+        log: callable(level, msg) for structured logging; defaults to
+            standard print with [absorb|level] prefix.
+
+    Returns:
+        {"embedded": int, "status": "ok"|"unavailable", "reason": str|None}
+
+    Raises:
+        FAISSAbsorptionInsufficientRam: OOM guard tripped (FIX-E)
+        EmbeddingBatchFailure: OpenAI batch failed (FIX-G)
+        FAISSLockTimeout: write lock could not be acquired within 60s (FIX-B)
+    """
+    if log is None:
+        def log(level, msg):
+            print(f"[absorb|{level}] {msg}", flush=True)
+
+    from app.config import settings
+
+    try:
+        import faiss
+        import numpy as np
+    except ImportError:
+        log("warning", "FAISS not available -- skipping embedding update")
+        return {"embedded": 0, "status": "unavailable", "reason": "faiss_not_installed"}
+
+    openai_key = getattr(settings, "openai_api_key", None) or ""
+    if not openai_key or len(openai_key) < 10:
+        log("warning", "OpenAI API key not configured -- skipping embedding update")
+        return {"embedded": 0, "status": "unavailable", "reason": "openai_key_missing"}
+
+    global_dir = Path(getattr(settings, "db_index_dir", ""))
+    index_path = global_dir / "db_reference" / "faiss.index"
+    meta_path = global_dir / "db_reference" / "metadata.json"
+    if not index_path.exists():
+        log("warning", f"Global FAISS index not found at {index_path} -- skipping")
+        return {"embedded": 0, "status": "unavailable", "reason": "index_missing"}
+
+    # FIX-E: 1.2x threshold + raise on trip (no silent return).
+    index_size_mb = index_path.stat().st_size / (1024 * 1024)
+    needed_mb = index_size_mb * 1.2
+    allocatable_mb = _read_cgroup_anon_allocatable_mb()
+    if allocatable_mb is not None:
+        log("info",
+            f"Memory check: {allocatable_mb:.0f}MB allocatable (anon-based), "
+            f"need {needed_mb:.0f}MB (1.2x of {index_size_mb:.0f}MB index)")
+        if allocatable_mb < needed_mb:
+            log("error",
+                f"OOM guard tripped: {allocatable_mb:.0f}MB allocatable, "
+                f"need {needed_mb:.0f}MB. Raising to halt absorption.")
+            raise FAISSAbsorptionInsufficientRam(allocatable_mb, needed_mb, index_size_mb)
+
+    log("info", "Loading global FAISS index for absorb...")
+    index = faiss.read_index(str(index_path))
+    with open(meta_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    id_map = metadata.get("id_map", [])
+    text_map = metadata.get("text_map", {})
+
+    log("info", f"Current index: {index.ntotal} vectors, adding {len(db_entries)} new...")
+
+    # Shared extractor -- single source of truth between Stage 8 dedup and absorb.
+    texts = []
+    new_ids = []
+    for meta_qid, mongo_id, db_entry in db_entries:
+        text = extract_text_for_embedding(db_entry)
+        if text and len(text) >= 10:
+            texts.append(text)
+            new_ids.append(mongo_id)
+        else:
+            log("warning",
+                f"Empty embedding text for {meta_qid} (qtype={db_entry.get('questionType')}) -- "
+                "skipping FAISS vector for this entry")
+
+    if not texts:
+        log("info", "No texts extracted for embedding")
+        return {"embedded": 0, "status": "ok"}
+
+    from openai import OpenAI
+    client = OpenAI(api_key=openai_key)
+
+    # FIX-G: hard-fail on embedding API failure (no zero-vector fallback).
+    BATCH_SIZE = 100
+    all_embeddings = []
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i:i + BATCH_SIZE]
+        valid = [t if t.strip() else "empty" for t in batch]
+        try:
+            response = client.embeddings.create(model="text-embedding-3-small", input=valid)
+            for item in response.data:
+                all_embeddings.append(np.array(item.embedding, dtype="float32"))
+        except Exception as e:
+            log("error",
+                f"Embedding batch {i // BATCH_SIZE + 1} failed: {e}. "
+                f"Halting absorption to prevent silent dedup blindness.")
+            raise EmbeddingBatchFailure(
+                f"OpenAI embedding batch failed during absorption: {e}"
+            ) from e
+
+    log("info", f"Generated {len(all_embeddings)} embeddings")
+
+    vectors = np.array(all_embeddings, dtype="float32")
+    faiss.normalize_L2(vectors)
+    index.add(vectors)
+
+    for i, mongo_id in enumerate(new_ids):
+        id_map.append(mongo_id)
+        text_map[mongo_id] = texts[i][:500]
+
+    # FIX-B + FIX-H: blocking LOCK_EX, atomic write, provenance stamp.
+    lock_path = index_path.parent / ".faiss_write.lock"
+    lock_fd = open(lock_path, "w")
+    try:
+        try:
+            _acquire_faiss_lock(lock_fd, "EX")
+        except FAISSLockTimeout as e:
+            log("error", f"FAISS write lock timeout: {e}")
+            lock_fd.close()
+            raise
+
+        metadata["id_map"] = id_map
+        metadata["text_map"] = text_map
+        metadata["embedding_model"] = EMBEDDING_MODEL
+        metadata["text_extractor_version"] = TEXT_EXTRACTOR_VERSION
+        metadata["build_rule"] = f"{EMBEDDING_MODEL}+{TEXT_EXTRACTOR_VERSION}"
+        _atomic_write_faiss_and_metadata(index, metadata, index_path, meta_path)
+    finally:
+        _release_faiss_lock(lock_fd)
+        lock_fd.close()
+
+    log("success", f"FAISS index updated atomically: {index.ntotal} total vectors (added {len(new_ids)})")
+    return {"embedded": len(new_ids), "status": "ok"}
 
 
 def _safe_truncate_html(html: str, max_len: int = 3000) -> str:
@@ -409,10 +731,18 @@ class DuplicateCheckStage(BasePipelineStage):
                     self.log("info", f"  Embedding batch {batch_num}/{total_batches} done ({len(all_embeddings)}/{len(texts)})")
                     self.progress(min(40, batch_num / total_batches * 40), f"Embeddings: {len(all_embeddings)}/{len(texts)}")
             except Exception as e:
-                self.log("error", f"  Embedding batch {batch_num} failed: {e}")
-                for _ in batch:
-                    all_embeddings.append(np.zeros(EMBEDDING_DIM, dtype="float32"))
-                time.sleep(2)
+                # FIX-G: hard-fail instead of silent zero-fill. The old fallback
+                # filled np.zeros, producing orthogonal vectors that matched
+                # nothing -- silent dedup blindness. Halt Stage 8 so operator
+                # can retry from a clean state.
+                self.log("error", f"  Embedding batch {batch_num}/{total_batches} failed: {e}")
+                self.log("error",
+                         f"Halting Stage 8 -- {len(all_embeddings)}/{len(texts)} embeddings "
+                         f"generated before failure. Reload to retry.")
+                raise EmbeddingBatchFailure(
+                    f"OpenAI embedding batch {batch_num}/{total_batches} failed: {e}. "
+                    f"Halting Stage 8 to prevent silent dedup blindness."
+                ) from e
 
         return all_embeddings
 
@@ -478,30 +808,38 @@ class DuplicateCheckStage(BasePipelineStage):
     def _save_faiss_index(self, index, id_map, text_map, name: str):
         """Save a FAISS index to disk for reuse.
 
-        Saves to session-local directory. For 'db_reference' indices, also
-        copies to the global cache so other sessions can reuse it.
-        """
-        import faiss
-        import shutil
+        FIX-D: refuses 'db_reference' name. The global cache is the
+        single source of truth; mutations to it MUST go through the
+        absorber (which holds LOCK_EX and writes atomically). This
+        function is now only for session-local indexes (e.g. 'self_session').
 
+        FIX-H: stamps build_rule + embedding_model + text_extractor_version
+        into metadata.json so future drift can be detected on load.
+        """
+        if name == "db_reference":
+            # FIX-D: never create a session-local shadow of db_reference.
+            # Old code copied this to global -- removed. Use the absorber.
+            raise RuntimeError(
+                "_save_faiss_index('db_reference') is disallowed (FIX-D). "
+                "Use absorb_session_vectors_into_global() to mutate the global cache."
+            )
+
+        import faiss
         index_dir = self._get_index_dir() / name
         index_dir.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, str(index_dir / "faiss.index"))
-        metadata = {"id_map": id_map, "text_map": text_map, "dimension": EMBEDDING_DIM}
+        # FIX-H: provenance fields
+        metadata = {
+            "id_map": id_map,
+            "text_map": text_map,
+            "dimension": EMBEDDING_DIM,
+            "embedding_model": EMBEDDING_MODEL,
+            "text_extractor_version": TEXT_EXTRACTOR_VERSION,
+            "build_rule": f"{EMBEDDING_MODEL}+{TEXT_EXTRACTOR_VERSION}",
+        }
         (index_dir / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
-
-        # Also save db_reference to global cache for cross-session reuse
-        if name == "db_reference":
-            from app.config import settings
-            gdir = getattr(settings, "db_index_dir", None)
-            if gdir:
-                global_dest = Path(gdir) / name
-                global_dest.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(index_dir / "faiss.index", global_dest / "faiss.index")
-                shutil.copy2(index_dir / "metadata.json", global_dest / "metadata.json")
-                self.log("info", f"Copied DB index to global cache: {global_dest}")
 
     def _get_global_index_dir(self) -> Optional[Path]:
         """Get global FAISS cache directory from config (shared across sessions)."""
@@ -516,31 +854,84 @@ class DuplicateCheckStage(BasePipelineStage):
     def _load_faiss_index(self, name: str):
         """Load a previously saved FAISS index.
 
+        FIX-B: acquires fcntl.LOCK_SH on the global lock for db_reference
+        reads. Multiple readers can share; writer's LOCK_EX blocks them.
+        FIX-C: drops IO_FLAG_MMAP; full-RAM read each time. ~1 GB
+        production cost serialized by the upstream guarded_thread cap.
+        FIX-D: db_reference is GLOBAL-ONLY -- skips session-local entirely.
+        FIX-H: asserts metadata.json build_rule matches code's current
+        expected value; loud warning + raise on drift.
+
         Search order:
-          1. Session-local index (session_dir/duplicate_reports/indices/{name}/)
-          2. Global cache (db_index_dir/{name}/) — shared across sessions
+          - 'db_reference': global cache only (FIX-D)
+          - everything else (e.g. 'self_session'): session-local only
         """
         import faiss
 
-        # 1. Try session-local
-        index_dir = self._get_index_dir() / name
-        if (index_dir / "faiss.index").exists():
-            index = faiss.read_index(str(index_dir / "faiss.index"), faiss.IO_FLAG_MMAP)
-            metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
-            self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors (mmap)")
-            return index, metadata["id_map"], metadata["text_map"]
-
-        # 2. Try global cache
-        global_dir = self._get_global_index_dir()
-        if global_dir:
-            global_index_dir = global_dir / name
-            if (global_index_dir / "faiss.index").exists():
-                index = faiss.read_index(str(global_index_dir / "faiss.index"), faiss.IO_FLAG_MMAP)
-                metadata = json.loads((global_index_dir / "metadata.json").read_text(encoding="utf-8"))
-                self.log("info", f"Loaded global FAISS index '{name}': {index.ntotal} vectors (mmap)")
+        # FIX-D: db_reference is GLOBAL-ONLY. Session-local is reserved for
+        # per-session indexes like 'self_session'.
+        if name != "db_reference":
+            index_dir = self._get_index_dir() / name
+            if (index_dir / "faiss.index").exists():
+                # FIX-C: full-RAM read (no IO_FLAG_MMAP)
+                index = faiss.read_index(str(index_dir / "faiss.index"))
+                metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
+                self._assert_metadata_provenance(metadata, name, "session-local")
+                self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors (full-RAM)")
                 return index, metadata["id_map"], metadata["text_map"]
+            return None, None, None
 
-        return None, None, None
+        # db_reference: global cache with LOCK_SH (FIX-B)
+        global_dir = self._get_global_index_dir()
+        if not global_dir:
+            return None, None, None
+        global_index_dir = global_dir / name
+        index_path = global_index_dir / "faiss.index"
+        meta_path = global_index_dir / "metadata.json"
+        if not index_path.exists():
+            return None, None, None
+
+        lock_path = global_index_dir / ".faiss_write.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w")
+        try:
+            _acquire_faiss_lock(lock_fd, "SH")
+            # FIX-C: full-RAM read inside the lock so a writer that releases
+            # before our search starts can't change the bytes we're reading.
+            index = faiss.read_index(str(index_path))
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            self._assert_metadata_provenance(metadata, name, "global")
+            self.log("info",
+                f"Loaded global FAISS index '{name}': {index.ntotal} vectors "
+                f"(full-RAM, LOCK_SH held during read)")
+            return index, metadata["id_map"], metadata["text_map"]
+        finally:
+            _release_faiss_lock(lock_fd)
+            lock_fd.close()
+
+    def _assert_metadata_provenance(self, metadata: dict, name: str, source: str):
+        """FIX-H: verify metadata.json was built with the same
+        embedding_model + text_extractor_version as the current code.
+        Loud-warn + raise on mismatch so silent drift can't accumulate."""
+        expected_model = EMBEDDING_MODEL
+        expected_ext = TEXT_EXTRACTOR_VERSION
+        got_model = metadata.get("embedding_model")
+        got_ext = metadata.get("text_extractor_version")
+        if got_model is None and got_ext is None:
+            # Pre-FIX-H index (no provenance fields). Warn but allow --
+            # the production global index was built before this fix.
+            # Operator should rebuild at convenience to get drift detection.
+            self.log("warning",
+                f"FAISS '{name}' ({source}) has no build provenance metadata. "
+                f"Drift detection unavailable. Consider rebuilding the index.")
+            return
+        if got_model != expected_model or got_ext != expected_ext:
+            raise FAISSMetadataDrift(
+                f"FAISS '{name}' ({source}) build mismatch: "
+                f"embedding_model={got_model!r} (expected {expected_model!r}), "
+                f"text_extractor_version={got_ext!r} (expected {expected_ext!r}). "
+                f"Rebuild the index before continuing."
+            )
 
     # ── Self-duplicate (embedding engine) ────────────────────────────────
 
