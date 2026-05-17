@@ -805,6 +805,58 @@ class DuplicateCheckStage(BasePipelineStage):
             results.append((matched_id, float(score)))
         return results[:k]
 
+    def _bootstrap_global_db_reference(self, index, id_map: list, text_map: dict):
+        """First-time build path: write the global db_reference index from
+        scratch (when no global cache exists). Acquires LOCK_EX (blocking,
+        with timeout) and writes atomically -- same safety semantics as
+        the absorber. Stamps build provenance per FIX-H.
+
+        Called only from the cross-check init path (see line ~1151) when
+        _load_faiss_index('db_reference') returns None. Distinct from the
+        regular _save_faiss_index path which is FIX-D-guarded against
+        db_reference to prevent accidental session-local shadows.
+        """
+        import faiss
+
+        global_dir = self._get_global_index_dir()
+        if global_dir is None:
+            from app.config import settings
+            gdir_str = getattr(settings, "db_index_dir", None)
+            if not gdir_str:
+                raise RuntimeError(
+                    "db_index_dir not configured; cannot bootstrap global FAISS"
+                )
+            global_dir = Path(gdir_str)
+
+        target_dir = global_dir / "db_reference"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        idx_path = target_dir / "faiss.index"
+        meta_path = target_dir / "metadata.json"
+
+        metadata = {
+            "id_map": id_map,
+            "text_map": text_map,
+            "dimension": EMBEDDING_DIM,
+            "embedding_model": EMBEDDING_MODEL,
+            "text_extractor_version": TEXT_EXTRACTOR_VERSION,
+            "build_rule": f"{EMBEDDING_MODEL}+{TEXT_EXTRACTOR_VERSION}",
+        }
+
+        lock_path = target_dir / ".faiss_write.lock"
+        lock_fd = open(lock_path, "w")
+        try:
+            _acquire_faiss_lock(lock_fd, "EX")
+            _atomic_write_faiss_and_metadata(index, metadata, idx_path, meta_path)
+        finally:
+            _release_faiss_lock(lock_fd)
+            lock_fd.close()
+
+        self.log(
+            "info",
+            f"Bootstrapped global FAISS db_reference: {index.ntotal} vectors "
+            "(LOCK_EX held; atomic write)"
+        )
+
     def _save_faiss_index(self, index, id_map, text_map, name: str):
         """Save a FAISS index to disk for reuse.
 
@@ -813,15 +865,21 @@ class DuplicateCheckStage(BasePipelineStage):
         absorber (which holds LOCK_EX and writes atomically). This
         function is now only for session-local indexes (e.g. 'self_session').
 
+        For first-time global bootstrap (the one legitimate creation path),
+        callers must use `_bootstrap_global_db_reference` instead.
+
         FIX-H: stamps build_rule + embedding_model + text_extractor_version
         into metadata.json so future drift can be detected on load.
         """
         if name == "db_reference":
             # FIX-D: never create a session-local shadow of db_reference.
-            # Old code copied this to global -- removed. Use the absorber.
+            # Old code copied this to global -- removed. Use the absorber
+            # for updates, or _bootstrap_global_db_reference for first-time
+            # creation.
             raise RuntimeError(
                 "_save_faiss_index('db_reference') is disallowed (FIX-D). "
-                "Use absorb_session_vectors_into_global() to mutate the global cache."
+                "Use absorb_db_entries_into_global() for updates, or "
+                "_bootstrap_global_db_reference() for first-time creation."
             )
 
         import faiss
@@ -1146,9 +1204,11 @@ class DuplicateCheckStage(BasePipelineStage):
             self.log("info", "Generating DB embeddings (one-time cost, cached for reuse)...")
             db_embeddings = self._generate_embeddings(db_texts)
 
-            # Build and save index
+            # Build and save index. db_reference is global-only (FIX-D);
+            # use the sanctioned bootstrap path which acquires LOCK_EX and
+            # writes atomically with FIX-H provenance stamping.
             db_index, db_id_map, db_text_map = self._build_faiss_index(db_embeddings, db_ids, db_texts)
-            self._save_faiss_index(db_index, db_id_map, db_text_map, "db_reference")
+            self._bootstrap_global_db_reference(db_index, db_id_map, db_text_map)
             self.log("success", f"DB index built and cached: {db_index.ntotal} vectors")
         else:
             db_count = db_index.ntotal
