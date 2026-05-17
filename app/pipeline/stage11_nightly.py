@@ -678,6 +678,34 @@ class Stage11NightlyScheduler:
                       f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
         backup_dir.mkdir(parents=True, exist_ok=True)
 
+        # SSE bridge: every log line from process_batch lands in the session
+        # log pane, so the operator sees live progress in completed.html.
+        # Falls back to python logger if SSE manager unavailable.
+        try:
+            from app.sse import sse_manager as _sse
+        except Exception:
+            _sse = None
+
+        def _emit_log(level: str, message: str):
+            py_level = logging.INFO if level == "info" else logging.WARNING
+            logger.log(py_level, f"[stage11-on-spot {session_id}] {message}")
+            if _sse is not None:
+                try:
+                    _sse.emit(session_id, {
+                        "type": "log",
+                        "level": "info" if level == "info" else (
+                            "warning" if level == "warning" else (
+                                "error" if level == "error" else "info"
+                            )
+                        ),
+                        "message": f"[Stage 11] {message}",
+                    })
+                except Exception:
+                    pass
+
+        _emit_log("info", f"Starting on-spot run: cohort={len(verified)} OID(s), "
+                            f"backup_dir={backup_dir.name}")
+
         # Process in chunks of 50 with per-chunk history save so an OOM
         # crash or browser-close mid-run preserves work-so-far (per user
         # spec 2026-05-17: "things are saved in real time and written").
@@ -685,11 +713,14 @@ class Stage11NightlyScheduler:
         results = []
         for i in range(0, len(verified), CHUNK):
             if self.killswitch_active():
-                logger.warning(
-                    f"on-spot killswitch tripped after {i}/{len(verified)}; halting"
-                )
+                _emit_log("warning",
+                            f"Killswitch active after {i}/{len(verified)}; halting")
                 break
             chunk = verified[i:i + CHUNK]
+            chunk_num = (i // CHUNK) + 1
+            total_chunks = (len(verified) + CHUNK - 1) // CHUNK
+            _emit_log("info", f"Chunk {chunk_num}/{total_chunks} "
+                                f"({len(chunk)} OIDs) -- starting")
             try:
                 chunk_results = process_batch(
                     chunk,
@@ -697,14 +728,24 @@ class Stage11NightlyScheduler:
                     do_update_api=True,
                     backup_dir=backup_dir,
                     max_workers=5,
-                    logger=lambda lvl, msg: logger.log(
-                        logging.INFO if lvl == "info" else logging.WARNING,
-                        f"[stage11-on-spot {session_id}] {msg}",
-                    ),
+                    logger=_emit_log,
                 )
                 results.extend(chunk_results)
+                # Per-chunk tally for live UI feedback
+                p = sum(1 for r in chunk_results
+                          if self._classify_outcome(r) == "promoted")
+                f = sum(1 for r in chunk_results
+                          if self._classify_outcome(r) == "flagged")
+                fr = sum(1 for r in chunk_results
+                          if self._classify_outcome(r) == "failed_retry")
+                _emit_log("info", f"Chunk {chunk_num}/{total_chunks} done: "
+                                    f"promoted={p}, flagged={f}, "
+                                    f"failed_retry={fr}")
             except Exception as e:
-                logger.error(f"on-spot chunk {i // CHUNK} crashed: {e}", exc_info=True)
+                _emit_log("error",
+                            f"Chunk {chunk_num}/{total_chunks} CRASHED: {e}")
+                logger.error(f"on-spot chunk {chunk_num} crashed: {e}",
+                              exc_info=True)
                 # leave chunk OIDs without results -> get tagged failed_retry below
             # Incremental save: history persisted after each chunk
             self._update_history_from_results(history, results, verified[:i + CHUNK])
@@ -724,6 +765,9 @@ class Stage11NightlyScheduler:
             if b == "promoted": promoted += 1
             elif b == "flagged": flagged += 1
             else: failed_retry += 1
+
+        _emit_log("info", f"On-spot run COMPLETE: promoted={promoted}, "
+                            f"flagged={flagged}, failed_retry={failed_retry}")
 
         return {
             "status": "done",

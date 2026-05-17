@@ -78,6 +78,28 @@
             </div>
         </div>
 
+        <!-- Stage 11 on-spot conversion (Admin only) -->
+        {% if user_role in ('Admin', 'Architect') %}
+        <div class="card" id="stage11-card">
+            <div class="card-header">
+                <h2>Stage 11 — On-Spot Correction (Admin)</h2>
+                <span class="badge" style="background:rgba(244,140,6,0.12);color:#e08700;">demo / faculty review</span>
+            </div>
+            <div class="card-body">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+                    Runs the LLM correction loop on this session's uploaded err=2 questions and promotes the passing ones to err=1 directly on the live DB. Use this for demos or urgent faculty review — the nightly auto-sweep handles everything else at 00:30 IST.
+                    <br><strong>Memory pressure:</strong> only available to you; not visible to other operators. Crash-safe: progress is saved per chunk of 50 OIDs.
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="openStage11Popup()" id="stage11-run-btn">Run Stage 11 Now</button>
+                    <button class="btn btn-secondary" onclick="refreshStage11Status()" id="stage11-refresh-btn" style="font-size:12px;">Refresh Status</button>
+                </div>
+                <div id="stage11-status-text" style="margin-top:10px;font-size:12px;color:var(--text-muted);">Status: idle.</div>
+                <div id="stage11-result" style="margin-top:10px;display:none;"></div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Actions (visible after upload + absorption complete) -->
         <div class="card" id="post-upload-actions" style="display: none;">
             <div class="card-header"><h2>Actions</h2></div>
@@ -639,5 +661,202 @@ async function backToDashboard() {
     }
     window.location.href = '/';
 }
+
+// ── Stage 11 on-spot (Admin only) ─────────────────────────────────────
+// The button + popup flow.  Logs stream through the existing log-pane
+// subscriber (initLogs in base.html), so process_batch's per-chunk emits
+// land in the user's view automatically -- nothing to wire here.
+const STAGE11_POLL_MS = 4000;
+let _stage11Polling = false;
+
+async function refreshStage11Status() {
+    const btn = document.getElementById('stage11-run-btn');
+    const stat = document.getElementById('stage11-status-text');
+    if (!btn || !stat) return;  // not rendered for non-admins
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage11/on-spot/status');
+        if (!r.success) {
+            stat.textContent = 'Status: unknown (auth or network error)';
+            return;
+        }
+        const d = r.data || {};
+        if (d.any_stage11_running) {
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            stat.innerHTML = `<span style="color:var(--warning);font-weight:600;">A Stage 11 run is in progress -- button muted.</span>`;
+            if (!_stage11Polling) startStage11Polling();
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            const parts = [
+                `Status: idle.`,
+                d.on_spot_count ? ` This session has ${d.on_spot_count} prior on-spot OID(s) (${d.promoted || 0} promoted, ${d.flagged || 0} flagged, ${d.failed_retry || 0} failed_retry).` : '',
+            ];
+            stat.textContent = parts.join('');
+        }
+    } catch (e) {
+        stat.textContent = 'Status: error fetching state (' + e.message + ')';
+    }
+}
+
+function startStage11Polling() {
+    if (_stage11Polling) return;
+    _stage11Polling = true;
+    const tick = async () => {
+        if (!_stage11Polling) return;
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage11/on-spot/status');
+            if (r.success && r.data) {
+                const d = r.data;
+                if (!d.any_stage11_running) {
+                    _stage11Polling = false;
+                    await refreshStage11Status();
+                    appendLog('success', 'Stage 11 run finished; status refreshed');
+                    return;
+                }
+            }
+        } catch (e) {}
+        setTimeout(tick, STAGE11_POLL_MS);
+    };
+    setTimeout(tick, STAGE11_POLL_MS);
+}
+
+async function openStage11Popup() {
+    const btn = document.getElementById('stage11-run-btn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Checking memory + cohort...';
+    appendLog('info', 'Stage 11 pre-flight: checking memory + cohort...');
+
+    let pre = null;
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage11/preflight');
+        if (!r.success) {
+            appendLog('error', 'Pre-flight failed: ' + (r.error?.message || 'unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            return;
+        }
+        pre = r.data;
+    } catch (e) {
+        appendLog('error', 'Pre-flight exception: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    // Build popup body
+    const blockerLines = (pre.blockers || []).map(b =>
+        '   - ' + (b.reason || b.status || JSON.stringify(b))
+    );
+    const memLine = (pre.memory_free_mb !== null && pre.memory_free_mb !== undefined)
+        ? `Memory: ${pre.memory_free_mb} MB free / ${pre.memory_required_mb} MB required`
+        : `Memory: cgroup probe unavailable (local dev) -- proceeding without guard`;
+
+    if (!pre.can_proceed) {
+        const msg =
+            'Stage 11 cannot start right now.\n\n' +
+            'Cohort: ' + pre.cohort_size + ' err=2 OID(s)\n' +
+            memLine + '\n\n' +
+            'Blockers:\n' +
+            (blockerLines.length ? blockerLines.join('\n') : '   - (none)') +
+            '\n\nTry again after the blockers clear.';
+        alert(msg);
+        appendLog('warning', 'Stage 11 pre-flight refused: ' + (pre.blockers[0]?.reason || 'unknown'));
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    const msg =
+        'Run Stage 11 LLM correction on this session?\n\n' +
+        'Cohort: ' + pre.cohort_size + ' err=2 OID(s) will be processed.\n' +
+        memLine + '\n\n' +
+        'Note: this can cause memory pressure on the server. Only YOU will be able to ' +
+        'see this button (admin gate). Progress streams into the log pane and is saved ' +
+        'every 50 OIDs, so a crash or page refresh will not lose work.\n\n' +
+        'Proceed?';
+    if (!confirm(msg)) {
+        appendLog('info', 'Stage 11 launch cancelled by operator');
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    // Fire-and-track: kick off the run, then poll
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    document.getElementById('stage11-status-text').innerHTML =
+        '<span style="color:var(--warning);font-weight:600;">Stage 11 started -- logs streaming into pane on the right.</span>';
+    appendLog('info', 'Stage 11 on-spot run started');
+    window._activeProcess = true;
+
+    try {
+        // This call is long-lived; the backend runs synchronously in a thread.
+        // We don't await before kicking the poller -- but we DO need the result.
+        const runPromise = apiPost('/api/sessions/{{ session.id }}/stage11/on-spot');
+        startStage11Polling();
+        const r = await runPromise;
+        _stage11Polling = false;  // stop poll, we have the canonical result now
+        if (!r.success) {
+            appendLog('error', 'Stage 11 failed: ' + (r.error?.message || 'unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            window._activeProcess = false;
+            return;
+        }
+        const d = r.data || {};
+        renderStage11Result(d);
+        appendLog('success', `Stage 11 done: promoted=${d.promoted || 0}, flagged=${d.flagged || 0}, failed_retry=${d.failed_retry || 0}`);
+    } catch (e) {
+        appendLog('error', 'Stage 11 exception: ' + e.message);
+    }
+    window._activeProcess = false;
+    await refreshStage11Status();
+}
+
+function renderStage11Result(d) {
+    const el = document.getElementById('stage11-result');
+    if (!el) return;
+    el.style.display = 'block';
+
+    const oomStatuses = ['insufficient_memory'];
+    if (oomStatuses.includes(d.status)) {
+        el.innerHTML = `
+            <div style="background:#fde2e2;border:1px solid #f5b5b5;color:#7a1a1a;padding:10px 12px;border-radius:4px;font-size:13px;">
+                <div style="font-weight:600;margin-bottom:4px;">Stage 11 refused: insufficient memory</div>
+                <div style="font-size:12px;">Free RAM: ${d.free_mb || '?'} MB | required: ${d.required_mb || '?'} MB</div>
+                <div style="font-size:12px;margin-top:4px;">${d.reason || 'wait for other sessions to finish'}</div>
+                <div style="font-size:11px;color:#5a1010;margin-top:6px;">On-spot runs do NOT auto-retry. Click Run Stage 11 Now again after memory frees up.</div>
+            </div>`;
+        return;
+    }
+    if (d.status === 'killswitch') {
+        el.innerHTML = `<div style="background:#fde2e2;border:1px solid #f5b5b5;color:#7a1a1a;padding:10px 12px;border-radius:4px;font-size:13px;">Stage 11 refused: killswitch flag is active. Admin must clear it via DELETE /admin/stage11/kill.</div>`;
+        return;
+    }
+    if (d.status === 'done_empty' || d.status === 'done_empty_after_verify') {
+        el.innerHTML = `<div style="background:rgba(46,160,67,0.08);border:1px solid var(--success);color:var(--success);padding:10px 12px;border-radius:4px;font-size:13px;">No err=2 OIDs left to promote in this session -- nothing to do.</div>`;
+        return;
+    }
+    const ok = (d.status === 'done');
+    el.innerHTML = `
+        <div class="summary-stat-grid" style="grid-template-columns: repeat(4, 1fr); margin-top:6px;">
+            <div class="summary-stat-box"><div class="sv">${d.cohort_verified || 0}</div><div class="sl">Cohort</div></div>
+            <div class="summary-stat-box highlight-green"><div class="sv">${d.promoted || 0}</div><div class="sl">Promoted (err=1)</div></div>
+            <div class="summary-stat-box"><div class="sv" style="color:#e08700;">${d.flagged || 0}</div><div class="sl">Flagged (faculty)</div></div>
+            <div class="summary-stat-box highlight-red"><div class="sv">${d.failed_retry || 0}</div><div class="sl">Failed (retry tonight)</div></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+            Status: ${d.status || '?'} ${ok ? '' : '(partial)'} | backup_dir: ${d.backup_dir || '?'}
+        </div>`;
+}
+
+// Auto-refresh on page load so a returning operator sees current state
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('stage11-run-btn')) {
+        refreshStage11Status();
+    }
+});
 </script>
 {% endblock %}

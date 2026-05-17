@@ -230,7 +230,10 @@ def generate_cost_report(session_dir: str) -> Dict:
     uploaded = 0
     error1_count = 0
     error2_count = 0
-    for cf in glob.glob(str(session_dir / "upload_logs" / "*_upload_log.csv")):
+    # Use combined_upload_log.csv only (glob *_upload_log.csv matched both
+    # per-metadata and combined logs, double-counting every question)
+    combined_log = session_dir / "upload_logs" / "combined_upload_log.csv"
+    for cf in ([str(combined_log)] if combined_log.exists() else glob.glob(str(session_dir / "upload_logs" / "*_upload_log.csv"))[:1]):
         import csv
         with open(cf, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):

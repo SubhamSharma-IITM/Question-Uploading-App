@@ -506,6 +506,46 @@
         </div>
     </div>
 
+    <!-- ── Last Night's Stage 11 Conversion ── -->
+    <div class="glass-card" id="stage11-last-night-card" style="display:none;">
+        <div class="card-header">
+            <h2>Last Night's Auto-Correction (Stage 11)</h2>
+            <span class="badge" id="s11-card-date">--</span>
+        </div>
+        <div class="card-body">
+            <div class="stat-grid">
+                <div class="stat-box success">
+                    <div class="stat-label">Promoted err=2 -> err=1</div>
+                    <div class="stat-number" id="s11-promoted">--</div>
+                    <div class="stat-sub">live DB</div>
+                </div>
+                <div class="stat-box warning">
+                    <div class="stat-label">Flagged for faculty</div>
+                    <div class="stat-number" id="s11-flagged">--</div>
+                    <div class="stat-sub">LLM rejected</div>
+                </div>
+                <div class="stat-box info">
+                    <div class="stat-label">Failed (retry tonight)</div>
+                    <div class="stat-number" id="s11-failed-retry">--</div>
+                    <div class="stat-sub">API/network</div>
+                </div>
+                <div class="stat-box primary">
+                    <div class="stat-label">Cohort verified</div>
+                    <div class="stat-number" id="s11-cohort">--</div>
+                    <div class="stat-sub">err=2 OIDs</div>
+                </div>
+            </div>
+            <div id="s11-my-slice" style="margin-top:10px;font-size:12px;color:var(--text-secondary);"></div>
+            <div id="s11-per-op-wrap" style="margin-top:12px;display:none;">
+                <div class="section-label" style="margin:0 0 4px 0;">Per-operator breakdown (admin)</div>
+                <div id="s11-per-op"></div>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">
+                Nightly auto-sweep fires at 00:30 IST. Results reflect the most recent run within the last 3 IST days.
+            </div>
+        </div>
+    </div>
+
     <!-- ── ADMIN: Team Performance Panel (above sessions) ── -->
     {% if user_role in ('Admin', 'Architect') %}
     <div class="glass-card" id="team-panel">
@@ -1001,7 +1041,71 @@ async function refreshPlatformTotals(btn) {
     btn.textContent = 'Refresh'; btn.disabled = false;
 }
 
+// ── Last Night's Stage 11 Conversion ──
+async function loadStage11LastNight() {
+    const card = document.getElementById('stage11-last-night-card');
+    if (!card) return;
+    try {
+        const resp = await fetch('/api/dashboard/stage11/last-night?days_back=3');
+        if (resp.status === 401) return;
+        const d = await resp.json();
+        if (!d || d.found === false) {
+            // Hide card on cold start. Once the first nightly fires, this becomes visible.
+            return;
+        }
+        card.style.display = 'block';
+
+        const fmtDate = d.report_date_ist || '--';
+        const tag = d.dryrun ? ' (DRY RUN)' : '';
+        document.getElementById('s11-card-date').textContent = fmtDate + tag;
+        document.getElementById('s11-promoted').textContent = (d.promoted || 0).toLocaleString();
+        document.getElementById('s11-flagged').textContent = (d.flagged || 0).toLocaleString();
+        document.getElementById('s11-failed-retry').textContent = (d.failed_retry || 0).toLocaleString();
+        document.getElementById('s11-cohort').textContent = (d.cohort_verified || 0).toLocaleString();
+
+        // My slice (team users see only their numbers; admin sees this + per-op grid)
+        const mySlice = d.my_slice;
+        const mySliceEl = document.getElementById('s11-my-slice');
+        if (mySlice && (mySlice.promoted || mySlice.flagged || mySlice.failed_retry)) {
+            mySliceEl.innerHTML = '<strong>Your contribution last night:</strong> ' +
+                '<span style="color:var(--success);font-weight:600;">' + (mySlice.promoted||0) + '</span> promoted, ' +
+                '<span style="color:#e08700;font-weight:600;">' + (mySlice.flagged||0) + '</span> flagged, ' +
+                '<span style="color:var(--error);font-weight:600;">' + (mySlice.failed_retry||0) + '</span> failed.';
+        } else {
+            mySliceEl.innerHTML = '';
+        }
+
+        if (d.is_admin && d.per_operator && Object.keys(d.per_operator).length) {
+            const wrap = document.getElementById('s11-per-op-wrap');
+            const grid = document.getElementById('s11-per-op');
+            const rows = Object.entries(d.per_operator)
+                .sort((a, b) => (b[1].promoted || 0) - (a[1].promoted || 0));
+            let h = '<table class="breakdown-table" style="width:100%;font-size:12px;">' +
+                '<thead><tr><th>Operator</th><th style="text-align:right;">Promoted</th>' +
+                '<th style="text-align:right;">Flagged</th>' +
+                '<th style="text-align:right;">Failed (retry)</th></tr></thead><tbody>';
+            for (const [phone, stats] of rows) {
+                h += '<tr>' +
+                    '<td style="font-family:monospace;font-size:11px;">' + phone + '</td>' +
+                    '<td style="text-align:right;color:var(--success);font-weight:600;">' + (stats.promoted||0) + '</td>' +
+                    '<td style="text-align:right;color:#e08700;font-weight:600;">' + (stats.flagged||0) + '</td>' +
+                    '<td style="text-align:right;color:var(--error);font-weight:600;">' + (stats.failed_retry||0) + '</td>' +
+                    '</tr>';
+            }
+            h += '</tbody></table>';
+            grid.innerHTML = h;
+            wrap.style.display = 'block';
+        }
+    } catch (err) {
+        // Silent: this card is supplementary; main dashboard still works
+        console.warn('Stage 11 last-night load failed:', err);
+    }
+}
+
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => { loadStats(7); });
+document.addEventListener('DOMContentLoaded', () => {
+    loadStats(7);
+    loadStage11LastNight();
+});
 </script>
 {% endblock %}

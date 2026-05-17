@@ -38,7 +38,8 @@ data/
 - **Vertex AI**: PRIMARY for Gemini batches (paid quota). AI Studio is fallback only.
 - **Never change model IDs** without explicit user permission
 - **Windows cp1252**: Use safe print with ascii fallback for console output
-- **Error codes**: error=1 (3/3 approved), error=2 (2/3 approved), error=3/4 (rejected/quarantined)
+- **Error codes (Stage 9 verdict)**: error=1 (3/3 approved), error=2 (2/3 approved), error=3 (1/3 approved), error=4 (0/3 approved)
+- **Error codes (Stage 10 upload result)**: With `stage10_promote_err34=True` (default, shipped), err=3 and err=4 are auto-promoted to err=2 on upload. Live Acadza DB only ever sees err=1 or err=2. Original Stage 9 verdict preserved in `Original Error Level` + `Promotion Note` columns of `combined_upload_log.csv`. **Source of truth for what was actually uploaded = `combined_upload_log.csv`, NOT `qa_all_questions.csv` (which captures pre-promotion Stage 9 verdicts)**.
 - **Protected duplicate flags**: Only `isPrevious`, `positivePick`, `negativePick`, `isSolvedExample` lock the quarantine checkbox. Other flags (isBoard, isNCERT, etc.) are informational only.
 - **MathML in embeddings**: Use `_mathml_to_latex.py` to convert MathML→LaTeX before generating embeddings. NEVER replace MathML with generic `MATH` token.
 - **QA prompt error types**: `malformed_mathml` = broken MathML TAGS only. `math_logic_error` = wrong math content/logic. Keep these separate.
