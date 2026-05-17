@@ -378,11 +378,35 @@ async def lifespan(app: FastAPI):
     sse_manager.set_loop(asyncio.get_running_loop())
     _safe_print("[OK] SSE event loop registered")
 
+    # Stage 11 nightly scheduler (err=2 -> err=1 at 00:30 IST daily).
+    # Gated by STAGE11_NIGHTLY_ENABLED env var; safe to import unconditionally.
+    _stage11_task = None
+    if getattr(settings, "stage11_nightly_enabled", False):
+        from app.pipeline.stage11_nightly import get_scheduler
+        _stage11_task = asyncio.create_task(get_scheduler().start())
+        _safe_print(
+            f"[OK] Stage 11 nightly scheduler started "
+            f"(trigger {settings.stage11_trigger_hour_ist:02d}:{settings.stage11_trigger_min_ist:02d} IST, "
+            f"floor {settings.stage11_floor_date}, "
+            f"dryrun={settings.stage11_dryrun})"
+        )
+    else:
+        _safe_print("[INFO] Stage 11 nightly scheduler DISABLED (set STAGE11_NIGHTLY_ENABLED=true to enable)")
+
     _safe_print("-" * 60)
     _safe_print(f"  Ready at http://localhost:{settings.port}")
     _safe_print("-" * 60)
 
     yield
+
+    # Graceful shutdown of Stage 11 scheduler
+    if _stage11_task is not None:
+        try:
+            from app.pipeline.stage11_nightly import get_scheduler
+            get_scheduler().stop()
+            _stage11_task.cancel()
+        except Exception:
+            pass
 
     _safe_print("[SHUTDOWN] Cleaning up...")
 
@@ -635,6 +659,9 @@ app.include_router(stage7_router, prefix="/api/sessions/{session_id}/stage7", ta
 app.include_router(stage8_router, prefix="/api/sessions/{session_id}/stage8", tags=["Stage 8"])
 app.include_router(stage9_router, prefix="/api/sessions/{session_id}/stage9", tags=["Stage 9"])
 app.include_router(stage10_router, prefix="/api/sessions/{session_id}/stage10", tags=["Stage 10"])
+# Stage 11 nightly + on-spot routes (own prefix; not nested under session_id)
+from app.routes.stage11_nightly import router as stage11_router
+app.include_router(stage11_router, tags=["Stage 11"])
 app.include_router(video_router, prefix="/video", tags=["Video"])
 
 

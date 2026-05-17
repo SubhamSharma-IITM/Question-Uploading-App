@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     # Faculty review the err=2 queue and fix; nothing dies in quarantine.
     stage10_promote_err34: bool = True
 
+    # ── Stage 11 nightly conversion ──
+    # When True, an in-app asyncio sleeper task fires Stage 11 (err=2 -> err=1)
+    # at STAGE11_TRIGGER_HOUR_IST:STAGE11_TRIGGER_MIN_IST IST every day.
+    # Cohort: previous IST day's err=2 uploads + any failed_retry from history.
+    # Floor: STAGE11_FLOOR_DATE (older err=2 NOT swept by nightly).
+    stage11_nightly_enabled: bool = False
+    stage11_floor_date: str = "2026-05-18"
+    stage11_trigger_hour_ist: int = 0
+    stage11_trigger_min_ist: int = 30
+    stage11_dryrun: bool = False
+
     # ── AWS S3 CDN ──
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
