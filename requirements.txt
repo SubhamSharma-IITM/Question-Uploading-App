@@ -26,6 +26,7 @@ anthropic>=0.49.0
 # Math Processing
 latex2mathml>=3.78.0
 beautifulsoup4>=4.12.0
+lxml>=4.9.0    # Stage 11 correction uses lxml.etree directly; bs4 does not auto-install it
 
 # Image Processing
 Pillow>=10.0.0
@@ -45,4 +46,4 @@ faiss-cpu>=1.9.0
 # Install via conda in Dockerfile, or skip (Stage 5 gracefully degrades without it)
 # rdkit-pypi>=2024.3.0
 
-# lxml is pulled in by beautifulsoup4 automatically
+# lxml moved above (Math Processing); the prior comment was wrong — bs4 does NOT auto-install lxml
