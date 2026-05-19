@@ -921,6 +921,15 @@ HARD STRUCTURAL INVARIANTS (refuse the edit / pass through if any would be viola
        (including LaTeX "\\begin{figure}\\includegraphics{...}" blocks) OR refuse
        the edit. NEVER write bracketed placeholder text into the output.
 
+  IV4. ANSWER-KEY ALIGNMENT (only enforced when OFFICIAL_ANSWER is provided in
+       the user message): your corrected solution MUST conclude that
+       OFFICIAL_ANSWER is the correct answer. You CANNOT change the answer field
+       — that is owned by faculty. If applying the fix in ERROR_DESCRIPTION would
+       force your corrected solution to derive a DIFFERENT letter/value than
+       OFFICIAL_ANSWER, return both question and solution UNCHANGED (byte-for-byte
+       passthrough). A pass-through reaches a human reviewer who can update the
+       answer field; a silent rewrite corrupts the live answer key for students.
+
 WHAT YOU MAY DO:
 
   - Locate the exact text/token described in ERROR_DESCRIPTION (e.g. '93 (d)', 'CDF127',
@@ -1002,6 +1011,40 @@ STRUCTURAL VALIDATORS (HARD GATES — set approved=false + preferred=neither if 
       If any body number differs between versions AND ERROR_DESCRIPTION does
       NOT explicitly name that number as wrong, REJECT — the changed version
       has silently mutated formula content.
+
+  V5. ANSWER-KEY ALIGNMENT (only enforced when OFFICIAL_ANSWER is provided
+      above). VERY CONSERVATIVE — only fires on UNAMBIGUOUS explicit verdict.
+
+      Look for explicit, unambiguous final-verdict statements in the preferred
+      version's solution. Examples that DO count as explicit verdict:
+        - "the correct answer is (C)"  / "the correct option is C"
+        - "hence option (C)"  / "answer: C"  / "Ans. (C)"
+        - "→ (C)"  / "∴ (C)"  / "so (C) is correct"
+        - A final line that names exactly one option letter as the conclusion
+
+      Do NOT infer a verdict letter from:
+        - A numeric or symbolic result alone (e.g., "200 N/kg" matching option D
+          by value-comparison — that is INFERENCE, not an explicit verdict)
+        - A letter appearing mid-derivation (e.g., "from (B) we substitute …")
+        - Multiple letters mentioned without one being singled out as the final
+          conclusion
+        - A solution that ends with math symbols / equations / a number with no
+          letter named
+
+      Fire V5 ONLY if:
+        (i) the solution contains an explicit final-verdict statement naming
+            ONE letter as the answer, AND
+        (ii) that letter is DIFFERENT from OFFICIAL_ANSWER.
+
+      When V5 fires: approved=false, preferred_version="neither",
+      broken_code_found=true,
+      broken_code_details="V5: solution explicitly concludes (X) but
+      OFFICIAL_ANSWER is (Y)".
+
+      When the solution gives a numeric/symbolic result without naming any
+      letter, or when the verdict is ambiguous → do NOT flag on V5.
+      Rely on V1-V4 alone for those cases. False positives here cost faculty
+      time; conservatism is the right default.
 
   Note: removing answer prefixes like "(b)", "162 (a)", "[113]", "Ans. (B)"
   is EXPECTED for cleaner_artifact defects and is NOT V4 drift. Only count
@@ -1409,6 +1452,7 @@ def _build_llm1_user_msg(
     error_desc: str, error_class: str,
     target_fields: List[str],
     feedback: str,
+    official_answer: str = "",
 ) -> str:
     fb_block = ""
     if feedback:
@@ -1424,10 +1468,23 @@ def _build_llm1_user_msg(
             target_block = "\n\nTARGET FIELD: solution only. Do NOT modify the question unless the error description explicitly requires it."
         else:
             target_block = "\n\nTARGET FIELDS: both question and solution have flagged errors. Fix only what is described; preserve everything else."
+    # Answer-anchor block (Acadza triplet-gate guarantees answer is non-empty).
+    # Provides the canonical answer so the corrected solution must conclude this letter/value.
+    ans_block = ""
+    if official_answer:
+        ans_block = (
+            f"\n\nOFFICIAL_ANSWER (CANONICAL — DO NOT TOUCH the answer field; the corrected "
+            f"solution MUST conclude that this value is correct):\n  {official_answer}\n"
+            f"If applying ERROR_DESCRIPTION would force your corrected solution to derive a "
+            f"DIFFERENT letter/value than OFFICIAL_ANSWER, you MUST return the input "
+            f"UNCHANGED (byte-for-byte). It is far safer to flag than to silently corrupt "
+            f"the answer key. Faculty will handle answer disputes."
+        )
     return (
         f"ERROR_DESCRIPTION:\n{error_desc}\n\n"
         f"ERROR_CLASS: {error_class}"
         f"{target_block}"
+        f"{ans_block}"
         f"{fb_block}\n\n"
         f"QUESTION HTML (math as $LaTeX$):\n{q_html}\n\n"
         f"SOLUTION HTML (math as $LaTeX$):\n{s_html}"
@@ -1439,15 +1496,23 @@ def _build_llm2_user_msg(
     version_a_q: str, version_a_s: str,
     version_b_q: str, version_b_s: str,
     tag_drift_advisory: str,
+    official_answer: str = "",
 ) -> str:
     """Independent proofreader prompt: no ownership cues; tag-drift as advisory only."""
     advisory_block = ""
     if tag_drift_advisory:
         advisory_block = f"\n\nTAG_DRIFT_ADVISORY (informational; not a verdict):\n{tag_drift_advisory}\n"
+    ans_block = ""
+    if official_answer:
+        ans_block = (
+            f"\nOFFICIAL_ANSWER (the canonical answer key for this question; the preferred "
+            f"version's solution MUST conclude this value is correct):\n  {official_answer}\n"
+        )
     return (
         f"ERROR_DESCRIPTION:\n{error_desc}\n\n"
         f"ERROR_CLASS: {error_class}"
-        f"{advisory_block}\n"
+        f"{advisory_block}"
+        f"{ans_block}\n"
         f"=== QUESTION VERSION A ===\n{version_a_q}\n\n"
         f"=== QUESTION VERSION B ===\n{version_b_q}\n\n"
         f"=== SOLUTION VERSION A ===\n{version_a_s}\n\n"
@@ -1469,6 +1534,7 @@ def process_question(
     backup_dir: Optional[Path] = None,              # MANDATORY when do_update_api=True
     logger: Optional[Callable] = None,
     raw_log_dir: Optional[Path] = None,
+    official_answer: str = "",                      # Acadza answer field; anchors LLM1/LLM2
 ) -> QuestionResult:
     """Run the full Stage 11 correction loop on one question.
 
@@ -1543,6 +1609,7 @@ def process_question(
         user1 = _build_llm1_user_msg(
             orig_q_with_placeholders, orig_s_with_placeholders,
             error_description, error_class, target_fields, feedback,
+            official_answer=official_answer,
         )
         try:
             llm1_res = call_llm(
@@ -1699,6 +1766,7 @@ def process_question(
             version_a_q, version_a_s,
             version_b_q, version_b_s,
             tag_drift_advisory,
+            official_answer=official_answer,
         )
         try:
             llm2_res = call_llm(
@@ -1917,6 +1985,7 @@ def process_batch(
             backup_dir=backup_dir,
             logger=logger,
             raw_log_dir=raw_log_dir,
+            official_answer=row.get("official_answer", ""),
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:

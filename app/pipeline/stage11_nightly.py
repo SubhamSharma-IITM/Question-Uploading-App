@@ -294,6 +294,7 @@ class Stage11NightlyScheduler:
 
         qids = [r["qid"] for r in rows]
         keep_set = set()
+        answer_by_id: Dict[str, str] = {}     # capture each OID's `answer` field at verify-time
         for i in range(0, len(qids), 100):
             chunk = qids[i:i + 100]
             try:
@@ -314,6 +315,14 @@ class Stage11NightlyScheduler:
                     if isinstance(_id, dict):
                         _id = _id.get("$oid")
                     live_by_id[_id] = it.get("error")
+                    # Extract the qtype-nested answer field (scq/mcq/integerQuestion/...)
+                    for qt in ("scq","mcq","integerQuestion","passageQuestion","matchQuestion","subjective"):
+                        obj = it.get(qt)
+                        if isinstance(obj, dict):
+                            a = obj.get("answer") or obj.get("ans") or ""
+                            if a:
+                                answer_by_id[_id] = str(a).strip()
+                            break
                 for qid in chunk:
                     if live_by_id.get(qid) == 2:
                         keep_set.add(qid)
@@ -321,8 +330,14 @@ class Stage11NightlyScheduler:
                 logger.warning(f"multiget exception: {e}; keeping chunk")
                 keep_set.update(chunk)
 
-        filtered = [r for r in rows if r["qid"] in keep_set]
-        logger.info(f"Live verify: {len(filtered)}/{len(rows)} still at err=2")
+        # Attach `official_answer` to each kept row so process_batch can pass it through.
+        filtered = []
+        for r in rows:
+            if r["qid"] in keep_set:
+                r["official_answer"] = answer_by_id.get(r["qid"], "")
+                filtered.append(r)
+        logger.info(f"Live verify: {len(filtered)}/{len(rows)} still at err=2; "
+                    f"captured answer field for {sum(1 for r in filtered if r.get('official_answer'))} OIDs")
         return filtered
 
     # ── Run executor (sync; called via asyncio.to_thread) ────────────
