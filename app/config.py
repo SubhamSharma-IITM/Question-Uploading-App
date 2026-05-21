@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     stage11_trigger_hour_ist: int = 0
     stage11_trigger_min_ist: int = 30
     stage11_dryrun: bool = False
+    # Hard-stop the in-progress nightly cohort once IST wall-clock crosses this
+    # time. Operators start arriving at ~09:30 IST; the nightly should be out
+    # of the way by then to avoid contending for memory + Acadza backend.
+    stage11_hardstop_hour_ist: int = 9
+    stage11_hardstop_min_ist: int = 30
+    # ThreadPoolExecutor width inside stage11_correction.process_batch. 5 was
+    # the conservative default during canary; LLM-API-bound + FIX-I mutex
+    # protects FAISS, so we can safely raise to push through bigger cohorts
+    # before the 09:30 IST hard-stop. Override per machine via env.
+    stage11_max_workers: int = 10
 
     # ── AWS S3 CDN ──
     aws_access_key_id: str = ""

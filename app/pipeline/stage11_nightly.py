@@ -97,6 +97,29 @@ class Stage11NightlyScheduler:
     def killswitch_active(self) -> bool:
         return self.killswitch_path().exists()
 
+    # ── Daily hard-stop (added 2026-05-21) ───────────────────────────
+    def past_hard_stop_ist(self) -> bool:
+        """True when wall-clock IST has crossed the per-day hard-stop time.
+        Only consulted inside the nightly cohort loop; on-spot runs are
+        operator-triggered and ignore this gate.
+
+        Why: operators start arriving ~09:30 IST. A still-running nightly
+        contends for RAM (FAISS reads) + Acadza backend pool, slowing them
+        down and risking another OOM cascade. Halt cleanly, save partial
+        state, and let leftovers roll into tomorrow as failed_retry.
+        """
+        hour = int(getattr(self.settings, "stage11_hardstop_hour_ist", 9))
+        minute = int(getattr(self.settings, "stage11_hardstop_min_ist", 30))
+        now_ist = datetime.now(IST)
+        cutoff = now_ist.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        # Only fire between cutoff and 22:00 IST. After 22:00 we're approaching
+        # the next 00:30 fire and a long on-spot run would be wrongly halted;
+        # before cutoff it's mid-night execution, no-op.
+        eod = now_ist.replace(hour=22, minute=0, second=0, microsecond=0)
+        return cutoff <= now_ist < eod
+
     # ── OOM pre-flight (per user spec 2026-05-17) ────────────────────
     # Stage 11 LLM calls + correction loop fit easily in ~300-500 MB anon.
     # Floor of 500 MB allocatable keeps headroom for concurrent dedup or
@@ -407,6 +430,16 @@ class Stage11NightlyScheduler:
             if self.killswitch_active():
                 return {"status": "killswitch_during_oom_retry",
                         "target_date_ist": target_date_ist.isoformat()}
+            # Fix D: hard-stop check between/during OOM retries so we don't
+            # burn 90 min sleeping past the 09:30 IST cutoff. If we'd cross
+            # the cutoff during this sleep, give up now and roll to tomorrow.
+            if self.past_hard_stop_ist():
+                logger.warning(
+                    f"Stage 11 nightly OOM retry: hard-stop cutoff reached; "
+                    f"abandoning {target_date_ist} run, leftovers roll to next night"
+                )
+                return {"status": "halted_hardstop_during_oom_retry",
+                        "target_date_ist": target_date_ist.isoformat()}
             _time.sleep(OOM_RETRY_WAIT_S)
 
         history = self.load_history()
@@ -458,10 +491,21 @@ class Stage11NightlyScheduler:
 
         CHUNK = 50
         all_results: List[Any] = []
+        max_workers = int(getattr(self.settings, "stage11_max_workers", 10))
+        hardstop_hit = False
         for i in range(0, len(verified), CHUNK):
             if self.killswitch_active():
                 logger.warning(
                     f"Killswitch active after {i}/{len(verified)}; halting and saving state"
+                )
+                break
+            if self.past_hard_stop_ist():
+                hardstop_hit = True
+                logger.warning(
+                    f"Stage 11 nightly hard-stop hit after {i}/{len(verified)} "
+                    f"(IST cutoff {self.settings.stage11_hardstop_hour_ist:02d}:"
+                    f"{self.settings.stage11_hardstop_min_ist:02d}); "
+                    f"halting cleanly. Remaining OIDs roll into next night as failed_retry."
                 )
                 break
             chunk = verified[i:i + CHUNK]
@@ -471,7 +515,7 @@ class Stage11NightlyScheduler:
                     set_error_to_1=True,
                     do_update_api=True,
                     backup_dir=backup_dir,
-                    max_workers=5,
+                    max_workers=max_workers,
                     logger=lambda lvl, msg: logger.log(
                         logging.INFO if lvl == "info" else logging.WARNING,
                         f"[stage11-nightly] {msg}",
@@ -484,7 +528,7 @@ class Stage11NightlyScheduler:
             # Incremental report + history write per chunk so an OOM crash
             # mid-run doesn't lose progress. The cron picks up partial state
             # next night via failed_retry semantics.
-            self._tally_into_report(report, all_results)
+            self._tally_into_report(report, all_results, cohort_rows=verified)
             self._atomic_write_json(report, report_path)
             self._update_history_from_results(history, all_results, verified[:i + CHUNK])
             self.save_history(history)
@@ -493,9 +537,14 @@ class Stage11NightlyScheduler:
         self._update_history_from_results(history, all_results, verified)
         self.save_history(history)
 
-        report["status"] = "done" if not self.killswitch_active() else "halted_killswitch"
+        if hardstop_hit:
+            report["status"] = "halted_hardstop_0930_ist"
+        elif self.killswitch_active():
+            report["status"] = "halted_killswitch"
+        else:
+            report["status"] = "done"
         report["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
-        self._tally_into_report(report, all_results)  # final tally
+        self._tally_into_report(report, all_results, cohort_rows=verified)  # final tally
         self._atomic_write_json(report, report_path)
 
         # Write companion CSVs per user spec (2026-05-17):
@@ -550,10 +599,25 @@ class Stage11NightlyScheduler:
         # Unknown -- default to failed_retry for safety
         return "failed_retry"
 
-    def _tally_into_report(self, report: dict, results: list):
+    def _tally_into_report(self, report: dict, results: list,
+                            cohort_rows: Optional[list] = None):
+        """Tally per-bucket counts into the report.
+
+        cohort_rows (optional): the FULL verified cohort. When supplied, any
+        OID present in cohort_rows but missing from results is counted as
+        failed_retry. This matters when a run is halted (killswitch /
+        hard-stop / OOM): _update_history_from_results writes those OIDs
+        to history as failed_retry, but the report only saw the results
+        that actually came back from process_batch. Without this, the
+        dashboard shows failed_retry=0 even though history has the rollover.
+        """
         promoted = flagged = failed_retry = 0
         per_op = {}
+        results_by_qid: Dict[str, Any] = {}
         for r in results:
+            qid = self._qresult_attr(r, "qid")
+            if qid:
+                results_by_qid[qid] = r
             bucket = self._classify_outcome(r)
             if bucket == "promoted":
                 promoted += 1
@@ -565,6 +629,17 @@ class Stage11NightlyScheduler:
             if op:
                 per_op.setdefault(op, {"promoted": 0, "flagged": 0, "failed_retry": 0})
                 per_op[op][bucket] += 1
+        # Unreached OIDs (halt path): count as failed_retry so dashboard reflects
+        # the same number that select_cohort will pick up via Source B next night.
+        if cohort_rows:
+            for row in cohort_rows:
+                qid = row.get("qid") if isinstance(row, dict) else None
+                if qid and qid not in results_by_qid:
+                    failed_retry += 1
+                    op = row.get("uploaded_by") or ""
+                    if op:
+                        per_op.setdefault(op, {"promoted": 0, "flagged": 0, "failed_retry": 0})
+                        per_op[op]["failed_retry"] += 1
         report["promoted"] = promoted
         report["flagged"] = flagged
         report["failed_retry"] = failed_retry

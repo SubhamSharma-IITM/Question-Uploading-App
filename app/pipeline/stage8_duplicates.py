@@ -19,6 +19,7 @@ CHANGES:
 import json
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -77,6 +78,13 @@ class FAISSMetadataDrift(RuntimeError):
     text_extractor_version doesn't match the code's current expected
     values. Prevents silent dedup drift when extractor or model is
     upgraded but the on-disk index is stale."""
+
+
+class FAISSAbsorptionMutexTimeout(RuntimeError):
+    """FIX-I: raised when the process-wide absorber mutex could not be
+    acquired within ABSORB_MUTEX_TIMEOUT_S. Defensive against a wedged
+    absorber holding the lock forever. Real absorbs take 5-10s, so even
+    a 50-operator queue clears in ~8 min; 600s timeout is generous."""
 
 
 def _acquire_faiss_lock(lock_fd, mode, timeout_s: float = FAISS_LOCK_TIMEOUT_S):
@@ -217,6 +225,19 @@ def _read_cgroup_anon_allocatable_mb() -> Optional[float]:
 # FIX-B (LOCK_EX blocking + atomic write), FIX-E (1.2x OOM raise),
 # FIX-G (zero-vec raise), FIX-H (build_rule provenance).
 
+# FIX-I (2026-05-21): process-wide mutex around the whole absorber.
+# Why: single uvicorn worker + asyncio.to_thread spawns real OS threads in the
+# same cgroup. Each absorber call does faiss.read_index() (1.3 GB on Render
+# 218K-vec index) BEFORE LOCK_EX is acquired. Two concurrent invocations both
+# pass the FIX-E pre-check, both load 1.3 GB, and the 4 GB cgroup SIGKILLs the
+# worker. LOCK_EX (FIX-B) only serializes the WRITE; this Lock serializes the
+# entire load+process+write so peak RAM = exactly one FAISS copy.
+# Triggered by 2026-05-20 incident: 383 OIDs leaked into Acadza DB+JSONL but
+# never made it into FAISS — see project_oom_backfill_2026_05_20.md.
+_ABSORB_MUTEX = threading.Lock()
+ABSORB_MUTEX_TIMEOUT_S = 600.0  # 10 min — defensive, real absorb is 5-10s
+
+
 def absorb_db_entries_into_global(
     db_entries,
     log=None,
@@ -243,6 +264,26 @@ def absorb_db_entries_into_global(
         def log(level, msg):
             print(f"[absorb|{level}] {msg}", flush=True)
 
+    # FIX-I: serialize the entire absorber with a bounded-wait acquire so a
+    # wedged caller can't hang Stage 10 forever. Timing log surfaces queue
+    # depth in production; timeout surfaces a clear typed exception.
+    _wait_start = time.monotonic()
+    if not _ABSORB_MUTEX.acquire(timeout=ABSORB_MUTEX_TIMEOUT_S):
+        raise FAISSAbsorptionMutexTimeout(
+            f"FAISS absorber mutex held >{ABSORB_MUTEX_TIMEOUT_S:.0f}s; refusing "
+            f"to queue further. Worker may be wedged — operator should reload."
+        )
+    _wait_ms = (time.monotonic() - _wait_start) * 1000
+    if _wait_ms > 50:
+        log("info", f"FIX-I: waited {_wait_ms:.0f}ms for absorber mutex (concurrent absorption was in flight)")
+    try:
+        return _absorb_inner(db_entries, log)
+    finally:
+        _ABSORB_MUTEX.release()
+
+
+def _absorb_inner(db_entries, log):
+    """Real absorber body. Always called under _ABSORB_MUTEX (FIX-I)."""
     from app.config import settings
 
     try:
