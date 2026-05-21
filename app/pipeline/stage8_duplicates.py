@@ -1085,14 +1085,24 @@ class DuplicateCheckStage(BasePipelineStage):
         lock_fd = open(lock_path, "w")
         try:
             _acquire_faiss_lock(lock_fd, "SH")
-            # FIX-C: full-RAM read inside the lock so a writer that releases
-            # before our search starts can't change the bytes we're reading.
-            index = faiss.read_index(str(index_path))
+            # FIX-J (2026-05-21): restore IO_FLAG_MMAP for the read-only
+            # global db_reference path. FIX-C had removed mmap to dodge the
+            # LAYER-1 stale-page race, but that race only existed when the
+            # writer did truncate+rewrite. FIX-B replaced the writer with
+            # atomic os.replace, which keeps the OLD inode alive for any
+            # reader that already mmap'd it -- no torn reads, only stale
+            # (already-accepted residual). Full-RAM was scaling 1.3 GB per
+            # concurrent operator and OOM'd the 4 GB Render cgroup on
+            # 2026-05-21 (3 OOMs in 6 min between 11:41-11:47 IST). Mmap
+            # uses the disk-backed page cache, SHARED across concurrent
+            # readers and RECLAIMABLE under pressure -- removes the OOM
+            # without re-opening the race.
+            index = faiss.read_index(str(index_path), faiss.IO_FLAG_MMAP)
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
             self._assert_metadata_provenance(metadata, name, "global")
             self.log("info",
                 f"Loaded global FAISS index '{name}': {index.ntotal} vectors "
-                f"(full-RAM, LOCK_SH held during read)")
+                f"(mmap, LOCK_SH held during open)")
             return index, metadata["id_map"], metadata["text_map"]
         finally:
             _release_faiss_lock(lock_fd)
