@@ -516,6 +516,7 @@ class Stage11NightlyScheduler:
                     do_update_api=True,
                     backup_dir=backup_dir,
                     max_workers=max_workers,
+                    max_attempts=2,   # explicit cap (see stage11_correction.py:164)
                     logger=lambda lvl, msg: logger.log(
                         logging.INFO if lvl == "info" else logging.WARNING,
                         f"[stage11-nightly] {msg}",
@@ -610,10 +611,28 @@ class Stage11NightlyScheduler:
         to history as failed_retry, but the report only saw the results
         that actually came back from process_batch. Without this, the
         dashboard shows failed_retry=0 even though history has the rollover.
+
+        Also persists cost_usd + token totals so the dashboard can show
+        nightly economics without re-scanning history.
         """
+        # Build qid -> uploaded_by lookup from cohort_rows. QuestionResult
+        # does not carry uploaded_by, so this map is the only way per_operator
+        # can be populated for promoted/flagged buckets.
+        qid_to_op: Dict[str, str] = {}
+        if cohort_rows:
+            for row in cohort_rows:
+                if not isinstance(row, dict):
+                    continue
+                q = row.get("qid")
+                op = row.get("uploaded_by") or ""
+                if q and op:
+                    qid_to_op[q] = op
+
         promoted = flagged = failed_retry = 0
-        per_op = {}
+        per_op: Dict[str, Dict[str, int]] = {}
         results_by_qid: Dict[str, Any] = {}
+        total_cost = 0.0
+        total_input = total_output = total_cached = total_thinking = 0
         for r in results:
             qid = self._qresult_attr(r, "qid")
             if qid:
@@ -625,10 +644,18 @@ class Stage11NightlyScheduler:
                 flagged += 1
             else:
                 failed_retry += 1
-            op = self._qresult_attr(r, "uploaded_by") or ""
+            # Per-operator: prefer cohort lookup (always populated) over
+            # QuestionResult.uploaded_by (currently never populated).
+            op = qid_to_op.get(qid, "") or (self._qresult_attr(r, "uploaded_by") or "")
             if op:
                 per_op.setdefault(op, {"promoted": 0, "flagged": 0, "failed_retry": 0})
                 per_op[op][bucket] += 1
+            # Cost + token aggregation
+            total_cost += float(self._qresult_attr(r, "cost_usd", 0.0) or 0.0)
+            total_input += int(self._qresult_attr(r, "total_input_tokens", 0) or 0)
+            total_output += int(self._qresult_attr(r, "total_output_tokens", 0) or 0)
+            total_cached += int(self._qresult_attr(r, "total_cached_tokens", 0) or 0)
+            total_thinking += int(self._qresult_attr(r, "total_thinking_tokens", 0) or 0)
         # Unreached OIDs (halt path): count as failed_retry so dashboard reflects
         # the same number that select_cohort will pick up via Source B next night.
         if cohort_rows:
@@ -636,7 +663,7 @@ class Stage11NightlyScheduler:
                 qid = row.get("qid") if isinstance(row, dict) else None
                 if qid and qid not in results_by_qid:
                     failed_retry += 1
-                    op = row.get("uploaded_by") or ""
+                    op = qid_to_op.get(qid, "") or (row.get("uploaded_by") or "")
                     if op:
                         per_op.setdefault(op, {"promoted": 0, "flagged": 0, "failed_retry": 0})
                         per_op[op]["failed_retry"] += 1
@@ -644,6 +671,13 @@ class Stage11NightlyScheduler:
         report["flagged"] = flagged
         report["failed_retry"] = failed_retry
         report["per_operator"] = per_op
+        report["cost_usd"] = round(total_cost, 4)
+        report["tokens"] = {
+            "input": total_input,
+            "output": total_output,
+            "cached_input": total_cached,
+            "thinking": total_thinking,
+        }
 
     def _update_history_from_results(self, history: dict, results: list,
                                        rows: list):
@@ -818,6 +852,7 @@ class Stage11NightlyScheduler:
                     do_update_api=True,
                     backup_dir=backup_dir,
                     max_workers=5,
+                    max_attempts=2,   # explicit cap (see stage11_correction.py:164)
                     logger=_emit_log,
                 )
                 results.extend(chunk_results)
