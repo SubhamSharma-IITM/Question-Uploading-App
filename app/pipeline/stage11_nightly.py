@@ -29,6 +29,7 @@ import csv
 import json
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
@@ -36,6 +37,33 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Pre-filter constants (added 2026-05-22 after audit found 4,768 silently-
+# regressed promotions among Mon-Thu 13,770 -- stage11_correction can ONLY
+# modify body[type_key]["question"] and body[type_key]["solution"]+body["error"].
+# Any Stage 9 error class pointing at a field outside that set is unfixable.
+# Per user directive: tags/wrong_tagging is NOT in this set (subjective, low harm).
+UNFIXABLE_TAGS = (
+    # Answer-field issues -- body[type_key]["answer"] is NOT in PUT body builder
+    "answer/wrong_answer", "answer/invalid_option", "answer/missing_answer",
+    # Image-bound -- quesImages/solutionImages NOT in PUT body
+    "question/missing_image", "solution/missing_image",
+    "question/broken_image",  "solution/broken_image",
+    "question/broken_chemical_structure", "solution/broken_chemical_structure",
+    # matchQuestion.rows structural defect -- not modified by PUT
+    "question/invalid_match_rows",
+    # Stage 9 upstream batch-parse defect, not an actionable content error
+    "metadata/api_error",
+)
+UNFIXABLE_TAG_RE = re.compile(
+    r"\[(" + "|".join(re.escape(t) for t in UNFIXABLE_TAGS) + r")\]",
+    re.IGNORECASE,
+)
+
+# Question types Stage 11 cannot process safely yet (passage + match).
+# These already trip skipped_unsupported_type_pilot inside process_question,
+# but cohort-time filter prevents them from consuming multiget/dispatch cycles.
+PREFILTERED_QTYPES = {"passage", "passagequestion", "match", "matchquestion"}
 
 
 class Stage11NightlyScheduler:
@@ -217,11 +245,20 @@ class Stage11NightlyScheduler:
         """Returns rows ready for stage11_correction.process_batch.
         Each row: {qid, error_description, q_type, view_link, meta_qid,
                    session_id, uploaded_by}.
+
+        Pre-filter (added 2026-05-22):
+          - Question Type passage/match -> skip (Stage 11 can't process structure)
+          - Any UNFIXABLE_TAGS present in Pass1/2/3 errors -> skip (model has
+            no power to modify those fields per _build_update_body audit)
+        Skipped OIDs are NOT recorded in history (so re-run can pick them up
+        if filter rules change). They go straight to faculty review.
         """
         rows: List[Dict[str, Any]] = []
         seen = set()
         skipped_promoted = 0
         skipped_flagged = 0
+        skipped_prefilter_qtype = 0
+        skipped_prefilter_tags = 0
         sessions_scanned = 0
         sessions_in_window = 0
 
@@ -265,6 +302,16 @@ class Stage11NightlyScheduler:
                                 continue
                             if qid in seen:
                                 continue
+                            # Pre-filter: passage/match -> faculty (Stage 11 unsupported)
+                            qt_raw = (r.get("Question Type") or "scq").strip()
+                            if qt_raw.lower() in PREFILTERED_QTYPES:
+                                skipped_prefilter_qtype += 1
+                                continue
+                            # Pre-filter: any unfixable Stage 9 tag -> faculty
+                            err_desc = self._build_error_description(r)
+                            if UNFIXABLE_TAG_RE.search(err_desc):
+                                skipped_prefilter_tags += 1
+                                continue
                             h = history.get(qid)
                             if h:
                                 if h.get("status") == "promoted":
@@ -276,8 +323,8 @@ class Stage11NightlyScheduler:
                             seen.add(qid)
                             rows.append({
                                 "qid": qid,
-                                "error_description": self._build_error_description(r),
-                                "q_type": (r.get("Question Type") or "scq").strip(),
+                                "error_description": err_desc,
+                                "q_type": qt_raw,
                                 "view_link": (r.get("View Link") or "").strip(),
                                 "meta_qid": (r.get("Question META ID") or "").strip(),
                                 "session_id": session_id,
@@ -300,7 +347,9 @@ class Stage11NightlyScheduler:
         logger.info(
             f"Cohort for {target_date_ist}: {len(rows)} OIDs "
             f"(scanned {sessions_scanned} sessions, {sessions_in_window} in window; "
-            f"skipped {skipped_promoted} promoted, {skipped_flagged} flagged)"
+            f"skipped {skipped_promoted} promoted, {skipped_flagged} flagged, "
+            f"{skipped_prefilter_qtype} prefilter-qtype, "
+            f"{skipped_prefilter_tags} prefilter-unfixable-tags)"
         )
         return rows
 
@@ -516,7 +565,7 @@ class Stage11NightlyScheduler:
                     do_update_api=True,
                     backup_dir=backup_dir,
                     max_workers=max_workers,
-                    max_attempts=2,   # explicit cap (see stage11_correction.py:164)
+                    max_attempts=1,   # SINGLE-PASS tonight (see stage11_correction.py:164)
                     logger=lambda lvl, msg: logger.log(
                         logging.INFO if lvl == "info" else logging.WARNING,
                         f"[stage11-nightly] {msg}",
@@ -758,6 +807,8 @@ class Stage11NightlyScheduler:
 
         history = self.load_history()
         rows: List[Dict[str, Any]] = []
+        skipped_prefilter_qtype = 0
+        skipped_prefilter_tags = 0
         try:
             with open(log_path, encoding="utf-8") as f:
                 for r in csv.DictReader(f):
@@ -767,13 +818,23 @@ class Stage11NightlyScheduler:
                     err = (r.get("Error Level") or "").strip()
                     if err != "2":
                         continue
+                    # Pre-filter passage/match types
+                    qt_raw = (r.get("Question Type") or "scq").strip()
+                    if qt_raw.lower() in PREFILTERED_QTYPES:
+                        skipped_prefilter_qtype += 1
+                        continue
+                    # Pre-filter unfixable Stage 9 tags
+                    err_desc = self._build_error_description(r)
+                    if UNFIXABLE_TAG_RE.search(err_desc):
+                        skipped_prefilter_tags += 1
+                        continue
                     h = history.get(qid)
                     if h and h.get("status") in ("promoted", "flagged"):
                         continue
                     rows.append({
                         "qid": qid,
-                        "error_description": self._build_error_description(r),
-                        "q_type": (r.get("Question Type") or "scq").strip(),
+                        "error_description": err_desc,
+                        "q_type": qt_raw,
                         "view_link": (r.get("View Link") or "").strip(),
                         "meta_qid": (r.get("Question META ID") or "").strip(),
                         "session_id": session_id,
@@ -852,7 +913,7 @@ class Stage11NightlyScheduler:
                     do_update_api=True,
                     backup_dir=backup_dir,
                     max_workers=5,
-                    max_attempts=2,   # explicit cap (see stage11_correction.py:164)
+                    max_attempts=1,   # SINGLE-PASS tonight (see stage11_correction.py:164)
                     logger=_emit_log,
                 )
                 results.extend(chunk_results)

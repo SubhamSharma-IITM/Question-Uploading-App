@@ -161,14 +161,15 @@ SIMILARITY_THRESHOLDS = {
 # because the correct fix REMOVES tags.
 REMOVAL_TYPE_CLASSES = {"cleaner_artifact", "answer_prefix_leak", "source_artifact"}
 
-MAX_CORRECTION_ATTEMPTS = 2   # default for corrective-loop mode
-# Flow with max=2:
-#   Attempt 1: LLM1 corrects -> LLM2 proofreads. If LLM2 approves => promoted.
-#   Attempt 2 (only if LLM2 rejected attempt 1): LLM1 regenerates with feedback
-#              -> LLM2 rechecks. If approved => promoted; else flagged for faculty.
-# Cost cap: at most 4 LLM calls per question (vs 6 at attempts=3, 12 at attempts=6).
-# Reduced from 3 to 2 on 2026-05-22 after observing 51% promote rate Thursday
-# (1,493 flagged hit max attempts wasting LLM spend without yield).
+MAX_CORRECTION_ATTEMPTS = 1   # SINGLE-PASS MODE (2026-05-22 tonight observation)
+# Flow with max=1 (per user directive):
+#   Attempt 1: LLM1 corrects -> LLM2 proofreads.
+#              If LLM2 approves => promoted.
+#              If LLM2 rejects   => flagged for faculty (no retry).
+# Cost cap: exactly 2 LLM calls per question (down from 6 at attempts=3).
+# Rationale: Thursday May 21 saw 51% promote rate; multi-attempt was burning
+# tokens on hard cases without yield. Tomorrow morning we read stats and
+# decide whether to bump back to 2-attempt mode.
 ONE_SHOT_ATTEMPTS = 1         # one-shot mode: single LLM1 call, single LLM2 verdict, flag if rejected
 
 # Note: temperature/seed/top_p/thinking_level are NOT exposed as Stage 11 constants.
