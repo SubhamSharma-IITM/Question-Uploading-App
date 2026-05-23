@@ -259,6 +259,7 @@ class Stage11NightlyScheduler:
         skipped_flagged = 0
         skipped_prefilter_qtype = 0
         skipped_prefilter_tags = 0
+        skipped_duminy_excluded = 0
         sessions_scanned = 0
         sessions_in_window = 0
 
@@ -320,6 +321,9 @@ class Stage11NightlyScheduler:
                                 if h.get("status") == "flagged":
                                     skipped_flagged += 1
                                     continue
+                                if h.get("status") == "duminy_excluded":
+                                    skipped_duminy_excluded += 1
+                                    continue
                             seen.add(qid)
                             rows.append({
                                 "qid": qid,
@@ -349,7 +353,8 @@ class Stage11NightlyScheduler:
             f"(scanned {sessions_scanned} sessions, {sessions_in_window} in window; "
             f"skipped {skipped_promoted} promoted, {skipped_flagged} flagged, "
             f"{skipped_prefilter_qtype} prefilter-qtype, "
-            f"{skipped_prefilter_tags} prefilter-unfixable-tags)"
+            f"{skipped_prefilter_tags} prefilter-unfixable-tags, "
+            f"{skipped_duminy_excluded} duminy-excluded)"
         )
         return rows
 
@@ -809,6 +814,7 @@ class Stage11NightlyScheduler:
         rows: List[Dict[str, Any]] = []
         skipped_prefilter_qtype = 0
         skipped_prefilter_tags = 0
+        skipped_duminy_excluded = 0
         try:
             with open(log_path, encoding="utf-8") as f:
                 for r in csv.DictReader(f):
@@ -829,7 +835,9 @@ class Stage11NightlyScheduler:
                         skipped_prefilter_tags += 1
                         continue
                     h = history.get(qid)
-                    if h and h.get("status") in ("promoted", "flagged"):
+                    if h and h.get("status") in ("promoted", "flagged", "duminy_excluded"):
+                        if h.get("status") == "duminy_excluded":
+                            skipped_duminy_excluded += 1
                         continue
                     rows.append({
                         "qid": qid,

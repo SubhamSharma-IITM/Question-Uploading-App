@@ -3638,6 +3638,48 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
             elif sub.suffix == ".json" and "metadata_v2" in sub.name and "backup" not in sub.name:
                 all_meta_files.append(sub)
 
+        # IMAGE-CONTENT SAFETY GATE
+        # ------------------------
+        # Defensive backstop for the Stage 6 silent-orphan bug. If a question's
+        # HTML still contains a `./images/X.ext` path at this point in the
+        # pipeline, the image was NOT replaced with a CDN URL by Stage 6 (the
+        # file is missing on disk, OR Stage 6 was skipped, OR the regex missed
+        # the LaTeX figure form). Such questions previously leaked into live
+        # DB as err=1 when LLMs approved them. Clamp them to err=2 here so
+        # faculty review surfaces them. We only clamp UP from err=1; we don't
+        # touch existing err=2/3/4 verdicts (the LLMs already flagged those).
+        _orphan_img_re = re.compile(
+            r"\./images/[A-Za-z0-9_\-.]+\.(?:jpg|jpeg|png|svg|webp|gif)",
+            re.IGNORECASE,
+        )
+
+        def _entry_has_broken_image_ref(entry: dict) -> bool:
+            for ck in ("scq", "mcq", "integerQuestion", "subjective",
+                      "matchQuestion", "passageQuestion"):
+                c = entry.get(ck)
+                if not isinstance(c, dict):
+                    continue
+                for fk in ("question", "ques", "solution", "sol", "passage"):
+                    text = c.get(fk, "")
+                    if text and _orphan_img_re.search(text):
+                        return True
+                if ck == "passageQuestion":
+                    for sub_q in c.get("questions", []) or []:
+                        if not isinstance(sub_q, dict):
+                            continue
+                        for sk in ("scq", "mcq", "integerQuestion"):
+                            sc = sub_q.get(sk)
+                            if not isinstance(sc, dict):
+                                continue
+                            for fk in ("ques", "question", "solution"):
+                                text = sc.get(fk, "")
+                                if text and _orphan_img_re.search(text):
+                                    return True
+            return False
+
+        image_gate_clamped = 0
+        image_gate_qids: List[str] = []
+
         for f in all_meta_files:
             try:
                 with open(f, "r", encoding="utf-8") as fh:
@@ -3648,6 +3690,18 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                 for entry in data:
                     qid = entry.get("qid", "")
                     if qid in qid_levels:
+                        # Image-content gate: broken `./images/` ref + LLM-approved
+                        # (err=1) -> clamp to err=2 so it surfaces in faculty review
+                        # instead of leaking to live DB as silently-approved.
+                        if qid_levels[qid] == 1 and _entry_has_broken_image_ref(entry):
+                            error_levels[1] -= 1
+                            error_levels[2] += 1
+                            if qid in category_qids[1]:
+                                category_qids[1].remove(qid)
+                            category_qids[2].append(qid)
+                            qid_levels[qid] = 2
+                            image_gate_clamped += 1
+                            image_gate_qids.append(qid)
                         entry["error"] = qid_levels[qid]
                         modified = True
                 if modified:
@@ -3656,6 +3710,14 @@ EXECUTE AUDIT: Run Sections 0-11. Return ONLY valid JSON.
                     updated_files += 1
             except Exception:
                 continue
+
+        if image_gate_clamped:
+            self.log(
+                "warning",
+                f"IMAGE-CONTENT GATE: clamped {image_gate_clamped} QIDs from "
+                "err=1 -> err=2 (broken `./images/` refs survived Stage 6). "
+                "First 5 QIDs: " + ", ".join(image_gate_qids[:5]),
+            )
 
         # Quarantine 1/3 and 0/3 questions
         from app.db import quarantine_question

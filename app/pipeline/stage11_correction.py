@@ -317,6 +317,16 @@ def restore_image_placeholders(html_text: str, token_to_full_tag: Dict[str, str]
 
 _LATEX_FIGURE_RE = re.compile(r'\\begin\{figure\}|\\includegraphics\b', re.IGNORECASE)
 
+# Broken local image ref pattern. ANY presence of this in input or
+# corrected output means Stage 6 failed to CDN-upload the image. Stage 11
+# cannot fix this (it's an upload concern, not an editorial concern).
+# Defensive layer because LLMs may pass these through silently even when
+# the COUNT-preservation invariant in img_invariants() is satisfied.
+_BROKEN_LOCAL_IMG_RE = re.compile(
+    r"\./images/[A-Za-z0-9_\-.]+\.(?:jpg|jpeg|png|svg|webp|gif)",
+    re.IGNORECASE,
+)
+
 
 def img_invariants(html_text: str) -> Tuple[int, frozenset, int, int]:
     """Return (img_count, frozenset_of_src_urls, video_tag_count, latex_figure_count).
@@ -1593,6 +1603,20 @@ def process_question(
         res.status = "skipped_empty_question_body"
         return res
 
+    # IMAGE-CONTENT GATE (pre-LLM): refuse to attempt correction on questions
+    # whose fetched payload still has broken `./images/X` refs. Stage 6 missed
+    # these; LLM correction won't restore the missing image. Sidelining here
+    # avoids 2 LLM calls per OID AND prevents the silent err=2 -> err=1
+    # promotion path we observed in production. Faculty repair instead.
+    if _BROKEN_LOCAL_IMG_RE.search(orig_q or "") or _BROKEN_LOCAL_IMG_RE.search(orig_s or ""):
+        res.status = "skipped_broken_local_image_ref"
+        res.sideline_reason = (
+            "Question or solution contains `./images/X` local path that was "
+            "never CDN-uploaded (Stage 6 missed it). Stage 11 cannot fix "
+            "images -- sent to faculty for manual repair."
+        )
+        return res
+
     # Step 2: extract image attachments. Send RAW HTML+MathML to the LLM (no LaTeX
     # conversion). Stage 11 architecture FINAL: tag count guardrails > byte similarity.
     orig_q_with_placeholders, q_attachments, _q_src2tok, q_tok2tag = collect_images_with_placeholders(orig_q, "Q")
@@ -1812,6 +1836,27 @@ def process_question(
         proofreader_picks_corrected = (preferred == corrected_label)
 
         if approved_judgment and proofreader_picks_corrected:
+            # Pre-approval defensive gate: LLM2 approved, but verify the
+            # corrected output isn't carrying broken `./images/X` refs that
+            # were preserved through count-invariants. If so, refuse PUT --
+            # promoting err=2 -> err=1 with broken images is the exact silent
+            # leak this guard exists to prevent.
+            if _BROKEN_LOCAL_IMG_RE.search(corr_q_html or "") or _BROKEN_LOCAL_IMG_RE.search(corr_s_html or ""):
+                log.stage_failed = "broken_local_image_ref_in_corrected"
+                log.lxml_issues = [
+                    "LLM2 approved but corrected output still contains "
+                    "broken `./images/X` refs -- refusing PUT"
+                ]
+                res.attempts.append(log)
+                res.status = "flagged_broken_local_image_ref"
+                res.flag_reason = (
+                    "LLM2 approved but corrected output still contains broken "
+                    "`./images/X` refs. Refusing PUT to avoid promoting a "
+                    "broken-image question from err=2 to err=1."
+                )
+                res.corr_question = corr_q_html
+                res.corr_solution = corr_s_html
+                return res
             log.approved = True
             log.stage_failed = None
             res.attempts.append(log)

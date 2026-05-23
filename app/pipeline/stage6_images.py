@@ -143,11 +143,29 @@ def upload_with_retry(local_path: str, logger=None) -> Tuple[bool, Optional[str]
 
 IMG_SRC_PATTERN = re.compile(r'<img[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
 
+# Matches `\includegraphics[opts]{./images/X.ext}` — captures the path in group(1).
+# Stage 3 cleaner sometimes leaves these LaTeX figure refs intact in HTML; without
+# this pattern they are invisible to Stage 6 and leak as broken refs into live DB.
+INCLUDEGRAPHICS_PATTERN = re.compile(
+    r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+\.(?:jpg|jpeg|png|svg|webp|gif))\}",
+    re.IGNORECASE,
+)
+
+# Matches the whole `\begin{figure}...\includegraphics{...}...\end{figure}` block
+# so we can replace it wholesale with the CDN <img> tag, dropping the surrounding
+# LaTeX (captionsetup/caption/etc) which Stage 9 would otherwise still flag.
+FIGURE_BLOCK_PATTERN = re.compile(
+    r"\\begin\{figure\}.*?\\includegraphics(?:\[[^\]]*\])?\{([^}]+\.(?:jpg|jpeg|png|svg|webp|gif))\}.*?\\end\{figure\}",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _extract_img_srcs_from_text(text: str) -> List[str]:
     if not text:
         return []
-    return IMG_SRC_PATTERN.findall(text)
+    srcs = IMG_SRC_PATTERN.findall(text)
+    srcs.extend(INCLUDEGRAPHICS_PATTERN.findall(text))
+    return srcs
 
 
 def _extract_base64_imgs_from_text(text: str) -> List[dict]:
@@ -255,29 +273,51 @@ def _extract_img_srcs_from_question(q: dict) -> List[str]:
 # ── Replacement helpers (verbatim from reference) ──
 
 def _replace_img_tags_in_text(text: str, cdn_cache: Dict[str, Dict]) -> Tuple[str, int]:
-    """Replace local <img> tags with CDN URL + actual dimensions."""
+    """Replace local <img> tags AND \\includegraphics LaTeX refs with CDN <img>.
+
+    Three sub-passes (each independent, idempotent for already-CDN refs):
+      1. `<img src="./images/X">` (original behavior)
+      2. `\\begin{figure}...\\includegraphics{./images/X}...\\end{figure}` -> single <img>
+         (drops the surrounding LaTeX captionsetup/caption/etc which Stage 9
+         would otherwise flag as latex_not_converted)
+      3. bare `\\includegraphics{./images/X}` not wrapped in a figure block
+    """
     if not text:
         return text, 0
 
     count = 0
 
-    def _replacer(match):
+    def _img_replacer(match):
         nonlocal count
         full_tag = match.group(0)
         src = match.group("src")
-
         entry = cdn_cache.get(src)
         if not entry or "cdn_url" not in entry:
             return full_tag
-
         cdn_url = entry["cdn_url"]
         dw = entry.get("display_width", MAX_DISPLAY_WIDTH)
         dh = entry.get("display_height", 169)
-
         count += 1
         return f'<img src="{cdn_url}" alt="" style="width:{dw}px; height:{dh}px" />'
 
-    new_text = IMG_TAG_PATTERN.sub(_replacer, text)
+    def _latex_replacer(match):
+        # Used for both FIGURE_BLOCK_PATTERN and INCLUDEGRAPHICS_PATTERN.
+        nonlocal count
+        src = match.group(1)
+        entry = cdn_cache.get(src)
+        if not entry or "cdn_url" not in entry:
+            return match.group(0)
+        cdn_url = entry["cdn_url"]
+        dw = entry.get("display_width", MAX_DISPLAY_WIDTH)
+        dh = entry.get("display_height", 169)
+        count += 1
+        return f'<img src="{cdn_url}" alt="" style="width:{dw}px; height:{dh}px" />'
+
+    new_text = IMG_TAG_PATTERN.sub(_img_replacer, text)
+    # Wholesale figure-block first so the broader pattern doesn't leave LaTeX wrappers behind.
+    new_text = FIGURE_BLOCK_PATTERN.sub(_latex_replacer, new_text)
+    # Catch any bare \includegraphics that wasn't inside a figure block.
+    new_text = INCLUDEGRAPHICS_PATTERN.sub(_latex_replacer, new_text)
     return new_text, count
 
 
@@ -979,6 +1019,42 @@ class ImageCDNStage(BasePipelineStage):
                     "dimensions": f'{entry.get("display_width", "?")}x{entry.get("display_height", "?")}',
                 })
 
+        # Completion sanity check: surface any broken `./images/` refs still
+        # in metadata after the replacement phase. These are images whose
+        # source file is missing from disk (so we couldn't upload + swap).
+        # Soft-fail: log ERROR + save artifact, do NOT block the stage.
+        _orphan_re = re.compile(
+            r"\./images/[A-Za-z0-9_\-.]+\.(?:jpg|jpeg|png|svg|webp|gif)",
+            re.IGNORECASE,
+        )
+        remaining_orphans = []
+        for _json_path_str in sorted(file_img_refs.keys()):
+            try:
+                _txt = Path(_json_path_str).read_text(encoding="utf-8")
+                for _m in set(_orphan_re.findall(_txt)):
+                    remaining_orphans.append({
+                        "file": Path(_json_path_str).name,
+                        "ref": _m,
+                    })
+            except Exception:
+                continue
+        if remaining_orphans:
+            self.log(
+                "error",
+                f"STAGE 6 COMPLETION CHECK: {len(remaining_orphans)} broken "
+                "`./images/` refs remain (file missing on disk). Downstream "
+                "Stage 9 will flag these questions.",
+            )
+            artifact = self.session_dir / "stage6_orphan_refs.json"
+            try:
+                artifact.write_text(
+                    json.dumps(remaining_orphans, indent=2),
+                    encoding="utf-8",
+                )
+                self.log("error", f"  orphan list saved -> {artifact.name}")
+            except Exception:
+                pass
+
         self.progress(100, "Image CDN upload complete")
         self.save_checkpoint("completed", {
             "uploaded": uploaded,
@@ -986,6 +1062,7 @@ class ImageCDNStage(BasePipelineStage):
             "failed": failed,
             "replaced": total_replacements,
             "files_modified": files_modified,
+            "remaining_orphans": len(remaining_orphans),
         })
 
         return {
@@ -996,6 +1073,7 @@ class ImageCDNStage(BasePipelineStage):
             "replaced": total_replacements,
             "files_modified": files_modified,
             "unresolved": len(unresolved_srcs),
+            "remaining_orphans": len(remaining_orphans),
             "base64_uploaded": b64_uploaded,
             "base64_failed": b64_failed,
             "elapsed_s": round(elapsed, 1),
