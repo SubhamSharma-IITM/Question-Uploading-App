@@ -148,7 +148,7 @@ class MathPIXStage(BasePipelineStage):
             }
             data = {
                 "files": [
-                    {"name": f"/mineru-work/input/{pdf_file.name}", "data_id": f"ocr_{self.session_id[:8]}"}
+                    {"name": pdf_file.name, "data_id": f"ocr_{self.session_id[:8]}"}
                 ],
                 "model_version": "vlm"
             }
