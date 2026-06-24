@@ -46,12 +46,17 @@ class MathPIXStage(BasePipelineStage):
         from app.config import settings
         return settings.mathpix_app_id, settings.mathpix_app_key
 
+    def _get_mineru_token(self) -> str:
+        """Get MinerU token from config."""
+        from app.config import settings
+        return settings.mineru_token
+
     def _get_status_path(self) -> Path:
-        """Path to the MathPIX status file for resume support."""
+        """Path to the status file for resume support."""
         return self.session_dir / "mathpix_output" / "mathpix_status.json"
 
     def _load_status(self) -> Dict:
-        """Load MathPIX processing status."""
+        """Load processing status."""
         p = self._get_status_path()
         if p.exists():
             try:
@@ -61,88 +66,156 @@ class MathPIXStage(BasePipelineStage):
         return {}
 
     def _save_status(self, status: Dict) -> None:
-        """Save MathPIX processing status."""
+        """Save processing status."""
         p = self._get_status_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(status, indent=2), encoding="utf-8")
 
     def check_credentials(self) -> Dict[str, Any]:
-        """Check if MathPIX credentials are configured."""
-        app_id, app_key = self._get_credentials()
-        if not app_id or not app_key:
+        """Check if OCR credentials are configured."""
+        from app.config import settings
+        engine = getattr(settings, "ocr_engine", "mathpix")
+        if engine == "mineru":
+            token = self._get_mineru_token()
+            if not token:
+                return {
+                    "configured": False,
+                    "message": "MinerU Token not set. Add MINERU_TOKEN to .env",
+                }
+            if not HAS_REQUESTS:
+                return {
+                    "configured": False,
+                    "message": "Python 'requests' package not installed. Run: pip install requests",
+                }
             return {
-                "configured": False,
-                "message": "MathPIX credentials not set. Add MATHPIX_APP_ID and MATHPIX_APP_KEY to .env",
+                "configured": True,
+                "token": token[:10] + "...",
+                "message": "MinerU credentials configured",
             }
-        if not HAS_REQUESTS:
+        else:
+            app_id, app_key = self._get_credentials()
+            if not app_id or not app_key:
+                return {
+                    "configured": False,
+                    "message": "MathPIX credentials not set. Add MATHPIX_APP_ID and MATHPIX_APP_KEY to .env",
+                }
+            if not HAS_REQUESTS:
+                return {
+                    "configured": False,
+                    "message": "Python 'requests' package not installed. Run: pip install requests",
+                }
             return {
-                "configured": False,
-                "message": "Python 'requests' package not installed. Run: pip install requests",
+                "configured": True,
+                "app_id": app_id[:10] + "...",
+                "message": "MathPIX credentials configured",
             }
-        return {
-            "configured": True,
-            "app_id": app_id[:10] + "...",
-            "message": "MathPIX credentials configured",
-        }
 
     def upload_pdf(self, pdf_path: str) -> Dict[str, Any]:
-        """Upload PDF to MathPIX for OCR processing.
+        """Upload PDF to OCR engine for processing.
 
         Returns: {pdf_id, status} on success, {error} on failure.
         """
         if not HAS_REQUESTS:
             return {"error": "Python 'requests' package not installed"}
 
-        app_id, app_key = self._get_credentials()
-        if not app_id or not app_key:
-            return {"error": "MathPIX credentials not configured"}
+        from app.config import settings
+        engine = getattr(settings, "ocr_engine", "mathpix")
+
+        # Check for existing upload (resume support)
+        status = self._load_status()
+        if status.get("pdf_id"):
+            self.log("info", f"Reusing existing OCR pdf_id: {status['pdf_id']}")
+            return {
+                "pdf_id": status["pdf_id"],
+                "status": "already_uploaded",
+                "message": f"PDF already submitted to {engine} — poll for status",
+            }
 
         pdf_file = Path(pdf_path)
         if not pdf_file.exists():
             return {"error": f"PDF not found: {pdf_path}"}
 
-        # Check for existing upload (resume support)
-        status = self._load_status()
-        if status.get("pdf_id"):
-            self.log("info", f"Reusing existing MathPIX pdf_id: {status['pdf_id']}")
-            return {
-                "pdf_id": status["pdf_id"],
-                "status": "already_uploaded",
-                "message": "PDF already submitted to MathPIX — poll for status",
+        self.log("info", f"Uploading {pdf_file.name} ({pdf_file.stat().st_size / 1024 / 1024:.1f} MB) to {engine}...")
+
+        if engine == "mineru":
+            token = self._get_mineru_token()
+            if not token:
+                return {"error": "MinerU token not configured"}
+            url = "https://mineru.net/api/v4/file-urls/batch"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
             }
+            data = {
+                "files": [
+                    {"name": f"/mineru-work/input/{pdf_file.name}", "data_id": f"ocr_{self.session_id[:8]}"}
+                ],
+                "model_version": "vlm"
+            }
+            try:
+                resp = requests.post(url, headers=headers, json=data, timeout=60)
+                if resp.status_code != 200:
+                    return {"error": f"MinerU Batch API error: HTTP {resp.status_code}"}
+                result = resp.json()
+                if result.get("code") != 0:
+                    return {"error": f"MinerU Batch API error: {result.get('msg')}"}
+                batch_id = result["data"]["batch_id"]
+                upload_urls = result["data"]["file_urls"]
+                if not upload_urls:
+                    return {"error": "No upload URL returned by MinerU"}
+                
+                # Upload the PDF via PUT
+                self.log("info", "Uploading file content to MinerU storage...")
+                with open(pdf_path, "rb") as f:
+                    res_upload = requests.put(upload_urls[0], data=f, timeout=300)
+                if res_upload.status_code != 200:
+                    return {"error": f"MinerU file upload failed: HTTP {res_upload.status_code}"}
+                
+                status = {
+                    "pdf_id": batch_id,
+                    "upload_status": "uploaded",
+                    "pdf_filename": pdf_file.name,
+                }
+                self._save_status(status)
+                self.log("success", f"Upload OK — batch_id: {batch_id}")
+                return {"pdf_id": batch_id, "status": "uploaded"}
+            except Exception as e:
+                return {"error": f"MinerU upload failed: {e}"}
+        else:
+            app_id, app_key = self._get_credentials()
+            if not app_id or not app_key:
+                return {"error": "MathPIX credentials not configured"}
 
-        self.log("info", f"Uploading {pdf_file.name} ({pdf_file.stat().st_size / 1024 / 1024:.1f} MB) to MathPIX...")
+            headers = {"app_id": app_id, "app_key": app_key}
+            try:
+                with open(pdf_path, "rb") as f:
+                    files = {"file": (pdf_file.name, f, "application/pdf")}
+                    data = {"options_json": json.dumps(MATHPIX_OPTIONS)}
+                    resp = requests.post(
+                        MATHPIX_UPLOAD_URL, headers=headers,
+                        files=files, data=data, timeout=300,
+                    )
 
-        headers = {"app_id": app_id, "app_key": app_key}
-        try:
-            with open(pdf_path, "rb") as f:
-                files = {"file": (pdf_file.name, f, "application/pdf")}
-                data = {"options_json": json.dumps(MATHPIX_OPTIONS)}
-                resp = requests.post(
-                    MATHPIX_UPLOAD_URL, headers=headers,
-                    files=files, data=data, timeout=300,
-                )
-
-            if resp.status_code == 200:
-                pdf_id = resp.json().get("pdf_id")
-                if pdf_id:
-                    status = {
-                        "pdf_id": pdf_id,
-                        "upload_status": "uploaded",
-                        "pdf_filename": pdf_file.name,
-                    }
-                    self._save_status(status)
-                    self.log("success", f"Upload OK — pdf_id: {pdf_id}")
-                    return {"pdf_id": pdf_id, "status": "uploaded"}
-                return {"error": f"No pdf_id in response: {resp.text[:200]}"}
-            return {"error": f"MathPIX HTTP {resp.status_code}: {resp.text[:300]}"}
-        except requests.exceptions.Timeout:
-            return {"error": "MathPIX upload timed out (300s). Try again or use a smaller PDF."}
-        except Exception as e:
-            return {"error": f"Upload failed: {e}"}
+                if resp.status_code == 200:
+                    pdf_id = resp.json().get("pdf_id")
+                    if pdf_id:
+                        status = {
+                            "pdf_id": pdf_id,
+                            "upload_status": "uploaded",
+                            "pdf_filename": pdf_file.name,
+                        }
+                        self._save_status(status)
+                        self.log("success", f"Upload OK — pdf_id: {pdf_id}")
+                        return {"pdf_id": pdf_id, "status": "uploaded"}
+                    return {"error": f"No pdf_id in response: {resp.text[:200]}"}
+                return {"error": f"MathPIX HTTP {resp.status_code}: {resp.text[:300]}"}
+            except requests.exceptions.Timeout:
+                return {"error": "MathPIX upload timed out (300s). Try again or use a smaller PDF."}
+            except Exception as e:
+                return {"error": f"Upload failed: {e}"}
 
     def poll_status(self) -> Dict[str, Any]:
-        """Poll MathPIX for current processing status.
+        """Poll OCR engine for current processing status.
 
         Returns: {status, percent_done, num_pages, ...}
         """
@@ -152,40 +225,92 @@ class MathPIXStage(BasePipelineStage):
         status = self._load_status()
         pdf_id = status.get("pdf_id")
         if not pdf_id:
-            return {"error": "No MathPIX upload found — upload a PDF first"}
+            return {"error": "No OCR upload found — upload a PDF first"}
 
-        app_id, app_key = self._get_credentials()
-        headers = {"app_id": app_id, "app_key": app_key}
-        url = MATHPIX_STATUS_URL.format(pdf_id=pdf_id)
+        from app.config import settings
+        engine = getattr(settings, "ocr_engine", "mathpix")
 
-        try:
-            resp = requests.get(url, headers=headers, timeout=60)
-            if resp.status_code == 200:
-                data = resp.json()
-                result = {
-                    "pdf_id": pdf_id,
-                    "status": data.get("status", "unknown"),
-                    "percent_done": data.get("percent_done", 0),
-                    "num_pages": data.get("num_pages_completed", 0),
-                }
+        if engine == "mineru":
+            token = self._get_mineru_token()
+            url = f"https://mineru.net/api/v4/extract-results/batch/{pdf_id}"
+            headers = {"Authorization": f"Bearer {token}"}
+            try:
+                resp = requests.get(url, headers=headers, timeout=60)
+                if resp.status_code == 200:
+                    res_data = resp.json()
+                    if res_data.get("code") == 0:
+                        extract_results = res_data.get("data", {}).get("extract_result", [])
+                        if extract_results:
+                            first_result = extract_results[0]
+                            state = first_result.get("state")
+                            
+                            # Map MinerU state
+                            if state == "done":
+                                ocr_status = "completed"
+                                percent_done = 100
+                                # Save URLs for downloading
+                                status["full_zip_url"] = first_result.get("full_zip_url")
+                                status["md_url"] = first_result.get("md_url")
+                            elif state == "failed":
+                                ocr_status = "failed"
+                                percent_done = 0
+                            else:
+                                ocr_status = state
+                                percent_done = 50
+                            
+                            status["ocr_status"] = ocr_status
+                            status["percent_done"] = percent_done
+                            self._save_status(status)
 
-                # Persist status
-                status["ocr_status"] = result["status"]
-                status["percent_done"] = result["percent_done"]
-                self._save_status(status)
+                            if ocr_status == "completed":
+                                self.log("success", "MinerU OCR complete")
+                            else:
+                                self.log("info", f"MinerU: {ocr_status} ({percent_done}% done)")
 
-                if result["status"] == "completed":
-                    self.log("success", f"MathPIX OCR complete — {result['num_pages']} pages")
-                else:
-                    self.log("info", f"MathPIX: {result['status']} ({result['percent_done']}% done)")
+                            return {
+                                "pdf_id": pdf_id,
+                                "status": ocr_status,
+                                "percent_done": percent_done,
+                                "num_pages": 0,
+                            }
+                        return {"error": "No extract results found in response data"}
+                    return {"error": f"MinerU API error: {res_data.get('msg')}"}
+                return {"error": f"MinerU HTTP {resp.status_code}"}
+            except Exception as e:
+                return {"error": f"Poll failed: {e}"}
+        else:
+            app_id, app_key = self._get_credentials()
+            headers = {"app_id": app_id, "app_key": app_key}
+            url = MATHPIX_STATUS_URL.format(pdf_id=pdf_id)
 
-                return result
-            return {"error": f"MathPIX HTTP {resp.status_code}: {resp.text[:200]}"}
-        except Exception as e:
-            return {"error": f"Poll failed: {e}"}
+            try:
+                resp = requests.get(url, headers=headers, timeout=60)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result = {
+                        "pdf_id": pdf_id,
+                        "status": data.get("status", "unknown"),
+                        "percent_done": data.get("percent_done", 0),
+                        "num_pages": data.get("num_pages_completed", 0),
+                    }
+
+                    # Persist status
+                    status["ocr_status"] = result["status"]
+                    status["percent_done"] = result["percent_done"]
+                    self._save_status(status)
+
+                    if result["status"] == "completed":
+                        self.log("success", f"MathPIX OCR complete — {result['num_pages']} pages")
+                    else:
+                        self.log("info", f"MathPIX: {result['status']} ({result['percent_done']}% done)")
+
+                    return result
+                return {"error": f"MathPIX HTTP {resp.status_code}: {resp.text[:200]}"}
+            except Exception as e:
+                return {"error": f"Poll failed: {e}"}
 
     def download_results(self) -> Dict[str, Any]:
-        """Download and extract MMD results from MathPIX.
+        """Download and extract results from OCR engine.
 
         Returns: {mmd_path, images_count, ...}
         """
@@ -195,67 +320,85 @@ class MathPIXStage(BasePipelineStage):
         status = self._load_status()
         pdf_id = status.get("pdf_id")
         if not pdf_id:
-            return {"error": "No MathPIX upload found"}
+            return {"error": "No OCR upload found"}
 
-        app_id, app_key = self._get_credentials()
-        headers = {"app_id": app_id, "app_key": app_key}
+        from app.config import settings
+        engine = getattr(settings, "ocr_engine", "mathpix")
 
         out_dir = self.session_dir / "mathpix_output"
         out_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = out_dir / f"{pdf_id}.mmd.zip"
+        zip_path = out_dir / f"{pdf_id}.zip"
 
-        # Download zip
-        self.log("info", "Downloading MathPIX results...")
-        url = MATHPIX_DOWNLOAD_URL.format(pdf_id=pdf_id)
-
-        try:
-            resp = requests.get(url, headers=headers, stream=True, timeout=300)
-            if resp.status_code != 200:
-                return {"error": f"Download failed: HTTP {resp.status_code}"}
-
-            with open(zip_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
-            self.log("success", f"Downloaded {zip_path.name} ({zip_path.stat().st_size / 1024:.0f} KB)")
-        except Exception as e:
-            return {"error": f"Download failed: {e}"}
+        if engine == "mineru":
+            zip_url = status.get("full_zip_url")
+            if not zip_url:
+                return {"error": "No zip URL found in status. Check if polling finished successfully."}
+            self.log("info", "Downloading MinerU results ZIP...")
+            try:
+                resp = requests.get(zip_url, stream=True, timeout=300)
+                if resp.status_code != 200:
+                    return {"error": f"Download failed: HTTP {resp.status_code}"}
+                with open(zip_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                self.log("success", f"Downloaded MinerU results: {zip_path.name} ({zip_path.stat().st_size / 1024:.0f} KB)")
+            except Exception as e:
+                return {"error": f"Download failed: {e}"}
+        else:
+            app_id, app_key = self._get_credentials()
+            headers = {"app_id": app_id, "app_key": app_key}
+            self.log("info", "Downloading MathPIX results...")
+            url = MATHPIX_DOWNLOAD_URL.format(pdf_id=pdf_id)
+            try:
+                resp = requests.get(url, headers=headers, stream=True, timeout=300)
+                if resp.status_code != 200:
+                    return {"error": f"Download failed: HTTP {resp.status_code}"}
+                with open(zip_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                self.log("success", f"Downloaded MathPIX results: {zip_path.name} ({zip_path.stat().st_size / 1024:.0f} KB)")
+            except Exception as e:
+                return {"error": f"Download failed: {e}"}
 
         # Extract zip
-        self.log("info", "Extracting MMD and images...")
+        self.log("info", "Extracting OCR output and images...")
         try:
             with zipfile.ZipFile(str(zip_path), "r") as zf:
                 zf.extractall(str(out_dir))
         except Exception as e:
             return {"error": f"Extraction failed: {e}"}
 
-        # Find .mmd file
+        # Find .md or .mmd file (exclude backups or parts)
         mmd_path = None
-        for f in out_dir.rglob("*.mmd"):
-            mmd_path = f
-            break
+        for f in out_dir.rglob("*"):
+            if f.is_file() and f.suffix in (".md", ".mmd") and "backup" not in f.name and not f.name.startswith("part"):
+                mmd_path = f
+                break
 
         if not mmd_path:
-            return {"error": "No .mmd file found in downloaded zip"}
+            return {"error": "No markdown/MMD file found in downloaded zip"}
 
-        # Count extracted images
-        images_dir = out_dir / "images"
-        img_exts = {".png", ".jpg", ".jpeg", ".gif"}
+        # Move the main .md/.mmd file to the root of mathpix_output for Stage 2 mapping
+        if mmd_path.parent != out_dir:
+            dest_path = out_dir / mmd_path.name
+            shutil.copy2(mmd_path, dest_path)
+            mmd_path = dest_path
+
+        # Count and copy extracted images recursively (handling different folder shapes)
+        img_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         images_count = 0
-        if images_dir.exists():
-            images_count = sum(1 for f in images_dir.iterdir() if f.suffix.lower() in img_exts)
+        orig_dir = self.session_dir / "images_original"
+        orig_dir.mkdir(parents=True, exist_ok=True)
+        
+        for f in out_dir.rglob("*"):
+            if f.is_file() and f.suffix.lower() in img_exts and f.parent != orig_dir:
+                shutil.copy2(f, orig_dir / f.name)
+                images_count += 1
 
-        # Also copy images to images_original/ for watermark stage
         if images_count > 0:
-            orig_dir = self.session_dir / "images_original"
-            orig_dir.mkdir(parents=True, exist_ok=True)
-            copied = 0
-            for img in images_dir.iterdir():
-                if img.suffix.lower() in img_exts:
-                    shutil.copy2(img, orig_dir / img.name)
-                    copied += 1
-            self.log("info", f"Copied {copied} images to images_original/")
+            self.log("info", f"Copied {images_count} images to images_original/")
 
         # Update status
         status["download_status"] = "completed"

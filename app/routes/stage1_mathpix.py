@@ -203,13 +203,13 @@ async def token_safety_check(session_id: str):
     if not mmd_dir.exists():
         return APIResponse(data={"error": "No mathpix_output directory found"})
 
-    # Find MMD file(s) — exclude part files for the main check
+    # Find MMD/MD file(s) — exclude part files for the main check
     mmd_files = sorted([
         f for f in mmd_dir.iterdir()
-        if f.suffix == ".mmd" and f.is_file() and not f.name.startswith("part")
+        if f.suffix in (".mmd", ".md") and f.is_file() and not f.name.startswith("part")
     ])
     if not mmd_files:
-        return APIResponse(data={"error": "No MMD files found"})
+        return APIResponse(data={"error": "No MMD or MD files found"})
 
     # Read all MMD content (may be multiple files that get concatenated in Stage 2)
     total_text = ""
@@ -222,7 +222,7 @@ async def token_safety_check(session_id: str):
     result["total_lines"] = total_text.count("\n") + 1
 
     # Check if split parts already exist
-    part_files = sorted([f for f in mmd_dir.iterdir() if f.name.startswith("part") and f.suffix == ".mmd"])
+    part_files = sorted([f for f in mmd_dir.iterdir() if f.name.startswith("part") and f.suffix in (".mmd", ".md")])
     if part_files:
         result["has_parts"] = True
         result["part_count"] = len(part_files)
@@ -258,13 +258,13 @@ async def auto_split_mmd(session_id: str, num_parts: int = 2):
     if not mmd_dir.exists():
         return APIResponse(data={"error": "No mathpix_output directory found"})
 
-    # Find main MMD file (exclude existing parts)
+    # Find main MMD/MD file (exclude existing parts)
     mmd_files = sorted([
         f for f in mmd_dir.iterdir()
-        if f.suffix == ".mmd" and f.is_file() and not f.name.startswith("part")
+        if f.suffix in (".mmd", ".md") and f.is_file() and not f.name.startswith("part")
     ])
     if not mmd_files:
-        return APIResponse(data={"error": "No MMD files found"})
+        return APIResponse(data={"error": "No MMD or MD files found"})
 
     full_text = ""
     for f in mmd_files:

@@ -1234,10 +1234,10 @@ class LLMMapperStage(BasePipelineStage):
         return {}
 
     def _find_mmd_files(self) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
-        """Find MMD files in mathpix_output directory.
+        """Find MMD or MD files in mathpix_output directory.
 
         Returns (questions_mmd, solutions_mmd, answer_key_file).
-        Falls back to any .mmd file if no keyword match.
+        Falls back to any .mmd/.md file if no keyword match.
         """
         mmd_dir = self.session_dir / "mathpix_output"
         if not mmd_dir.exists():
@@ -1251,22 +1251,22 @@ class LLMMapperStage(BasePipelineStage):
             if not f.is_file():
                 continue
             name_lower = f.name.lower()
-            if "question" in name_lower and f.suffix == ".mmd":
+            if "question" in name_lower and f.suffix in (".mmd", ".md"):
                 q_mmd = f
-            elif "solution" in name_lower and f.suffix == ".mmd":
+            elif "solution" in name_lower and f.suffix in (".mmd", ".md"):
                 s_mmd = f
-            elif "key" in name_lower and f.suffix in (".txt", ".mmd"):
+            elif "key" in name_lower and f.suffix in (".txt", ".mmd", ".md"):
                 key_file = f
 
-        # Fallback: if no keyword-matched questions file, use any .mmd file
+        # Fallback: if no keyword-matched questions file, use any .mmd or .md file
         if not q_mmd:
             all_mmds = sorted([
                 f for f in mmd_dir.iterdir()
-                if f.suffix == ".mmd" and f.is_file()
+                if f.suffix in (".mmd", ".md") and f.is_file() and not f.name.startswith("part")
             ])
             if all_mmds:
                 q_mmd = all_mmds[0]
-                self.log("info", f"Using MMD file: {q_mmd.name}")
+                self.log("info", f"Using OCR file: {q_mmd.name}")
 
         return q_mmd, s_mmd, key_file
 

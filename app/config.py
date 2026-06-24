@@ -36,9 +36,15 @@ class Settings(BaseSettings):
     db_path: str = ""       # Derived from data_dir if not set
     db_index_dir: str = ""  # Derived from data_dir if not set
 
+    # ── OCR Engine Selection ──
+    ocr_engine: str = "mineru"
+
     # ── MathPIX ──
     mathpix_app_id: str = ""
     mathpix_app_key: str = ""
+
+    # ── MinerU ──
+    mineru_token: str = "eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFM1MTIifQ.eyJqdGkiOiI3NjMwMDEzOSIsInJvbCI6IlJPTEVfUkVHSVNURVIiLCJpc3MiOiJPcGVuWExhYiIsImlhdCI6MTc4MjI5OTg0MSwiY2xpZW50SWQiOiJsa3pkeDU3bnZ5MjJqa3BxOXgydyIsInBob25lIjoiIiwib3BlbklkIjpudWxsLCJ1dWlkIjoiNjdkNGE4YTItNTIxMS00ZjdmLTllZDItMDAzYTk2ZGMwODYwIiwiZW1haWwiOiJjaGFuZHJhcGFwcjE1MDFAZ21haWwuY29tIiwiZXhwIjoxNzkwMDc1ODQxfQ.yGZrJPZNNb0_z08v8fu1ArmJwFlBaoA8ADmEO2mAso3SoNHuq4ZymysEt7aKOiTAaMFu3HD0NGg4gWCBJkzsUQ"
 
     # ── Gemini ──
     gemini_api_key: str = ""
