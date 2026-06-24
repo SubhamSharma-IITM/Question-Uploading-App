@@ -1,0 +1,299 @@
+[
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "MEDIUM",
+    "question_content": "\\section*{MATCHING LIST TYPE QUESTION}\n24.\n\n\\section*{List-I}\n(I) $P$ is point in the plane of the triangle $A B C$. pv's of $A, B$ and $C$ are $\\vec{a}, \\vec{b}$ and $\\vec{c}$ respectively with respect to $P$ as the origin. If $(\\vec{b}+\\vec{c}) \\cdot(\\vec{b}-\\vec{c})=0$ and $(\\vec{c}+\\vec{a}) \\cdot(\\vec{c}-\\vec{a})=0$, then w.r.t. the triangle $A B C, P$ is its\n\n\\section*{List-II}\n(P) centroid\n(II) If $\\vec{a}, \\vec{b}, \\vec{c}$ are the position vectors of the three non collinear points\n(Q) orthocentre $A, B$ and $C$ respectively such that the vector $\\vec{V}=\\overrightarrow{P A}+\\overrightarrow{P B}+\\overrightarrow{P C}$ is a null vector then w.r.t. the $\\triangle A B C, P$ is its\n(III) If $P$ is a point inside the $\\triangle A B C$ such that the vector $\\vec{R}=(B C) \\overrightarrow{P A}+(C A)(\\overrightarrow{P B})+(A B)(\\overrightarrow{P C})$ is a null vector then w.r.t. the $\\triangle A B C, P$ is its\n(IV) If $P$ is a point in the plane of the triangle $A B C$ such that the scalar product $\\overrightarrow{P A} \\cdot \\overrightarrow{C B}$ and $\\overrightarrow{P B} \\cdot \\overrightarrow{A C}$ vanishes, then w.r.t. the $\\triangle A B C, P$ is its\n(A) I \u2192 P; II \u2192 Q; III \u2192 R; IV \u2192 S\n(B) I \u2192 S; II \u2192 P; III \u2192 R; IV \u2192 Q\n(C) I \u2192 R; II \u2192 P; III \u2192 Q; IV \u2192 S",
+    "solution_content": "\\end{gathered}$$\n24. Ans. (B)\n(A) $P$ is in plane of $\\triangle A B C$ as origin\n\nNow $(\\vec{b}+\\vec{c}) \\cdot(\\vec{b}-\\vec{c})=0$\n$\\vec{b}^{2}-\\vec{c}^{2}=0 \\quad \\therefore \\quad|\\vec{b}|=|\\vec{c}|$\nAlso $(\\vec{c}+\\vec{a}) \\cdot(\\vec{c}-\\vec{a})=0$\n$\\vec{c}-\\vec{a}^{2}=0$\n$$\\therefore \\quad|\\vec{c}|=|\\vec{a}|$$\n$\\Rightarrow \\quad|\\vec{a}|=|\\vec{b}|=|\\vec{c}|$\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-47_241_369_1110_1315.jpg)\n$|\\overrightarrow{O A}|=|\\overrightarrow{O B}|=|\\overrightarrow{O C}|=$ constant\nHence $P$ is circum centre\n(B) $\\vec{v}=\\overrightarrow{P A}+\\overrightarrow{P B}+\\overrightarrow{P C}=0 \\therefore \\vec{a}-\\vec{p}+\\vec{b}-\\vec{p}+c-\\vec{p}=0$\n$\\vec{a}+\\vec{b}+\\vec{c}=0+3 \\vec{p}$\nor $\\vec{p}=\\frac{\\vec{a}+\\vec{b}+\\vec{c}}{3}$\nthen $P$ is centroid.\n[P]\n(C) $B C(\\overrightarrow{P A})+C A(\\overrightarrow{P B})+A B(\\overrightarrow{P C})=0$\n$B C(\\vec{a}-\\vec{p})+C A(\\vec{b}-\\vec{p})+A B(\\vec{c}-\\vec{p})=0$\n$\\vec{P}=\\frac{B C \\vec{a}+C A \\vec{b}+A B \\vec{c}}{B C+C A+A B}$\nThus P is in centre.\n[R]\n(D) $\\overrightarrow{P A} \\cdot \\overrightarrow{C B}$ and $\\overrightarrow{P B} \\cdot \\overrightarrow{A C}$ vanishes\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-47_234_360_2156_360.jpg)\n$\\overrightarrow{P A} \\cdot \\overrightarrow{C B}=(\\vec{a}-\\vec{p}) \\cdot(\\vec{b} \\cdot \\vec{c})=0 \\quad \\Rightarrow \\quad \\mathrm{PA} \\perp \\mathrm{CB}$\n$\\overrightarrow{P B} \\cdot \\overrightarrow{A C}=(\\vec{b}-\\vec{p}) \\cdot(\\vec{c}-\\vec{a})=0 \\quad \\Rightarrow \\quad \\mathrm{~PB} \\perp \\mathrm{AC}$",
+    "answer_mapping": [
+      [
+        "D"
+      ],
+      [
+        "A"
+      ],
+      [
+        "C"
+      ],
+      [
+        "B"
+      ]
+    ],
+    "answer_mapping_source": {
+      "I": [
+        "S"
+      ],
+      "II": [
+        "P"
+      ],
+      "III": [
+        "R"
+      ],
+      "IV": [
+        "Q"
+      ]
+    },
+    "line_start": 188,
+    "line_end": 202,
+    "qid": "EVAM_REPLAY_MATH_Q23",
+    "source": "EVAM_REPLAY",
+    "question_number": 23
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "MEDIUM",
+    "question_content": "\\section*{MATRIX MATCH TYPE QUESTION}\n25.\n\n\\section*{Column-I}\n(A) If $\\vec{a}, \\vec{b}, \\vec{c}$ are non coplanar unit vectors, such that $\\vec{a} \\times(\\vec{b} \\times \\vec{c})=\\frac{\\vec{b}+\\vec{c}}{\\sqrt{2}}$, then the angle between $\\vec{a}$ and $\\vec{b}$ lies in\n(B) Four vectors $\\vec{a}, \\vec{b}, \\vec{c}, \\overrightarrow{\\boldsymbol{d}}$ are such that $(\\vec{a} \\times \\vec{b}) \\times(\\vec{c} \\times \\overrightarrow{\\boldsymbol{d}})=\\overrightarrow{0}$ Let $P_{1}$ and $P_{2}$ be planes determined by the pair of vectors $\\vec{a}, \\vec{b}$ and $\\vec{c}, \\vec{d}$ respectively, then angle between $\\mathrm{P}_{1}$ and $\\mathrm{P}_{2}$ lies in\n(C) If $\\vec{a}$ and $\\vec{b}$ are two unit vectors such that $2 \\vec{a}-\\vec{b}$ and $4 \\vec{a}+5 \\vec{b}$ are perpendicular to each other, then angle between $\\vec{a}$ and $\\vec{b}$ lies in\n(D) If $|\\vec{a}|=3,|\\vec{b}|=5,|\\vec{c}|=7$ and $\\vec{a}+\\vec{b}+\\vec{c}=\\overrightarrow{0}$, then angle between $\\vec{a}$ and $\\vec{b}$ lies in\n\n\\section*{Column-II}\n(P) $\\quad\\left(\\frac{\\pi}{4}, \\frac{\\pi}{2}\\right)$\n(Q) $\\quad\\left(-\\frac{\\pi}{4}, \\frac{3 \\pi}{4}\\right)$\n(R) $\\quad\\left(\\frac{\\pi}{6}, \\frac{5 \\pi}{6}\\right)$",
+    "solution_content": "Thus P is orthocentre, i.e. point of intersection of altitudes.\n25. Ans. $(\\mathrm{A}) \\rightarrow(\\mathrm{R}) ;(\\mathrm{B}) \\rightarrow(\\mathrm{Q}, \\mathrm{S}) ;(\\mathrm{C}) \\rightarrow(\\mathrm{Q}, \\mathrm{R}) ;(\\mathrm{D}) \\rightarrow(\\mathrm{P}, \\mathrm{Q}, \\mathrm{R}, \\mathrm{S})$\n(A) $(\\vec{a} \\cdot \\vec{c})-(\\vec{a} \\cdot \\vec{b}) \\vec{c}=\\frac{\\vec{b}+\\vec{c}}{\\sqrt{2}}$\n$\\because \\quad \\vec{a}, \\vec{b}$ and $\\vec{c}$ are non coplanar\n$\\therefore \\quad$ they are linearly independent\n$\\Rightarrow \\quad \\vec{a} \\cdot \\vec{c}=\\frac{1}{\\sqrt{2}}$ and $\\vec{a} \\cdot \\vec{b}=-\\frac{1}{\\sqrt{2}} \\quad \\Rightarrow \\vec{a} \\wedge \\vec{b}=\\frac{3 \\pi}{4}$\n(B) Let $\\vec{n}_{1}$ be normal to plane $P_{1}$ and $\\vec{n}_{2}$ be normal to plane $P_{2}$\n$\\Rightarrow \\vec{n}_{1}=\\vec{a} \\times \\vec{b}$ and $\\vec{n}_{2}=\\vec{c} \\times \\vec{d}$\n$\\because \\quad(\\vec{a} \\times \\vec{b}) \\times(\\vec{c} \\times \\vec{d})=0$\n$\\therefore \\quad \\vec{n}_{1} \\times \\vec{n}_{2}=0$\n$\\Rightarrow \\quad P_{1}$ and $P_{2}$ are parallel angle between them is zero.\n(C) $(2 \\vec{a}-\\vec{b}) \\cdot(4 \\vec{a}+5 \\vec{b})=0$\n$\\Rightarrow 8-5+6 \\vec{a} \\cdot \\vec{b}=0 \\Rightarrow \\vec{a} \\cdot \\vec{b}=-\\frac{1}{2} \\Rightarrow \\vec{a} \\wedge \\vec{b}=\\frac{2 \\pi}{3}$\n(D) $\\because \\vec{a}+\\vec{b}+\\vec{c}=\\overrightarrow{0} \\quad \\Rightarrow|\\vec{a}+\\vec{b}|^{2}=|\\vec{c}|^{2}$\n$\\Rightarrow \\quad|\\vec{a}|^{2}+|\\vec{b}|^{2}+2 \\vec{a} \\cdot \\vec{b}=|\\vec{c}|^{2}$\n$9+25+2.3 .5 \\cos \\left(\\vec{a}^{\\wedge} \\vec{b}\\right)=49$\n$\\cos (\\vec{a} \\wedge \\vec{b})=\\frac{1}{2} \\Rightarrow \\vec{a} \\wedge \\vec{b}=\\frac{\\pi}{3}$",
+    "answer_mapping": [
+      [
+        "C"
+      ],
+      [
+        "B",
+        "D"
+      ],
+      [
+        "B",
+        "C"
+      ],
+      [
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    ],
+    "answer_mapping_source": {
+      "A": [
+        "R"
+      ],
+      "B": [
+        "Q",
+        "S"
+      ],
+      "C": [
+        "Q",
+        "R"
+      ],
+      "D": [
+        "P",
+        "Q",
+        "R",
+        "S"
+      ]
+    },
+    "line_start": 207,
+    "line_end": 219,
+    "qid": "EVAM_REPLAY_MATH_Q24",
+    "source": "EVAM_REPLAY",
+    "question_number": 24
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "MVT077\n5. Match List I with List II and select the correct answer using the code given below the lists :\n\n\\section*{List - I}\n(P) Volume of parallelepiped determined by vectors $\\vec{a}, \\vec{b}$ and $\\vec{c}$ is 2 . Then the volume of the parallelepiped determined by vectors $2(\\vec{a} \\times \\vec{b}), 3(\\vec{b} \\times \\vec{c})$ and $(\\vec{c} \\times \\vec{a})$ is\n(Q) Volume of parallelepiped determined by vectors $\\vec{a}, \\vec{b}$ and $\\vec{c}$ is 5 . Then the volume of the parallelepiped determined by vectors $3(\\vec{a}+\\vec{b}),(\\vec{b}+\\vec{c})$ and $2(\\vec{c}+\\vec{a})$ is\n(R) Area of a triangle with adjacent sides determined by vectors $\\vec{a}$ and $\\vec{b}$ is 20 . Then the area of the triangle with adjacent sides determined by vectors ( $2 \\vec{a}+3 \\vec{b}$ ) and ( $\\vec{a}-\\vec{b}$ ) is\n(S) Area of a parallelogram with adjacent sides determined by vectors $\\vec{a}$ and $\\vec{b}$ is 30 . Then the area of the parallelogram with adjacent sides determined by vectors ( $\\vec{a}+\\vec{b}$ ) and $\\vec{a}$ is\n\n\\section*{List - II}\n(1) 100\n(2) 30\n(3) 24\n(4) 60\n[JEE (Advanced) 2013]\n\nCodes :\n\n\\begin{tabular}{lllll}\n& $\\mathbf{P}$ & $\\mathbf{Q}$ & $\\mathbf{R}$ & $\\mathbf{S}$ \\\\\n(A) & 4 & 2 & 3 & 1 \\\\\n(B) & 2 & 3 & 1 & 4 \\\\\n(C) & 3 & 4 & 1 & 2 \\\\\n(D) & 1 & 4 & 3 & 2",
+    "solution_content": "\u2234 No. of set of coplanar vectors $=24$\n5. Ans. (C)\n(P) $\\left[\\begin{array}{lll}\\vec{a} & \\vec{b} & \\vec{c}\\end{array}\\right]=2$\n$$\\left.\\begin{array}{l}\n2(\\vec{a} \\times \\vec{b}), 3(\\vec{b} \\times \\vec{c}),(\\vec{c} \\times \\vec{a}) \\\\\n6[\\vec{a} \\times \\vec{b}\n\\end{array} \\vec{b} \\times \\vec{c} \\vec{c} \\times \\vec{a}\\right]=6\\left[\\begin{array}{ll}\n\\vec{a} & \\vec{b}\n\\end{array}\\right]^{2}=6 \\times 4=24 ~\\left(\\begin{array}{l}\n\\vec{a} \\\\\nP \\rightarrow 3\n\\end{array}\\right.$$\n(Q) $\\left[\\begin{array}{lll}\\vec{a} & \\vec{b} & \\vec{c}\\end{array}\\right]=5$\n$$\\begin{aligned}\n& {[3(\\vec{a}+\\vec{b})(\\vec{b}+\\vec{c}) 2(\\vec{c}+\\vec{a})]=6 \\times 2\\left[\\begin{array}{lll}\n\\vec{a} & \\vec{b} & \\vec{c}\n\\end{array}\\right]} \\\\\n& =12 \\times 5=60 \\\\\n& Q \\rightarrow 4\n\\end{aligned}$$\n(R) $\\frac{1}{2}|\\vec{a} \\times \\vec{b}|=20$\n$$\\begin{aligned}\n\\Delta_{1} & =\\frac{1}{2}|(2 \\vec{a}+3 \\vec{b}) \\times(\\vec{a}-\\vec{b})| \\\\\n& =|-2 \\vec{a} \\times \\vec{b}-3(\\vec{a} \\times \\vec{b})|=\\frac{5}{2}|\\vec{a} \\times \\vec{b}|=5 \\times 20=100 \\\\\n& \\mathrm{R} \\rightarrow 1\n\\end{aligned}$$\n(S) $|\\vec{a} \\times \\vec{b}|=30$\n$$\\begin{aligned}\n& |(\\vec{a}+\\vec{b}) \\times \\vec{a}|=|\\vec{b} \\times \\vec{a}|=30 \\\\\n& S \\rightarrow 2",
+    "answer_mapping": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "answer_mapping_source": {
+      "P": [
+        "3"
+      ],
+      "Q": [
+        "4"
+      ],
+      "R": [
+        "1"
+      ],
+      "S": [
+        "2"
+      ]
+    },
+    "line_start": 416,
+    "line_end": 439,
+    "qid": "EVAM_REPLAY_MATH_Q59",
+    "source": "EVAM_REPLAY",
+    "question_number": 59
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "MVT080\n8. List I\n(P) Let $y(x)=\\cos \\left(3 \\cos ^{-1} x\\right), x \\in[-1,1], x \\neq \\pm \\frac{\\sqrt{3}}{2}$. Then $\\frac{1}{y(x)}\\left\\{\\left(x^{2}-1\\right) \\frac{d^{2} y(x)}{d x^{2}}+x \\frac{d y(x)}{d x}\\right\\}$ equals\n(Q) Let $A_{1}, A_{2}, \\ldots \\ldots, A_{n}(n>2)$ be the vertices of a regular polygon of $n$ sides with its centre at the origin. Let $\\vec{a}_{k}$ be the position vector of the point $A_{k}, k=1,2, \\ldots, n$. If $\\left|\\sum_{k=1}^{n-1}\\left(\\overrightarrow{a_{k}} \\times \\overrightarrow{a_{k+1}}\\right)\\right|=\\left|\\sum_{k=1}^{n-1}\\left(\\overrightarrow{a_{k}} \\cdot \\overrightarrow{a_{k+1}}\\right)\\right|$, then the minimum value of $n$ is\n(R) If the normal from the point $P(h, 1)$ on the ellipse $\\frac{x^{2}}{6}+\\frac{y^{2}}{3}=1$ is perpendicular to the line $x+y=8$, then the value of $h$ is\n$(\\mathrm{S})$ Number of positive solutions satisfying the equation\n[JEE (Advanced) 2014]\n\n\\section*{List II}\n(1) 1\n(2) 2\n(3) 8\n(4) 9\n\n\\begin{tabular}{|l|l|l|l|l|}\n\\hline \\multicolumn{5}{|r|}{is $\\tan ^{-1}\\left(\\frac{1}{2 x+1}\\right)+\\tan ^{-1}\\left(\\frac{1}{4 x+1}\\right.$} \\\\\n\\hline \\multicolumn{5}{|l|}{Code:} \\\\\n\\hline & P & Q & R & S \\\\\n\\hline (A) & 4 & 3 & 2 & 1 \\\\\n\\hline (B) & 2 & 4 & 3 & 1 \\\\\n\\hline (C) & 4 & 3 & 1 & 2 \\\\\n\\hline (D) & 2 & 4 & 1 & 3 \\\\\n\\hline",
+    "solution_content": "$\\frac{p^{2}+2 q^{2}+r^{2}}{q^{2}}=\\frac{p^{2}+2 p^{2}+p^{2}}{p^{2}}=4$ Ans.\n8. Ans. (A)\n(P) $y=4 x^{3}-3 x \\quad$ where $\\cos \\theta=x$\n$$\\begin{aligned}\n& \\frac{d y}{d x}=12 x^{2}-3 \\\\\n& \\left(x^{2}-1\\right) \\frac{d^{2} y}{d x^{2}}+x \\frac{d y}{d x}=\\left(x^{2}-1\\right) \\cdot 24 x+x\\left(12 x^{2}-3\\right) \\\\\n& =36 x^{3}-27 x=9\\left(4 x^{3}-3 x\\right)=9 y\n\\end{aligned}$$\n\nHence $\\frac{1}{y}\\left\\{\\left(x^{2}-1\\right) \\frac{d^{2} y}{d x^{2}}+x \\frac{d y}{d x}\\right\\}=9$\n(Q) $\\left|\\vec{a}_{1} \\times \\vec{a}_{2}+\\vec{a}_{2} \\times \\vec{a}_{3}+\\ldots+\\vec{a}_{n-1} \\times \\vec{a}_{n}\\right|$\n$$=\\left|\\vec{a}_{1} \\cdot \\vec{a}_{2}+\\vec{a}_{2} \\cdot \\vec{a}_{3}+\\ldots+\\vec{a}_{n-1} \\cdot \\vec{a}_{n}\\right|$$\n\nLet $\\left|\\vec{a}_{1}\\right|=\\left|\\vec{a}_{2}\\right| \\ldots .=\\left|\\vec{a}_{n}\\right|=\\lambda$ (as centre is origin)\nMore over angle between 2 consecutive $\\vec{a}_{i}$ 's is $\\frac{2 \\pi}{n}$\nHence given equation reduces to\n$$(n-1) \\lambda^{2} \\sin \\left(\\frac{2 \\pi}{n}\\right)=(n-1) \\lambda^{2} \\cos \\left(\\frac{2 \\pi}{n}\\right)$$\n$$\\Rightarrow \\tan \\left(\\frac{2 \\pi}{n}\\right)=1 \\Rightarrow \\frac{2 \\pi}{n}=\\frac{\\pi}{4} \\Rightarrow n=8$$\n(R) Equation of normal $\\frac{6 x}{h}-\\frac{3 y}{1}=3$ (Equation of normal is $\\left.\\frac{a^{2} x}{x_{1}}-\\frac{b^{2} y}{y_{1}}=a^{2}-b^{2}\\right)$\nslope $=\\frac{6}{3 h}=1$ (as it is perpendicular to $x+y=8$ ) $\\Rightarrow h=2$\n(S) $\\tan ^{-1}\\left(\\frac{1}{2 x+1}\\right)+\\tan ^{-1}\\left(\\frac{1}{4 x+1}\\right)=\\tan ^{-1}\\left(\\frac{2}{x^{2}}\\right)$\n$$\\begin{aligned}\n& \\Rightarrow \\frac{\\frac{1}{2 x+1}+\\frac{1}{4 x+1}}{1-\\frac{1}{(2 x+1)(4 x+1)}}=\\frac{2}{x^{2}} \\Rightarrow \\frac{6 x+2}{8 x^{2}+6 x}=\\frac{2}{x^{2}} \\\\\n& \\Rightarrow 3 x^{3}+x^{2}=8 x^{2}+6 x \\Rightarrow 3 x^{3}-7 x^{2}-6 x=0 \\\\\n& \\Rightarrow 3 x^{2}-7 x-6=0 \\quad(\\text { as } x \\neq 0) \\\\\n& \\Rightarrow(x-3)(3 x+2)=0 \\Rightarrow x=-\\frac{2}{3}, 3",
+    "answer_mapping": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "answer_mapping_source": {
+      "P": [
+        "4"
+      ],
+      "Q": [
+        "3"
+      ],
+      "R": [
+        "2"
+      ],
+      "S": [
+        "1"
+      ]
+    },
+    "line_start": 453,
+    "line_end": 475,
+    "qid": "EVAM_REPLAY_MATH_Q62",
+    "source": "EVAM_REPLAY",
+    "question_number": 62
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "MVT082\n10. Column- I\n(A) In a triangle $\\triangle X Y Z$, let $a, b$ and $c$ be the lengths of the sides opposite to the angles $X, Y$ and $Z$, respectively. If $2\\left(a^{2}-b^{2}\\right)=c^{2}$ and $\\lambda=\\frac{\\sin (X-Y)}{\\sin Z}$, then possible values of $n$ for which $\\cos (n \\pi \\lambda)=0$ is (are)\n(B) In a triangle $\\triangle X Y Z$, let $a, b$ and $c$ be the lengths of the sides opposite to the angles $X, Y$ and $Z$, respectively. If $1+\\cos 2 X-2 \\cos 2 Y=2 \\sin X \\sin Y$, then possible value(s) of $\\frac{a}{b}$ is (are)\n(C) In $R^{2}$, let $\\sqrt{3} \\hat{i}+\\hat{j}, \\hat{i}+\\sqrt{3} \\hat{j}$ and $\\beta \\hat{i}+(1-\\beta) \\hat{j}$ be the position vectors of $X, Y$ and $Z$ with respect to the origin $O$, respectively. If the distance of $Z$ from the bisector of the acute angle of $\\overrightarrow{O X}$ and $\\overrightarrow{O Y}$ is, $\\frac{3}{\\sqrt{2}}$ then possible value(s) of $|\\beta|$ is (are)\n(D) Suppose that $F(\\alpha)$ denotes the area of the region bounded by $x=0, x=2, y^{2}=4 x$ and $y=|\\alpha x-1|+|\\alpha x-2|+\\alpha x$, where $\\alpha \\in\\{0,1\\}$. Then the value(s) of $F(\\alpha)+\\frac{8}{3} \\sqrt{2}$, when $\\alpha=0$ and $\\alpha=1$, is (are)\n\n\\section*{Column-II}\n(P) 1\nQ) 2\n(Q) 2\n(R) 3",
+    "solution_content": "$\\therefore|\\vec{a} \\times \\vec{b}+\\vec{c} \\times \\vec{a}|=2 . \\sqrt{144.48-(72)^{2}}=48 \\sqrt{3}$ Ans. (C)\n10. Ans. ( $\\mathbf{A} \\rightarrow \\mathbf{P}, \\mathbf{R}, \\mathbf{S} ; \\mathbf{B} \\rightarrow \\mathbf{P} ; \\mathbf{C} \\rightarrow \\mathbf{P}, \\mathbf{Q} ; \\mathbf{D} \\rightarrow \\mathbf{S}, \\mathbf{T}$ )\n(A) Given $2\\left(a^{2}-b^{2}\\right)=c^{2}$\n$$\\begin{aligned}\n& \\Rightarrow 2\\left(\\sin ^{2} X-\\sin ^{2} Y\\right)=\\sin ^{2} Z \\\\\n& \\Rightarrow 2 \\sin (X+Y) \\sin (X-Y)=\\sin ^{2} Z \\\\\n& \\Rightarrow 2 \\sin (\\pi-Z) \\sin (X-Y)=\\sin ^{2} Z\n\\end{aligned}$$\n$\\Rightarrow \\sin (X-Y)=\\frac{\\sin Z}{2}$\nalso given,\n$\\lambda=\\frac{\\sin (X-Y)}{\\sin Z}=\\frac{1}{2}$\nNow, $\\cos \\left({ }_{n} \\pi \\lambda\\right)=0$\n$\\Rightarrow \\cos \\left(\\frac{n \\pi}{2}\\right)=0$\n$\\therefore n=1,3,5 \\quad \\therefore(\\mathbf{A} \\rightarrow \\mathbf{P}, \\mathbf{R}, \\mathbf{S})$\n(B) $1+\\cos 2 X-2 \\cos 2 Y=2 \\sin X \\sin Y$\n$2 \\cos ^{2} X-2 \\cos 2 Y=2 \\sin X \\sin Y$\n$1-\\sin ^{2} X-1+2 \\sin ^{2} Y=\\sin X \\sin Y$\n$\\sin ^{2} X+\\sin X \\sin Y=2 \\sin ^{2} Y$\n$\\sin X(\\sin X+\\sin Y)=2 \\sin ^{2} Y$\n$\\sin X=a k, \\sin Y=b k$\n$a(a+b)=2 b^{2}$\n$a^{2}+a b-2 b^{2}=0$\n$\\left(\\frac{a}{b}\\right)^{2}+\\frac{a}{b}-2=0$\n$\\frac{a}{b}=-2,1$\n$\\frac{a}{b}=1$\n$(\\mathrm{B} \\rightarrow \\mathrm{P})$\nHence equation of acute angle bisector of $O X$ and $O Y$ is $y=x$\nHence $x-y=0$\nNow, distance of $\\beta \\hat{i}+(1-\\beta) \\hat{j} \\equiv z(\\beta, 1-\\beta)$ from $x-y$ is $\\left|\\frac{\\beta-(1-\\beta)}{\\sqrt{2}}\\right|=\\frac{3}{\\sqrt{2}}$\n$|2 \\beta-1|=3$\n$2 \\beta-1= \\pm 3$\n$2 \\beta=4,-2$\n$\\beta=2,-1$\n$|\\beta|=2,1$\nAns. (P,Q)\n(D) For $\\alpha=1$\n$y=|x-1|+|x-2|+x=\\left\\{\\begin{array}{ccc}3-x & ; & x<1 \\\\ 1+x & ; & 1 \\leq x<2 \\\\ 3 x-3 & ; & x \\geq 2\\end{array}\\right.$\n$A=\\frac{1}{2}(2+3) \\times 1+\\frac{1}{2}(2+3) \\times 1-\\int_{0}^{2} 2 \\sqrt{x} d x$\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-64_293_469_2325_1366.jpg)\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-65_337_471_301_395.jpg)\n$$\\begin{aligned}\n& A=5-\\frac{8}{3} \\sqrt{2} \\\\\n& \\therefore F(1)+\\frac{8}{3} \\sqrt{2}=5\n\\end{aligned}$$\n\nFor $\\alpha=0, y=|-1|+|-2|=3$\n$$\\begin{aligned}\n& A=6-\\int_{0}^{2} 2 \\sqrt{x} d x \\Rightarrow A=6-\\frac{8}{3} \\sqrt{2} \\\\\n& \\therefore F(0)+\\frac{8}{3} \\sqrt{2}=6\n\\end{aligned}$$\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-65_332_465_767_1393.jpg)",
+    "answer_mapping": [
+      [
+        "A",
+        "C",
+        "D"
+      ],
+      [
+        "A"
+      ],
+      [
+        "A",
+        "B"
+      ],
+      [
+        "D"
+      ]
+    ],
+    "answer_mapping_source": {
+      "A": [
+        "P",
+        "R",
+        "S"
+      ],
+      "B": [
+        "P"
+      ],
+      "C": [
+        "P",
+        "Q"
+      ],
+      "D": [
+        "S"
+      ]
+    },
+    "line_start": 484,
+    "line_end": 495,
+    "qid": "EVAM_REPLAY_MATH_Q64",
+    "source": "EVAM_REPLAY",
+    "question_number": 64
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "MVT156\n25. Let $\\ell_{1}$ and $\\ell_{2}$ be the lines $\\vec{r}_{1}=\\lambda(\\hat{i}+\\hat{j}+\\hat{k})$ and $\\vec{r}_{2}=(\\hat{j}-\\hat{k})+\\mu(\\hat{i}+\\hat{k})$, respectively. Let $X$ be the set of all the planes $H$ that contain the line $\\ell_{1}$. For a plane $H$, let $d(H)$ denote the smallest possible distance between the points of $\\ell_{2}$ and $H$. Let $H_{0}$ be plane in $X$ for which $d\\left(H_{0}\\right)$ is the maximum value of $d(H)$ as $H$ varies over all planes in $X$.\n\nMatch each entry in List-I to the correct entries in List-II.\n\n\\section*{List-I}\n(P) The value of $d\\left(H_{0}\\right)$ is\n(Q) The distance of the point ( $0,1,2$ ) from $H_{0}$ is\n(R) The distance of origin from $H_{0}$ is\n$(\\mathrm{S})$ The distance of origin from the point of intersection of planes $y=z, x=1$ and $H_{0}$ is\n\n\\section*{List-II}\n(1) $\\sqrt{3}$\n(2) $\\frac{1}{\\sqrt{3}}$\n(3) 0\n(4) $\\sqrt{2}$\n(5) $\\frac{1}{\\sqrt{2}}$\n\nThe correct option is :\n[JEE (Advanced) 2023]\n$(\\mathrm{A})(\\mathrm{P}) \\rightarrow(2)(\\mathrm{Q}) \\rightarrow(4)(\\mathrm{R}) \\rightarrow(5)(\\mathrm{S}) \\rightarrow(1)$\n(B) (P) \u2192 (5) (Q) \u2192 (4) (R) \u2192 (3) (S) \u2192 (1)\n(C) (P) \u2192 (2) (Q) \u2192 (1) (R) \u2192 (3) (S) \u2192 (2)",
+    "solution_content": "$\\therefore \\frac{80}{\\sqrt{3}} V=45$\n25. Ans. (B)\n$L_{1}: \\vec{r}_{1}=\\lambda(\\hat{i}+\\hat{j}+\\hat{k})$\n$L_{2}: \\vec{r}_{2}=\\hat{j}-\\hat{k}+\\mu(\\hat{i}+\\hat{k})$\nLet system of planes are\n$$a x+b y+c z=0$$\n\u2235 It contain $L_{1}$\n$$\\therefore a+b+c=0$$\n\nFor largest possible distance between plane (1) and $L_{2}$ the line $L_{2}$ must be parallel to plane (1)\n$\\therefore a+c=0$\n$\\Rightarrow b=0$\n\u2234 Plane $H_{0}: x-z=0$\nNow $d\\left(H_{0}\\right)=\\perp$ distance from point $(0,1,-1)$ on $L_{2}$ to plane.\n$\\Rightarrow d\\left(H_{0}\\right)=\\left|\\frac{0+1}{\\sqrt{2}}\\right|=\\frac{1}{\\sqrt{2}}$\n$\\therefore P \\rightarrow 5$\nfor ' $Q$ ' distance $=\\left|\\frac{2}{\\sqrt{2}}\\right|=\\sqrt{2}$\n$\\therefore Q \\rightarrow 4$\n$\\therefore(0,0,0)$ lies on plane\n$\\therefore R \\rightarrow 3$\nfor 'S' $x=z ; y=z ; x=1$\n\u2234 point of intersection $p(1,1,1)$.\n$\\therefore O P=\\sqrt{1+1+1}=\\sqrt{3}$\n$\\therefore S \\rightarrow 2$",
+    "answer_mapping": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "answer_mapping_source": {
+      "P": [
+        "5"
+      ],
+      "Q": [
+        "4"
+      ],
+      "R": [
+        "3"
+      ],
+      "S": [
+        "1"
+      ]
+    },
+    "line_start": 612,
+    "line_end": 634,
+    "qid": "EVAM_REPLAY_MATH_Q78",
+    "source": "EVAM_REPLAY",
+    "question_number": 78
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "Negative Marks : -1 In all other cases\n14. List-I\n(P) If the vectors $\\vec{a}=3 \\hat{i}+\\hat{j}-2 \\hat{k}, \\vec{b}=-\\hat{i}+3 \\hat{j}+4 \\hat{k}$ and $\\vec{C}=4 \\hat{i}-2 \\hat{j}-6 \\hat{k}$ constitute the sides of a $\\triangle A B C$ and length of the median bisecting the vector $\\vec{c}$ is $\\lambda$, then $\\lambda^{2}$\n(Q) Let $\\vec{p}$ is the position vector of the orthocenter and $\\vec{g}$ is the position vector of the centroid of the triangle $A B C$, where circumcenter is the origin. If $\\vec{p}=K \\vec{g}$, then $K$ is equal to:\n(R) Twice of the area of the parallelogram constructed on the vectors $\\vec{a}=\\vec{p}+2 \\vec{q}$ and $\\vec{b}=2 \\vec{p}+\\vec{q}$, where $\\vec{p}$ and $\\vec{q}$ are unit vectors containing an angle of $30^{\\circ}$, is:\n(S) Let $\\vec{u}, \\vec{v}$ and $\\vec{w}$ are vector such that $\\vec{u}+\\vec{v}+\\vec{w}=\\overrightarrow{0}$.\n\nIf $|\\vec{u}|=3,|\\vec{v}|=4,|\\vec{w}|=5$ then $\\sqrt{|\\vec{u} \\cdot \\vec{v}+\\vec{v} \\cdot \\vec{w}+\\vec{w} \\cdot \\vec{u}|}$ is\nThe correct option is :\n(A) (P) \u2192 (1), (Q) \u2192 (2), (R) \u2192 (3), (S) \u2192 (4)\n(B) (P) \u2192 (3), (Q) \u2192 (2), (R) \u2192 (2), (S) \u2192 (4)\n(C) $(\\mathrm{P}) \\rightarrow(3),(\\mathrm{Q}) \\rightarrow(2),(\\mathrm{R}) \\rightarrow(1),(\\mathrm{S}) \\rightarrow(4)$",
+    "solution_content": "14. Ans. (B)\n(P) here $\\vec{a}=\\vec{b}+\\vec{c}$\n$$\\begin{aligned}\n& \\overrightarrow{A M}=\\frac{1}{2}(\\vec{a}+\\vec{b})=\\frac{1}{2}[2 \\hat{i}+4 \\hat{j}+2 \\hat{k}]=\\hat{i}+2 \\hat{j}+\\hat{k} \\\\\n& \\Rightarrow \\lambda=\\sqrt{6}\n\\end{aligned}$$\n(Q)\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-81_172_688_1457_443.jpg)\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-81_298_602_1233_1247.jpg)\n$$\\frac{\\vec{g}=2 \\times \\overrightarrow{0}+1 \\times \\vec{p}}{3} \\Rightarrow \\vec{p}=3 \\vec{g}$$\n(R) Area $=|\\vec{a} \\times \\vec{b}|=|(\\vec{p}+2 \\vec{q}) \\times(2 \\vec{p}+\\vec{q})|$\n$$=|\\vec{p} \\times \\vec{q}+4 \\vec{q} \\times \\vec{p}|=|3 \\vec{p} \\times \\vec{q}|=3 \\times \\frac{1}{2}=\\frac{3}{2}$$\n(S) $\\quad \\vec{u}+\\vec{v}+\\vec{w}=0 \\Rightarrow|\\vec{u}|^{2}+|\\vec{v}|^{2}+|\\vec{w}|^{2}+2(\\vec{u} \\cdot \\vec{v})+2(\\vec{v} \\cdot \\vec{w})+2(\\vec{w} \\cdot \\vec{u})=0$",
+    "answer_mapping": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "answer_mapping_source": {
+      "P": [
+        "3"
+      ],
+      "Q": [
+        "2"
+      ],
+      "R": [
+        "2"
+      ],
+      "S": [
+        "4"
+      ]
+    },
+    "line_start": 983,
+    "line_end": 994,
+    "qid": "EVAM_REPLAY_MATH_Q120",
+    "source": "EVAM_REPLAY",
+    "question_number": 120
+  },
+  {
+    "questionType": "matchQuestion",
+    "subject": "Mathematics",
+    "level": "HARD",
+    "question_content": "(D) (P) \u2192 (4), (Q) \u2192 (1), (R) \u2192 (2), (S) \u2192 (3)\n15.\n\n\\section*{List-I}\n(P) The volume of the parallelepiped constructed on the diagonals of the faces of the given rectangular parallelepiped is m times the volume of the given parallelepiped. Then m is equal to\n(Q) If $\\vec{x}$ satisfying the conditions $\\vec{b} \\cdot \\vec{x}=\\beta \\& \\vec{b} \\times \\vec{x}=\\vec{a}$ is $\\vec{x}=\\frac{\\left(\\beta^{2}-12\\right) \\vec{b}}{|\\vec{b}|^{2}}+\\frac{\\vec{a} \\times \\vec{b}}{|\\vec{b}|^{2}}$\nthen $\\beta$ can be\n(R) The points $(0,-1,-1),(4,5,1),(3,9,4)$ and $(-4,4, k)$ are coplanar, then $k=$\n(S) In $\\triangle \\mathrm{ABC}$ the mid points of the sides $A B, B C$ and $C A$ are respectively $(\\ell, 0,0)(0, m, 0)$ and $(0,0, n)$.\n\nThen $\\frac{A B^{2}+B C^{2}+C A^{2}}{\\ell^{2}+m^{2}+n^{2}}$ is equal to\n\n\\section*{List-II}\n(1) 2\n(2) 3\n(3) 6\n(4) 5\n\nMVT069\n\n\\section*{List-II}\n(1) -3\n(2) 2\n(3) 4\n(4) 8\n\nThe correct option is :\n$(\\mathrm{A})(\\mathrm{P}) \\rightarrow(4),(\\mathrm{Q}) \\rightarrow(1,3),(\\mathrm{R}) \\rightarrow(3),(\\mathrm{S}) \\rightarrow(1)$\n(B) (P) \u2192 (3), (Q) \u2192 (1), (R) \u2192 (2), (S) \u2192 (4)\n(C) $(\\mathrm{P}) \\rightarrow(2),(\\mathrm{Q}) \\rightarrow(1),(\\mathrm{R}) \\rightarrow(3),(\\mathrm{S}) \\rightarrow(4)$\n(D) $(\\mathrm{P}) \\rightarrow(2),(\\mathrm{Q}) \\rightarrow(1,3),(\\mathrm{R}) \\rightarrow(3),(\\mathrm{S}) \\rightarrow(4)$",
+    "solution_content": "15. Ans. (D)\n(P) Diagonals of faces of given parallelepiped are $\\vec{a}+\\vec{b}, \\vec{b}+\\vec{c}, \\vec{c}+\\vec{a}$\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-81_294_520_2224_662.jpg)\n\nVolume of parallelepiped using these vectors $=\\left[\\begin{array}{lll}\\vec{a}+\\vec{b} & \\vec{b}+\\vec{c} & \\vec{c}+\\vec{a}\\end{array}\\right]=2\\left[\\begin{array}{lll}\\vec{a} & \\vec{b} & \\vec{c}\\end{array}\\right]$\n(Q) $\\vec{b} \\times(\\vec{b} \\times \\vec{x})=\\vec{b} \\times \\vec{a} \\Rightarrow \\beta \\vec{b}-|\\vec{b}|^{2} \\vec{x}=\\vec{b} \\times \\vec{a}$\n$$\\begin{aligned}\n& \\vec{x}=\\frac{\\beta \\vec{b}}{|\\vec{b}|^{2}}+\\frac{\\vec{a} \\times \\vec{b}}{|\\vec{b}|^{2}} \\\\\n& \\beta^{2}-12=\\beta \\\\\n& \\Rightarrow \\beta=4,-3\n\\end{aligned}$$\n(R) $\\because[\\overrightarrow{A D} \\overrightarrow{A C} \\overrightarrow{A B}]=0$\n$$\\begin{aligned}\n& \\therefore\\left|\\begin{array}{ccc}\n-4 & 5 & k+1 \\\\\n3 & 10 & 5 \\\\\n4 & 6 & 2\n\\end{array}\\right|=0 \\\\\n& -4(20-30)-5(6-20)+(k+1)(18-40)=0 \\\\\n& \\Rightarrow 40+70-22(k+1)=0 \\Rightarrow k=4\n\\end{aligned}$$\n(S) $A B=2 E F=2 \\sqrt{m^{2}+n^{2}}$\n\nSimilarly\n$$\\begin{aligned}\n& B C=2 D F=2 \\sqrt{\\ell^{2}+n^{2}} \\\\\n& C A=2 \\sqrt{\\ell^{2}+m^{2}} \\\\\n& A B^{2}+B C^{2}+C A^{2}=8\\left(\\ell^{2}+m^{2}+n^{2}\\right) \\\\",
+    "answer_mapping": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "answer_mapping_source": {
+      "P": [
+        "2"
+      ],
+      "Q": [
+        "1",
+        "3"
+      ],
+      "R": [
+        "3"
+      ],
+      "S": [
+        "4"
+      ]
+    },
+    "line_start": 995,
+    "line_end": 1026,
+    "qid": "EVAM_REPLAY_MATH_Q121",
+    "source": "EVAM_REPLAY",
+    "question_number": 121
+  }
+]

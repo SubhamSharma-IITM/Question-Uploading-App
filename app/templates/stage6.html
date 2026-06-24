@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block title %}Stage 6: Image CDN Upload - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>6. Image CDN Upload</h1>
+    {% if current_stage == 'stage6_images' %}
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 7
+    </button>
+    {% endif %}
+</div>
+<p class="stage-description">
+    Upload cleaned images to Acadza CDN and replace local file references with CDN URLs in metadata.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Scan & Credentials -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Image Scan</h2>
+                <button class="btn btn-sm" onclick="scanImages()" id="scan-btn">Scan Images</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan Images" to detect image references in metadata.
+                </div>
+                <div id="cred-status" style="display: none; margin-top: 12px;"></div>
+                <div id="controls" style="display: none; margin-top: 12px;">
+                    <div class="btn-group">
+                        <button class="btn btn-primary" onclick="uploadImages()" id="upload-btn">Upload Images</button>
+                        <button class="btn" onclick="skipImages()" id="skip-btn">Skip (No Images / Defer)</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header"><h2>Upload Results</h2></div>
+            <div class="card-body">
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- Image Map Samples -->
+        <div class="card" id="samples-card" style="display: none;">
+            <div class="card-header"><h2>CDN Map Samples</h2></div>
+            <div class="card-body">
+                <div id="samples-content"></div>
+            </div>
+        </div>
+
+        <!-- Missing Images Warning -->
+        <div class="card" id="missing-card" style="display: none;">
+            <div class="card-header"><h2>Missing Images</h2></div>
+            <div class="card-body">
+                <div id="missing-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan for image references first</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function scanImages() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning metadata for image references...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage6/scan');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                document.getElementById('scan-result').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Scan Images';
+                return;
+            }
+
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-value">${d.total_questions}</div>
+                        <div class="stat-label">Total Questions</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.questions_with_images}</div>
+                        <div class="stat-label">With Images</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.referenced_images}</div>
+                        <div class="stat-label">Image Refs</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.images_on_disk}</div>
+                        <div class="stat-label">On Disk</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.missing_images}</div>
+                        <div class="stat-label">Missing</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${d.already_cached || 0}</div>
+                        <div class="stat-label">Already Cached</div>
+                    </div>
+                </div>
+            `;
+
+            appendLog('success', `Found ${d.referenced_images} image refs, ${d.images_on_disk} on disk, ${d.missing_images} missing, ${d.already_cached || 0} cached`);
+
+            if (d.can_skip) {
+                appendLog('info', 'No image references in metadata — you can skip this stage');
+            }
+
+            // Show missing images if any
+            if (d.missing_images > 0 && d.missing_list && d.missing_list.length > 0) {
+                const missingCard = document.getElementById('missing-card');
+                missingCard.style.display = 'block';
+                let missingHtml = '<div class="alert alert-warning" style="margin-bottom: 8px;">' +
+                    d.missing_images + ' referenced images not found on disk</div>';
+                missingHtml += '<div style="font-family: monospace; font-size: 12px; max-height: 150px; overflow-y: auto;">';
+                for (const name of d.missing_list) {
+                    missingHtml += '<div>' + escapeHtml(name) + '</div>';
+                }
+                if (d.missing_images > d.missing_list.length) {
+                    missingHtml += '<div style="color: var(--text-muted);">... and ' +
+                        (d.missing_images - d.missing_list.length) + ' more</div>';
+                }
+                missingHtml += '</div>';
+                document.getElementById('missing-content').innerHTML = missingHtml;
+            }
+
+            // Check CDN API endpoint
+            checkCredentials();
+
+            document.getElementById('controls').style.display = 'block';
+        } else {
+            appendLog('error', 'Scan failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan Images';
+}
+
+async function checkCredentials() {
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage6/credentials');
+        if (r.success) {
+            const d = r.data;
+            const credDiv = document.getElementById('cred-status');
+            credDiv.style.display = 'block';
+
+            if (d.configured) {
+                credDiv.innerHTML = '<div class="alert alert-info" style="font-size: 12px;">' +
+                    'CDN Endpoint: ' + escapeHtml(d.endpoint) + ' — ' + escapeHtml(d.message) + '</div>';
+                appendLog('info', 'CDN API endpoint verified');
+            } else {
+                credDiv.innerHTML = '<div class="alert alert-warning" style="font-size: 12px;">' +
+                    escapeHtml(d.message) + '</div>';
+                appendLog('warning', d.message);
+                document.getElementById('upload-btn').disabled = true;
+            }
+        }
+    } catch (e) {
+        appendLog('warning', 'Could not check CDN endpoint: ' + e.message);
+    }
+}
+
+function showUploadResults(d) {
+    const btn = document.getElementById('upload-btn');
+    const card = document.getElementById('results-card');
+    card.style.display = 'block';
+
+    document.getElementById('results-content').innerHTML = `
+        <div class="stat-grid">
+            <div class="stat-box"><div class="stat-value">${d.uploaded || 0}</div><div class="stat-label">Uploaded</div></div>
+            <div class="stat-box"><div class="stat-value">${d.cached || 0}</div><div class="stat-label">Already Cached</div></div>
+            <div class="stat-box"><div class="stat-value">${d.replaced || 0}</div><div class="stat-label">Refs Replaced</div></div>
+            <div class="stat-box"><div class="stat-value">${d.files_modified || 0}</div><div class="stat-label">Files Modified</div></div>
+            <div class="stat-box"><div class="stat-value">${d.failed || 0}</div><div class="stat-label">Failed</div></div>
+        </div>
+    `;
+
+    const ab = document.getElementById('advance-btn');
+    if (ab) ab.disabled = false;
+    btn.textContent = 'Uploaded \u2713';
+    appendLog('success', `Upload complete: ${d.uploaded || 0} uploaded, ${d.cached || 0} cached, ${d.replaced || 0} refs replaced`);
+}
+
+async function pollUploadProgress() {
+    const btn = document.getElementById('upload-btn');
+    const POLL_INTERVAL = 3000;
+
+    async function poll() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage6/progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                showUploadResults(data);
+                return;
+            }
+            if (status === 'failed') {
+                appendLog('error', 'Upload failed: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.textContent = 'Upload Images';
+                document.getElementById('skip-btn').disabled = false;
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            setTimeout(poll, POLL_INTERVAL);
+        }
+    }
+    setTimeout(poll, POLL_INTERVAL);
+}
+
+async function uploadImages() {
+    const btn = document.getElementById('upload-btn');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    document.getElementById('skip-btn').disabled = true;
+    appendLog('info', 'Starting image upload...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage6/upload');
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', r.data.error);
+                btn.disabled = false;
+                btn.textContent = 'Upload Images';
+                document.getElementById('skip-btn').disabled = false;
+                return;
+            }
+            if (r.data.status === 'no_images') {
+                appendLog('info', r.data.message);
+                const ab = document.getElementById('advance-btn');
+                if (ab) ab.disabled = false;
+                return;
+            }
+            // Background task started — poll
+            appendLog('info', 'Upload running in background. Polling...');
+            pollUploadProgress();
+        }
+    } catch (e) {
+        appendLog('error', 'Upload error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Upload Images';
+        document.getElementById('skip-btn').disabled = false;
+    }
+}
+
+async function skipImages() {
+    appendLog('info', 'Skipping image CDN upload...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage6/skip');
+        if (r.success) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Image CDN upload skipped. Images will use local references.</div>';
+            const advBtn = document.getElementById('advance-btn');
+            if (advBtn) advBtn.disabled = false;
+            document.getElementById('upload-btn').disabled = true;
+            document.getElementById('skip-btn').disabled = true;
+            document.getElementById('skip-btn').textContent = 'Skipped \u2713';
+            appendLog('info', 'Image CDN upload skipped');
+        }
+    } catch (e) {
+        appendLog('error', 'Skip error: ' + e.message);
+    }
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage6_images');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        document.getElementById('controls').style.display = 'block';
+        document.getElementById('upload-btn').disabled = true;
+        document.getElementById('skip-btn').disabled = true;
+        const card = document.getElementById('results-card');
+        card.style.display = 'block';
+        if (d.skipped) {
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Image CDN upload was skipped.</div>';
+        } else {
+            document.getElementById('upload-btn').textContent = 'Uploaded \u2713';
+            document.getElementById('results-content').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.uploaded || 0}</div><div class="stat-label">Uploaded</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.cached || 0}</div><div class="stat-label">Cached</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.replaced || 0}</div><div class="stat-label">Replaced</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.files_modified || 0}</div><div class="stat-label">Files</div></div>
+                </div>
+            `;
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,870 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Complete - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>Pipeline Complete</h1>
+    <span class="badge" style="color: var(--success); font-size: 14px; font-weight: 700;">
+        ALL STAGES DONE
+    </span>
+</div>
+<p class="stage-description">
+    All 10 stages have been completed. Below is the final summary of the pipeline run.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Loading Placeholder -->
+        <div class="card" id="loading-card">
+            <div class="card-body" style="text-align: center; padding: 24px;">
+                <div style="color: var(--text-muted);">Loading pipeline summary...</div>
+            </div>
+        </div>
+
+        <!-- Summary Header -->
+        <div class="card" id="summary-card" style="display: none;">
+            <div class="card-header"><h2>Pipeline Summary</h2></div>
+            <div class="card-body">
+                <div class="stat-grid" id="summary-stats"></div>
+            </div>
+        </div>
+
+        <!-- Subject Breakdown -->
+        <div class="card" id="subject-card" style="display: none;">
+            <div class="card-header"><h2>Subject Breakdown</h2></div>
+            <div class="card-body">
+                <div id="subject-content"></div>
+            </div>
+        </div>
+
+        <!-- Question Type Breakdown -->
+        <div class="card" id="type-card" style="display: none;">
+            <div class="card-header"><h2>Question Types</h2></div>
+            <div class="card-body">
+                <div id="type-content"></div>
+            </div>
+        </div>
+
+        <!-- Per-Stage Stats -->
+        <div class="card" id="stage-stats-card" style="display: none;">
+            <div class="card-header"><h2>Per-Stage Results</h2></div>
+            <div class="card-body">
+                <div id="stage-stats-content"></div>
+            </div>
+        </div>
+
+        <!-- QA Vote Results -->
+        <div class="card" id="qa-card" style="display: none;">
+            <div class="card-header"><h2>QA Vote Results</h2></div>
+            <div class="card-body">
+                <div id="qa-content"></div>
+            </div>
+        </div>
+
+        <!-- Upload to DB -->
+        <div class="card" id="upload-card">
+            <div class="card-header"><h2>Upload to Database</h2></div>
+            <div class="card-body">
+                <div id="upload-scan-info" style="margin-bottom: 12px; font-size: 13px; color: var(--text-muted);">
+                    Click "Scan" to check what's ready for upload.
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="scanUpload()" id="scan-upload-btn">Scan Ready</button>
+                    <button class="btn btn-primary" onclick="uploadToDB()" id="upload-db-btn" disabled>Upload to DB</button>
+                    <button class="btn" onclick="downloadAllStats()" id="stats-zip-btn" disabled>Download All Stats (ZIP)</button>
+                </div>
+                <div id="upload-result" style="margin-top: 12px; display: none;"></div>
+                <div id="absorb-result" style="margin-top: 8px; display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Stage 11 on-spot conversion (Admin only) -->
+        {% if user_role in ('Admin', 'Architect') %}
+        <div class="card" id="stage11-card">
+            <div class="card-header">
+                <h2>Stage 11 — On-Spot Correction (Admin)</h2>
+                <span class="badge" style="background:rgba(244,140,6,0.12);color:#e08700;">demo / faculty review</span>
+            </div>
+            <div class="card-body">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+                    Runs the LLM correction loop on this session's uploaded err=2 questions and promotes the passing ones to err=1 directly on the live DB. Use this for demos or urgent faculty review — the nightly auto-sweep handles everything else at 00:30 IST.
+                    <br><strong>Memory pressure:</strong> only available to you; not visible to other operators. Crash-safe: progress is saved per chunk of 50 OIDs.
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="openStage11Popup()" id="stage11-run-btn">Run Stage 11 Now</button>
+                    <button class="btn btn-secondary" onclick="refreshStage11Status()" id="stage11-refresh-btn" style="font-size:12px;">Refresh Status</button>
+                </div>
+                <div id="stage11-status-text" style="margin-top:10px;font-size:12px;color:var(--text-muted);">Status: idle.</div>
+                <div id="stage11-result" style="margin-top:10px;display:none;"></div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Actions (visible after upload + absorption complete) -->
+        <div class="card" id="post-upload-actions" style="display: none;">
+            <div class="card-header"><h2>Actions</h2></div>
+            <div class="card-body">
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="backToDashboard()" id="dashboard-btn">Back to Dashboard</button>
+                    <button class="btn" onclick="loadSummary()">Refresh Summary</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Pipeline Log</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry success">
+                <span class="log-level">[OK]</span>
+                <span class="log-msg">Pipeline complete -- all 10 stages finished</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.summary-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+.summary-stat-box {
+    padding: 16px 12px;
+    border-radius: 8px;
+    text-align: center;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+}
+.summary-stat-box .sv { font-size: 28px; font-weight: 700; }
+.summary-stat-box .sl { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.summary-stat-box.highlight-green { border-color: var(--success); }
+.summary-stat-box.highlight-green .sv { color: var(--success); }
+.summary-stat-box.highlight-red { border-color: var(--error); }
+.summary-stat-box.highlight-red .sv { color: var(--error); }
+
+.breakdown-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.breakdown-table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border); font-weight: 600; }
+.breakdown-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.breakdown-table td:last-child { font-weight: 600; text-align: right; }
+.breakdown-table tr:last-child td { border-bottom: none; }
+
+.breakdown-bar {
+    height: 8px; border-radius: 4px; background: var(--primary);
+    display: inline-block; vertical-align: middle; margin-right: 8px;
+    min-width: 4px;
+}
+
+.stage-result-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; margin-bottom: 4px;
+    border-radius: 4px; background: var(--bg-secondary);
+    border: 1px solid var(--border); font-size: 13px;
+}
+.stage-result-row .stage-name { font-weight: 600; min-width: 160px; }
+.stage-result-row .stage-status { font-size: 11px; padding: 2px 8px; border-radius: 3px; }
+.stage-result-row .stage-status.completed { background: rgba(46,160,67,0.1); color: var(--success); }
+.stage-result-row .stage-status.skipped { background: rgba(139,148,158,0.1); color: var(--text-muted); }
+.stage-result-row .stage-detail { flex: 1; font-size: 12px; color: var(--text-muted); }
+
+.vote-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+}
+.vote-box {
+    padding: 12px; border-radius: 6px; text-align: center;
+    border: 1px solid var(--border);
+}
+.vote-box .vote-value { font-size: 24px; font-weight: 700; }
+.vote-box .vote-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.vote-clean { border-color: var(--success); background: rgba(46,160,67,0.05); }
+.vote-review { border-color: var(--warning); background: rgba(210,153,34,0.05); }
+.vote-manual { border-color: #e08700; background: rgba(224,135,0,0.05); }
+.vote-fix { border-color: var(--error); background: rgba(218,54,51,0.05); }
+</style>
+
+<script>
+const STAGE_NAMES = {
+    'stage1_upload': '1. PDF Upload (MathPIX)',
+    'stage2_mapping': '2. LLM Mapper',
+    'stage3_cleaning': '3. Cleaner',
+    'stage4_metadata': '4. Metadata V2',
+    'stage5_watermark': '5. Watermark Removal',
+    'stage6_images': '6. Image CDN Upload',
+    'stage7_batch': '7. LaTeX + Tagging',
+    'stage8_duplicates': '8. Duplicate Check',
+    'stage9_quality': '9. Quality Verifier',
+    'stage10_upload': '10. Upload to DB',
+};
+
+const _sessionName = "{{ session.name }}".replace(/[^\w\-]/g, '_');
+
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadSummary();
+
+    // Check if upload already completed (e.g., user navigated away during upload)
+    const cp = (_checkpoints || []).find(c => c.stage === 'stage10_upload');
+    if (cp && cp.status === 'completed' && cp.data) {
+        const data = typeof cp.data === 'string' ? JSON.parse(cp.data) : cp.data;
+        if (data.posted > 0) {
+            appendLog('success', 'Upload already completed: ' + (data.posted || 0) + ' posted (' + (data.posted_err1 || 0) + ' err=1, ' + (data.posted_err2 || 0) + ' err=2)');
+            document.getElementById('upload-result').style.display = 'block';
+            document.getElementById('upload-result').innerHTML = `
+                <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="summary-stat-box highlight-green"><div class="sv">${data.posted || 0}</div><div class="sl">Posted</div></div>
+                    <div class="summary-stat-box highlight-red"><div class="sv">${data.failed || 0}</div><div class="sl">Failed</div></div>
+                    <div class="summary-stat-box"><div class="sv">${data.skipped || 0}</div><div class="sl">Skipped</div></div>
+                </div>
+            `;
+            const uploadBtn = document.getElementById('upload-db-btn');
+            if (uploadBtn) { uploadBtn.textContent = 'Uploaded'; uploadBtn.disabled = true; }
+            // Resume path: surface absorption status from checkpoint. If absorb already
+            // succeeded (status='ok' or absent-but-embedded>0), show the success state.
+            // If status indicates skip/lock/etc, show the warning banner with retry button.
+            const absStatus = data.absorption_status;
+            const absorbed = data.absorbed || 0;
+            const embedded = data.embedded || 0;
+            if (absStatus || absorbed > 0 || embedded > 0) {
+                renderAbsorbResult({
+                    status: absStatus || (embedded > 0 ? 'ok' : 'unknown'),
+                    absorbed: absorbed,
+                    embedded: embedded,
+                    free_mb: data.absorption_free_mb,
+                    needed_mb: data.absorption_needed_mb,
+                    reason: data.absorption_reason,
+                });
+            }
+            document.getElementById('stats-zip-btn').disabled = false;
+            document.getElementById('post-upload-actions').style.display = 'block';
+            // SCAN BTN RESUME FIX: when returning to a completed upload page, the
+            // scan-upload-btn was never disabled, making it appear clickable again.
+            const scanBtn = document.getElementById('scan-upload-btn');
+            if (scanBtn) { scanBtn.textContent = 'Already Uploaded'; scanBtn.disabled = true; }
+        }
+    }
+});
+
+// Render absorb result. status='ok' = green success; anything else = orange warning
+// banner with details + a manual Retry button (no auto-retry by design — RAM state
+// rarely changes within seconds, so retry is operator-initiated).
+function renderAbsorbResult(ad) {
+    const el = document.getElementById('absorb-result');
+    if (!el) return;
+    el.style.display = 'block';
+    const status = (ad && ad.status) || 'unknown';
+    if (status === 'ok') {
+        el.innerHTML = `
+            <div style="font-size:12px; color:var(--success); margin-top:6px;">
+                Local DB: +${ad.absorbed || 0} entries | FAISS: +${ad.embedded || 0} vectors
+            </div>
+        `;
+        return;
+    }
+    // Failure / skip — show details + retry button
+    let reasonHtml = '';
+    if (status === 'skipped_oom') {
+        reasonHtml = `<div style="font-size:12px;">Reason: insufficient memory at the moment of absorb (${ad.free_mb || '?'} MB allocatable, needed ${ad.needed_mb || '?'} MB). DB entries WERE saved — only the FAISS vector step skipped.</div>`;
+    } else if (status === 'locked') {
+        reasonHtml = `<div style="font-size:12px;">Reason: another session was writing the FAISS index. DB entries WERE saved — try again in 30s.</div>`;
+    } else if (status === 'unavailable') {
+        reasonHtml = `<div style="font-size:12px;">Reason: FAISS index or OpenAI key unavailable on the server (${ad.reason || ''}).</div>`;
+    } else if (status === 'mutex_timeout') {
+        reasonHtml = `<div style="font-size:12px;">Reason: FAISS absorber mutex held by another session &gt;10 min. DB entries WERE saved — retry after the other session completes.</div>`;
+    } else if (status === 'unexpected_error') {
+        reasonHtml = `<div style="font-size:12px;">Reason: unexpected absorber error (${ad.reason || 'unknown'}). DB entries WERE saved — FAISS back-fill needed.</div>`;
+    } else {
+        reasonHtml = `<div style="font-size:12px;">Reason: ${ad.reason || status}.</div>`;
+    }
+    el.innerHTML = `
+        <div style="background:#fff3cd; border:1px solid #ffeeba; color:#856404; padding:10px 12px; border-radius:4px; margin-top:6px; font-size:13px;">
+            <div style="font-weight:600; margin-bottom:4px;">Absorption incomplete (status: ${status})</div>
+            <div style="font-size:12px; margin-bottom:4px;">DB entries absorbed: ${ad.absorbed || 0} | FAISS vectors added: ${ad.embedded || 0}</div>
+            ${reasonHtml}
+            <div style="margin-top:6px; font-size:11px; color:#6c5500;">This session's uploaded questions are live on Acadza DB but won't be visible to Stage 8 dedup until back-filled. ZIP download is still available below.</div>
+            <button class="btn" style="margin-top:8px; padding:4px 10px; font-size:12px;" onclick="retryAbsorption()">Retry Absorption</button>
+        </div>
+    `;
+}
+
+async function retryAbsorption() {
+    appendLog('info', 'Retrying absorption...');
+    try {
+        const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
+        if (ar.success) {
+            renderAbsorbResult(ar.data || {status: 'unknown'});
+        } else {
+            appendLog('warning', 'Retry failed: ' + (ar.error?.message || 'unknown'));
+        }
+    } catch (e) {
+        appendLog('warning', 'Retry exception: ' + e.message);
+    }
+}
+
+async function loadSummary() {
+    appendLog('info', 'Loading pipeline summary...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage9/summary');
+        if (!r.success) {
+            appendLog('error', 'Failed to load summary');
+            return;
+        }
+
+        const s = r.data || {};
+        document.getElementById('loading-card').style.display = 'none';
+
+        // ── Summary stats ──
+        const summaryCard = document.getElementById('summary-card');
+        summaryCard.style.display = 'block';
+        document.getElementById('summary-stats').innerHTML = `
+            <div class="summary-stat-grid">
+                <div class="summary-stat-box">
+                    <div class="sv">${s.total_processed || 0}</div>
+                    <div class="sl">Total Processed</div>
+                </div>
+                <div class="summary-stat-box highlight-green">
+                    <div class="sv">${s.total_ready || 0}</div>
+                    <div class="sl">Ready for Upload</div>
+                </div>
+                <div class="summary-stat-box highlight-red">
+                    <div class="sv">${s.total_quarantined || 0}</div>
+                    <div class="sl">Quarantined</div>
+                </div>
+                <div class="summary-stat-box">
+                    <div class="sv">${s.images_uploaded || 0}</div>
+                    <div class="sl">Images on CDN</div>
+                </div>
+            </div>
+        `;
+
+        appendLog('success', `Pipeline: ${s.total_processed || 0} processed, ${s.total_ready || 0} ready, ${s.total_quarantined || 0} quarantined`);
+        if (s.quarantined_by_error > 0 || s.quarantined_by_duplicate > 0) {
+            appendLog('info', `Quarantine breakdown: ${s.quarantined_by_error || 0} by QA errors, ${s.quarantined_by_duplicate || 0} by duplicates`);
+        }
+
+        // ── Subject breakdown ──
+        if (s.by_subject && Object.keys(s.by_subject).length > 0) {
+            const subjectCard = document.getElementById('subject-card');
+            subjectCard.style.display = 'block';
+            const total = Object.values(s.by_subject).reduce((a, b) => a + b, 0);
+            const maxCount = Math.max(...Object.values(s.by_subject));
+
+            let html = '<table class="breakdown-table"><thead><tr><th>Subject</th><th>Distribution</th><th>Count</th></tr></thead><tbody>';
+            for (const [subj, count] of Object.entries(s.by_subject).sort((a, b) => b[1] - a[1])) {
+                const pct = total > 0 ? (count / maxCount * 100) : 0;
+                const colors = { 'Physics': '#3b82f6', 'Chemistry': '#10b981', 'Mathematics': '#f59e0b', 'Math': '#f59e0b', 'Biology': '#8b5cf6' };
+                const color = colors[subj] || 'var(--primary)';
+                html += `<tr>
+                    <td>${escapeHtml(subj)}</td>
+                    <td><span class="breakdown-bar" style="width: ${pct}%; background: ${color};"></span></td>
+                    <td>${count}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            document.getElementById('subject-content').innerHTML = html;
+        }
+
+        // ── Question type breakdown ──
+        if (s.by_question_type && Object.keys(s.by_question_type).length > 0) {
+            const typeCard = document.getElementById('type-card');
+            typeCard.style.display = 'block';
+            const maxCount = Math.max(...Object.values(s.by_question_type));
+
+            let html = '<table class="breakdown-table"><thead><tr><th>Type</th><th>Distribution</th><th>Count</th></tr></thead><tbody>';
+            for (const [qtype, count] of Object.entries(s.by_question_type).sort((a, b) => b[1] - a[1])) {
+                const pct = maxCount > 0 ? (count / maxCount * 100) : 0;
+                html += `<tr>
+                    <td style="font-family: monospace;">${escapeHtml(qtype)}</td>
+                    <td><span class="breakdown-bar" style="width: ${pct}%;"></span></td>
+                    <td>${count}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            document.getElementById('type-content').innerHTML = html;
+        }
+
+        // ── Per-stage results ──
+        if (s.stage_stats && Object.keys(s.stage_stats).length > 0) {
+            const stageCard = document.getElementById('stage-stats-card');
+            stageCard.style.display = 'block';
+
+            let html = '';
+            // Sort by stage order
+            const stageOrder = ['stage1_upload', 'stage2_mapping', 'stage3_cleaning', 'stage4_metadata',
+                                'stage5_watermark', 'stage6_images', 'stage7_batch', 'stage8_duplicates', 'stage9_quality', 'stage10_upload'];
+            for (const stageKey of stageOrder) {
+                const info = s.stage_stats[stageKey];
+                if (!info) continue;
+
+                const name = STAGE_NAMES[stageKey] || stageKey;
+                const status = info.status || 'unknown';
+                const statusClass = status === 'completed' ? 'completed' : (status === 'skipped' ? 'skipped' : '');
+
+                // Build detail string from stage data
+                let details = [];
+                if (info.total !== undefined) details.push('total: ' + info.total);
+                if (info.processed !== undefined) details.push('processed: ' + info.processed);
+                if (info.failed !== undefined && info.failed > 0) details.push('failed: ' + info.failed);
+                if (info.uploaded !== undefined) details.push('uploaded: ' + info.uploaded);
+                if (info.cached !== undefined) details.push('cached: ' + info.cached);
+                if (info.replaced !== undefined) details.push('replaced: ' + info.replaced);
+                if (info.self_duplicates !== undefined) details.push('self-dupes: ' + info.self_duplicates);
+                if (info.cross_duplicates !== undefined) details.push('cross-dupes: ' + info.cross_duplicates);
+                if (info.duplicates !== undefined) details.push('duplicates: ' + info.duplicates);
+                if (info.skipped) details.push('skipped');
+                if (info.files) details.push(info.files.length + ' files');
+
+                html += `<div class="stage-result-row">
+                    <span class="stage-name">${escapeHtml(name)}</span>
+                    <span class="stage-status ${statusClass}">${status}</span>
+                    <span class="stage-detail">${details.join(' | ')}</span>
+                </div>`;
+            }
+
+            document.getElementById('stage-stats-content').innerHTML = html || '<div style="color: var(--text-muted);">No stage data available</div>';
+        }
+
+        // ── QA vote results ──
+        if (s.qa_votes && Object.keys(s.qa_votes).length > 0) {
+            const qaCard = document.getElementById('qa-card');
+            qaCard.style.display = 'block';
+            const votes = s.qa_votes;
+            const qaQuarantined = (votes['3'] || 0) + (votes['4'] || 0);
+            document.getElementById('qa-content').innerHTML = `
+                <div class="vote-grid">
+                    <div class="vote-box vote-clean">
+                        <div class="vote-value">${votes['1'] || 0}</div>
+                        <div class="vote-label">Safe to Upload</div>
+                    </div>
+                    <div class="vote-box vote-review">
+                        <div class="vote-value">${votes['2'] || 0}</div>
+                        <div class="vote-label">Upload (Review)</div>
+                    </div>
+                    <div class="vote-box vote-fix">
+                        <div class="vote-value">${qaQuarantined}</div>
+                        <div class="vote-label">Quarantined</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ── Duplicate stats ──
+        if (s.duplicates) {
+            appendLog('info', `Duplicates: self=${s.duplicates.self_duplicates || 0}, cross=${s.duplicates.cross_duplicates || 0}`);
+        }
+
+    } catch (e) {
+        appendLog('error', 'Summary error: ' + e.message);
+        document.getElementById('loading-card').innerHTML =
+            '<div class="card-body"><div class="alert alert-error">Failed to load summary: ' + escapeHtml(e.message) + '</div></div>';
+    }
+}
+
+async function scanUpload() {
+    const btn = document.getElementById('scan-upload-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning upload readiness...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage10/scan');
+        if (!r.success) { appendLog('error', r.error?.message || 'Scan failed'); return; }
+
+        const d = r.data;
+        const e1 = d.err1_count || 0;
+        const e2 = d.err2_count || 0;
+        document.getElementById('upload-scan-info').innerHTML = `
+            <strong>${d.upload_ready || 0}</strong> questions ready for upload
+            <span style="font-size:12px;">
+                (<span style="color:var(--success);font-weight:600;">${e1} err=1</span> +
+                 <span style="color:var(--warning);font-weight:600;">${e2} err=2</span>)
+            </span>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                Total triplets: ${d.total_questions || 0} = ${d.total_live || 0} live + ${d.quarantined_count || 0} quarantined
+            </div>
+        `;
+        document.getElementById('upload-db-btn').disabled = false;
+        appendLog('success', `Scan: ${d.upload_ready} ready (${e1} err=1 + ${e2} err=2), ${d.quarantined_count} quarantined`);
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan Ready';
+}
+
+async function dryRunUpload() {
+    const btn = document.getElementById('dryrun-upload-btn');
+    btn.disabled = true;
+    btn.textContent = 'Generating CSV...';
+    appendLog('info', 'Running dry-run upload (CSV only)...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/dry-run');
+        if (r.success) {
+            const d = r.data;
+            appendLog('success', `Dry run: ${d.total || 0} total, ${d.skipped || 0} skipped — CSV generated`);
+            enableCSVButtons();
+            document.getElementById('upload-result').style.display = 'block';
+            document.getElementById('upload-result').innerHTML = `
+                <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="summary-stat-box"><div class="sv">${d.total || 0}</div><div class="sl">Total</div></div>
+                    <div class="summary-stat-box"><div class="sv">${d.skipped || 0}</div><div class="sl">Skipped</div></div>
+                    <div class="summary-stat-box"><div class="sv">DRY RUN</div><div class="sl">Mode</div></div>
+                </div>
+            `;
+        }
+    } catch (e) {
+        appendLog('error', 'Dry-run error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Dry Run (CSV Only)';
+}
+
+async function uploadToDB() {
+    if (!confirm('Upload all ready questions to Acadza DB?\nThis will also absorb entries into local DB + FAISS.')) return;
+
+    const btn = document.getElementById('upload-db-btn');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    window._activeProcess = true;  // Nav guard: warn user on dashboard click
+    appendLog('info', 'Uploading to database...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage10/upload');
+        if (r.success && r.data) {
+            if (r.data.error) {
+                appendLog('error', r.data.error);
+                btn.disabled = false;
+                btn.textContent = 'Upload to DB';
+                return;
+            }
+            // Background task started — poll
+            appendLog('info', 'Upload running in background. Polling...');
+            pollUploadToDB(btn);
+            return;
+        } else {
+            appendLog('error', r.error?.message || 'Upload failed');
+            btn.disabled = false;
+            btn.textContent = 'Upload to DB';
+        }
+    } catch (e) {
+        appendLog('error', 'Upload error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Upload to DB';
+    }
+}
+
+async function pollUploadToDB(btn) {
+    const POLL_INTERVAL = 3000;
+
+    async function poll() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage10/upload-progress');
+            if (!r.success) { setTimeout(poll, POLL_INTERVAL); return; }
+
+            const cp = r.data || {};
+            const status = cp.status;
+            const data = cp.data || {};
+
+            if (status === 'completed') {
+                appendLog('success', `Upload complete: ${data.posted || 0} posted, ${data.failed || 0} failed, ${data.skipped || 0} skipped`);
+                document.getElementById('upload-result').style.display = 'block';
+                document.getElementById('upload-result').innerHTML = `
+                    <div class="summary-stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+                        <div class="summary-stat-box highlight-green"><div class="sv">${data.posted || 0}</div><div class="sl">Posted</div></div>
+                        <div class="summary-stat-box highlight-red"><div class="sv">${data.failed || 0}</div><div class="sl">Failed</div></div>
+                        <div class="summary-stat-box"><div class="sv">${data.skipped || 0}</div><div class="sl">Skipped</div></div>
+                    </div>
+                `;
+                btn.textContent = 'Uploaded';
+                // ZIP button stays DISABLED until absorb completes (success OR known-skip).
+                // This prevents operators from leaving the page before FAISS is updated,
+                // which was the root cause of orphaned absorptions accumulating to 8,338.
+
+                // Auto-trigger local DB absorption
+                appendLog('info', 'Auto-absorbing into local DB + FAISS index...');
+                let absorbStatus = 'unknown';
+                try {
+                    const ar = await apiPost('/api/sessions/{{ session.id }}/stage10/absorb');
+                    if (ar.success) {
+                        const ad = ar.data || {};
+                        absorbStatus = ad.status || (ad.embedded > 0 ? 'ok' : 'unknown');
+                        renderAbsorbResult(ad);
+                    } else {
+                        absorbStatus = 'http_error';
+                        appendLog('warning', 'DB absorption call failed: ' + (ar.error?.message || 'unknown'));
+                        renderAbsorbResult({status: 'http_error', reason: ar.error?.message || 'unknown'});
+                    }
+                } catch (ae) {
+                    absorbStatus = 'exception';
+                    appendLog('warning', 'DB absorption exception: ' + ae.message);
+                    renderAbsorbResult({status: 'exception', reason: ae.message});
+                }
+                // ALWAYS enable ZIP after absorb attempt. The result is shown above; if
+                // it failed, the warning banner makes the operator aware and an EOD
+                // back-fill can heal it. Blocking ZIP forever would be worse than
+                // letting the operator finish the workflow with full visibility.
+                document.getElementById('stats-zip-btn').disabled = false;
+                document.getElementById('post-upload-actions').style.display = 'block';
+                window._activeProcess = false;  // Upload done, clear nav guard
+                return;
+            }
+            if (status === 'failed') {
+                appendLog('error', 'Upload failed: ' + (data.error || 'Unknown'));
+                window._activeProcess = false;
+                btn.disabled = false;
+                btn.textContent = 'Upload to DB';
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL);
+        } catch (e) {
+            setTimeout(poll, POLL_INTERVAL);
+        }
+    }
+    setTimeout(poll, POLL_INTERVAL);
+}
+
+async function downloadAllStats() {
+    const btn = document.getElementById('stats-zip-btn');
+    btn.disabled = true;
+    btn.textContent = 'Preparing ZIP...';
+    appendLog('info', 'Preparing stats ZIP (upload logs + pipeline stats)...');
+
+    try {
+        const url = `/api/sessions/{{ session.id }}/stage10/download-stats-zip`;
+        let response = await fetch(url);
+        // Retry once after 3s if server returned non-OK (e.g., OOM restart in progress)
+        if (!response.ok) {
+            appendLog('warning', `Stats ZIP returned ${response.status} -- retrying in 3s...`);
+            await new Promise(r => setTimeout(r, 3000));
+            response = await fetch(url);
+        }
+        if (!response.ok) { appendLog('error', 'Stats ZIP not available (server may be restarting)'); btn.disabled = false; btn.textContent = 'Download All Stats (ZIP)'; return; }
+
+        const blob = await response.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${_sessionName}_all_stats.zip`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        appendLog('success', 'Stats ZIP download started');
+    } catch (e) {
+        appendLog('error', 'Stats ZIP error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Download All Stats (ZIP)';
+}
+
+async function backToDashboard() {
+    appendLog('info', 'Marking session complete...');
+    try {
+        await apiPost('/api/sessions/{{ session.id }}/stage10/complete');
+    } catch (e) {
+        // Already complete or error -- proceed anyway
+    }
+    window.location.href = '/';
+}
+
+// ── Stage 11 on-spot (Admin only) ─────────────────────────────────────
+// The button + popup flow.  Logs stream through the existing log-pane
+// subscriber (initLogs in base.html), so process_batch's per-chunk emits
+// land in the user's view automatically -- nothing to wire here.
+const STAGE11_POLL_MS = 4000;
+let _stage11Polling = false;
+
+async function refreshStage11Status() {
+    const btn = document.getElementById('stage11-run-btn');
+    const stat = document.getElementById('stage11-status-text');
+    if (!btn || !stat) return;  // not rendered for non-admins
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage11/on-spot/status');
+        if (!r.success) {
+            stat.textContent = 'Status: unknown (auth or network error)';
+            return;
+        }
+        const d = r.data || {};
+        if (d.any_stage11_running) {
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            stat.innerHTML = `<span style="color:var(--warning);font-weight:600;">A Stage 11 run is in progress -- button muted.</span>`;
+            if (!_stage11Polling) startStage11Polling();
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            const parts = [
+                `Status: idle.`,
+                d.on_spot_count ? ` This session has ${d.on_spot_count} prior on-spot OID(s) (${d.promoted || 0} promoted, ${d.flagged || 0} flagged, ${d.failed_retry || 0} failed_retry).` : '',
+            ];
+            stat.textContent = parts.join('');
+        }
+    } catch (e) {
+        stat.textContent = 'Status: error fetching state (' + e.message + ')';
+    }
+}
+
+function startStage11Polling() {
+    if (_stage11Polling) return;
+    _stage11Polling = true;
+    const tick = async () => {
+        if (!_stage11Polling) return;
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage11/on-spot/status');
+            if (r.success && r.data) {
+                const d = r.data;
+                if (!d.any_stage11_running) {
+                    _stage11Polling = false;
+                    await refreshStage11Status();
+                    appendLog('success', 'Stage 11 run finished; status refreshed');
+                    return;
+                }
+            }
+        } catch (e) {}
+        setTimeout(tick, STAGE11_POLL_MS);
+    };
+    setTimeout(tick, STAGE11_POLL_MS);
+}
+
+async function openStage11Popup() {
+    const btn = document.getElementById('stage11-run-btn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Checking memory + cohort...';
+    appendLog('info', 'Stage 11 pre-flight: checking memory + cohort...');
+
+    let pre = null;
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage11/preflight');
+        if (!r.success) {
+            appendLog('error', 'Pre-flight failed: ' + (r.error?.message || 'unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            return;
+        }
+        pre = r.data;
+    } catch (e) {
+        appendLog('error', 'Pre-flight exception: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    // Build popup body
+    const blockerLines = (pre.blockers || []).map(b =>
+        '   - ' + (b.reason || b.status || JSON.stringify(b))
+    );
+    const memLine = (pre.memory_free_mb !== null && pre.memory_free_mb !== undefined)
+        ? `Memory: ${pre.memory_free_mb} MB free / ${pre.memory_required_mb} MB required`
+        : `Memory: cgroup probe unavailable (local dev) -- proceeding without guard`;
+
+    if (!pre.can_proceed) {
+        const msg =
+            'Stage 11 cannot start right now.\n\n' +
+            'Cohort: ' + pre.cohort_size + ' err=2 OID(s)\n' +
+            memLine + '\n\n' +
+            'Blockers:\n' +
+            (blockerLines.length ? blockerLines.join('\n') : '   - (none)') +
+            '\n\nTry again after the blockers clear.';
+        alert(msg);
+        appendLog('warning', 'Stage 11 pre-flight refused: ' + (pre.blockers[0]?.reason || 'unknown'));
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    const msg =
+        'Run Stage 11 LLM correction on this session?\n\n' +
+        'Cohort: ' + pre.cohort_size + ' err=2 OID(s) will be processed.\n' +
+        memLine + '\n\n' +
+        'Note: this can cause memory pressure on the server. Only YOU will be able to ' +
+        'see this button (admin gate). Progress streams into the log pane and is saved ' +
+        'every 50 OIDs, so a crash or page refresh will not lose work.\n\n' +
+        'Proceed?';
+    if (!confirm(msg)) {
+        appendLog('info', 'Stage 11 launch cancelled by operator');
+        btn.disabled = false;
+        btn.textContent = 'Run Stage 11 Now';
+        return;
+    }
+
+    // Fire-and-track: kick off the run, then poll
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    document.getElementById('stage11-status-text').innerHTML =
+        '<span style="color:var(--warning);font-weight:600;">Stage 11 started -- logs streaming into pane on the right.</span>';
+    appendLog('info', 'Stage 11 on-spot run started');
+    window._activeProcess = true;
+
+    try {
+        // This call is long-lived; the backend runs synchronously in a thread.
+        // We don't await before kicking the poller -- but we DO need the result.
+        const runPromise = apiPost('/api/sessions/{{ session.id }}/stage11/on-spot');
+        startStage11Polling();
+        const r = await runPromise;
+        _stage11Polling = false;  // stop poll, we have the canonical result now
+        if (!r.success) {
+            appendLog('error', 'Stage 11 failed: ' + (r.error?.message || 'unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Run Stage 11 Now';
+            window._activeProcess = false;
+            return;
+        }
+        const d = r.data || {};
+        renderStage11Result(d);
+        appendLog('success', `Stage 11 done: promoted=${d.promoted || 0}, flagged=${d.flagged || 0}, failed_retry=${d.failed_retry || 0}`);
+    } catch (e) {
+        appendLog('error', 'Stage 11 exception: ' + e.message);
+    }
+    window._activeProcess = false;
+    await refreshStage11Status();
+}
+
+function renderStage11Result(d) {
+    const el = document.getElementById('stage11-result');
+    if (!el) return;
+    el.style.display = 'block';
+
+    const oomStatuses = ['insufficient_memory'];
+    if (oomStatuses.includes(d.status)) {
+        el.innerHTML = `
+            <div style="background:#fde2e2;border:1px solid #f5b5b5;color:#7a1a1a;padding:10px 12px;border-radius:4px;font-size:13px;">
+                <div style="font-weight:600;margin-bottom:4px;">Stage 11 refused: insufficient memory</div>
+                <div style="font-size:12px;">Free RAM: ${d.free_mb || '?'} MB | required: ${d.required_mb || '?'} MB</div>
+                <div style="font-size:12px;margin-top:4px;">${d.reason || 'wait for other sessions to finish'}</div>
+                <div style="font-size:11px;color:#5a1010;margin-top:6px;">On-spot runs do NOT auto-retry. Click Run Stage 11 Now again after memory frees up.</div>
+            </div>`;
+        return;
+    }
+    if (d.status === 'killswitch') {
+        el.innerHTML = `<div style="background:#fde2e2;border:1px solid #f5b5b5;color:#7a1a1a;padding:10px 12px;border-radius:4px;font-size:13px;">Stage 11 refused: killswitch flag is active. Admin must clear it via DELETE /admin/stage11/kill.</div>`;
+        return;
+    }
+    if (d.status === 'done_empty' || d.status === 'done_empty_after_verify') {
+        el.innerHTML = `<div style="background:rgba(46,160,67,0.08);border:1px solid var(--success);color:var(--success);padding:10px 12px;border-radius:4px;font-size:13px;">No err=2 OIDs left to promote in this session -- nothing to do.</div>`;
+        return;
+    }
+    const ok = (d.status === 'done');
+    el.innerHTML = `
+        <div class="summary-stat-grid" style="grid-template-columns: repeat(4, 1fr); margin-top:6px;">
+            <div class="summary-stat-box"><div class="sv">${d.cohort_verified || 0}</div><div class="sl">Cohort</div></div>
+            <div class="summary-stat-box highlight-green"><div class="sv">${d.promoted || 0}</div><div class="sl">Promoted (err=1)</div></div>
+            <div class="summary-stat-box"><div class="sv" style="color:#e08700;">${d.flagged || 0}</div><div class="sl">Flagged (faculty)</div></div>
+            <div class="summary-stat-box highlight-red"><div class="sv">${d.failed_retry || 0}</div><div class="sl">Failed (retry tonight)</div></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+            Status: ${d.status || '?'} ${ok ? '' : '(partial)'} | backup_dir: ${d.backup_dir || '?'}
+        </div>`;
+}
+
+// Auto-refresh on page load so a returning operator sees current state
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('stage11-run-btn')) {
+        refreshStage11Status();
+    }
+});
+</script>
+{% endblock %}

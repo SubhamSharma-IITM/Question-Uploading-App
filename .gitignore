@@ -1,0 +1,65 @@
+# Data directory — ignore runtime/session data but keep bundled assets
+# Must use this pattern: un-ignore data/ dir, then ignore specific subdirs
+data/*
+!data/allque030326.json
+!data/acadza_concept_tree.json
+!data/tagging_modules/
+!data/db_index_cache/
+data/sessions/
+data/ocr_cache/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude
+.claude/
+
+# Logs
+*.log
+*.err
+
+# Local-only directories (experiments, tools, benchmarks, tests, recovery)
+experiments/
+tools/
+test_wm_output/
+_recovery_sessions/
+Upload Stats Check/
+docs/
+
+# Database files
+app.db
+*.sqlite
+*.sqlite3
+
+# Benchmark & test scripts (local dev only)
+benchmark_*.py
+benchmark_*.json
+test_*.py
+fire_test_passes.py
+
+# YouTube OAuth credentials
+data/youtube_token.json
+data/youtube_client_secret.json
+data/videos/

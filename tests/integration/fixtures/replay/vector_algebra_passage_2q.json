@@ -1,0 +1,80 @@
+[
+  {
+    "subject": "Mathematics",
+    "questionType": "passageQuestion",
+    "passage_content": "\\section*{Paragraph for Question 22 to 23}\n\nVectors are essential tools for undrstanding and solving problems in physics, engineering and mathematics. One key aspect of working with vectors is finding the angle between them, which can provide valuable information about the relationship between the two vectors. The dot product, also known as the scalar product or inner product, is a crucual operation that allows us to determine the angle between two vectors.\n\nThe dot product of two vectors $\\vec{A}$ and $\\vec{B}$ is defined as :\n$$\\vec{A} \\cdot \\vec{B}=|\\vec{A}||\\vec{B}| \\cos (\\theta)$$\nwhere and represent the magnitudes of the vectors A and B , respectively and $\\theta$ is the angle between the vectors.\n\nFrom the definition above, we can easily deduce the formula to find the angle between the two vectors :",
+    "sub_questions": [
+      {
+        "questionType": "scq",
+        "question_content": "$$\\theta=\\arccos [(\\vec{A} \\cdot \\vec{B}) /(|\\vec{A}||\\vec{B}|)]$$\n22. In a quadrilateral $\\mathrm{ABCD}, \\overrightarrow{A C}$ is the bisector of the $\\left(\\overrightarrow{A B}^{\\wedge} \\overrightarrow{A D}\\right)$ which is $\\frac{2 \\pi}{3}$, $15|\\overrightarrow{A C}|=3|\\overrightarrow{A B}|=5|\\overrightarrow{A D}|$ then $\\cos \\left(\\overrightarrow{B A}^{\\wedge} \\overrightarrow{C D}\\right)$ is\n(A) $-\\frac{\\sqrt{14}}{7 \\sqrt{2}}$\n(B) $-\\frac{\\sqrt{21}}{7 \\sqrt{3}}$\n(C) $\\frac{2}{\\sqrt{7}}$",
+        "solution_content": "$\\Rightarrow[\\vec{a} \\vec{b} \\vec{c}]=0$\n22. Ans. (C)\n$15|\\overrightarrow{A C}|=3|\\overrightarrow{A B}|=5|\\overrightarrow{A D}|$\n$15 c=3 b=5 d$\n$b=5 c, d=3 c$\n$\\overrightarrow{B A}=-\\vec{b}$\n$\\overrightarrow{C D}=\\vec{d}-\\vec{c}$\n$\\cos \\theta=\\frac{\\overrightarrow{B A} \\cdot \\overrightarrow{C D}}{|\\overrightarrow{B A}||\\overrightarrow{C D}|} \\Rightarrow \\frac{-\\vec{b} \\cdot(\\vec{d}-\\vec{c})}{|-\\vec{b}||\\vec{d}-\\vec{c}|}$\n![](./images/48b7e100-4f27-433e-a639-cfaa53820836-46_294_378_769_1151.jpg)\n$\\frac{-\\vec{b} \\cdot \\vec{d}+\\vec{b} \\cdot \\vec{c}}{|\\vec{b}| \\cdot \\sqrt{|\\vec{d}|^{2}+|\\vec{c}|^{2}-2 \\vec{c} \\cdot \\vec{d}}}$\n$=\\frac{-b \\cdot d(-1 / 2)+b \\cdot c \\cdot 1 / 2}{b \\sqrt{d^{2}+c^{2}-2 c 1 / 2 d}}$\n$=\\frac{b(d+c)}{2 b \\sqrt{9 c^{2}+c^{2}-3 c^{2}}}$\n$\\cos \\theta=\\frac{3 c+c}{2 \\sqrt{7 c^{2}}} \\Rightarrow \\frac{2 c}{\\sqrt{7 c^{2}}} \\Rightarrow \\frac{2}{\\sqrt{7}}$",
+        "answer_key": "C",
+        "level": "MEDIUM",
+        "line_start": 174,
+        "line_end": 178,
+        "sol_line_start": 1762,
+        "sol_line_end": 1774
+      },
+      {
+        "questionType": "scq",
+        "question_content": "MVT132\n23. If the two adjacent sides of two rectangles are represented by the vectors $\\vec{p}=5 \\vec{a}-3 \\vec{b} ; \\vec{q}=-\\vec{a}-2 \\vec{b}$ and $\\vec{r}=-4 \\vec{a}-\\vec{b} ; \\vec{s}=-\\vec{a}+\\vec{b}$ respectively, then the angle between the vectors $\\vec{x}=\\frac{1}{3}(\\vec{p}+\\vec{r}+\\vec{s})$ and $\\vec{y}=\\frac{1}{5}(\\vec{r}+\\vec{s})$\n(A) is $-\\cos ^{-1}\\left(\\frac{19}{5 \\sqrt{43}}\\right)$\n(B) is $\\cos ^{-1}\\left(\\frac{19}{5 \\sqrt{43}}\\right)$\n(C) is $\\pi-\\cos ^{-1}\\left(\\frac{19}{5 \\sqrt{43}}\\right)$",
+        "solution_content": "$\\therefore \\theta=\\cos ^{-1} \\frac{2}{\\sqrt{7}}$\n23. Ans. (B)\n$$\\begin{aligned}\n& \\because \\quad \\vec{x}=\\frac{1}{3}(\\vec{p}+\\vec{r}+\\vec{s}) \\\\\n& \\vec{x}=\\frac{1}{3}(5 \\vec{a}-3 \\vec{b}+(-4 \\vec{a})-\\vec{b}-\\vec{a}+\\vec{b}) \\\\\n& \\vec{x}=\\frac{1}{3}(-3 \\vec{b}) \\Rightarrow \\vec{x}=-\\vec{b} \\\\\n& \\because \\quad \\vec{y}=\\frac{1}{5}(\\vec{r}+\\vec{s}) \\\\\n& \\vec{y}=\\frac{1}{5}(-4 \\vec{a}-\\vec{b}-\\vec{a}+\\vec{b}) \\\\\n& \\quad \\vec{y}=\\frac{1}{5}(-5 \\vec{a}) \\\\\n& \\quad \\cos \\theta=\\frac{(-\\vec{b}) \\cdot(-\\vec{a})}{|-\\vec{b}||-\\vec{a}|} \\quad \\Rightarrow \\quad \\frac{\\vec{a} \\cdot \\vec{b}}{|a||b|}\n\\end{aligned}$$\n$\\vec{p} \\& \\vec{q}, \\vec{r} \\& \\vec{s} \\quad$ are adjacent sides\n$$\\begin{gathered}\n\\vec{p} \\cdot \\vec{q}=0 \\quad \\vec{r} \\cdot \\vec{s}=0 \\\\\n-5|\\vec{a}|^{2}-7 \\vec{a} \\cdot \\vec{b}+6|\\vec{b}|^{2}=0 \\\\\n4|\\vec{a}|^{2}-3 \\vec{a} \\cdot \\vec{b}-|\\vec{b}|^{2}=0 \\\\\n25|\\vec{b}|^{2}=43|\\vec{a}|^{2} \\\\\n|\\vec{a}|=\\frac{5|\\vec{b}|}{5 \\sqrt{43}} \\\\\n\\cos \\theta=\\frac{19}{5 \\sqrt{43}}",
+        "answer_key": "B",
+        "level": "HARD",
+        "line_start": 181,
+        "line_end": 185,
+        "sol_line_start": 1775,
+        "sol_line_end": 1793
+      }
+    ],
+    "answer_key": null,
+    "question_content": null,
+    "solution_content": null,
+    "line_start": 164,
+    "line_end": 185,
+    "sol_line_start": null,
+    "sol_line_end": null,
+    "qid": "EVAM_REPLAY_MATH_Q22",
+    "source": "EVAM_REPLAY",
+    "question_number": 22
+  },
+  {
+    "subject": "Mathematics",
+    "questionType": "passageQuestion",
+    "passage_content": "\\section*{Paragraph : (Q. 14 to 15)}",
+    "sub_questions": [
+      {
+        "questionType": "scq",
+        "question_content": "Let $O$ be the origin, and $\\overrightarrow{O X}, \\overrightarrow{O Y}, \\overrightarrow{O Z}$ be three-unit vectors in the directions of the sides $\\overrightarrow{Q R}, \\overrightarrow{R P}, \\overrightarrow{P Q}$, respectively, of a triangle $P Q R$.\n14. $|\\overrightarrow{O X} \\times \\overrightarrow{O Y}|=$\n[JEE (Advanced) 2017]\n(A) $\\sin (Q+R)$\n(B) $\\sin (P+R)$\n(C) $\\sin 2 R$",
+        "solution_content": "$\\therefore S$ is orthocenter\n14. Ans. (D)\n$\\overrightarrow{O X}=\\frac{\\overrightarrow{Q R}}{Q R}$\n$\\overrightarrow{O Y}=\\frac{\\overrightarrow{R P}}{R P}$",
+        "answer_key": "D",
+        "level": "EASY",
+        "line_start": 521,
+        "line_end": 526,
+        "sol_line_start": 2455,
+        "sol_line_end": 2458
+      },
+      {
+        "questionType": "scq",
+        "question_content": "MVT087\n15. If the triangle $P Q R$ varies, then the minimum value of $\\cos (P+Q)+\\cos (Q+R)+\\cos (R+P)$ is\n[JEE (Advanced) 2017]\n(A) $\\frac{3}{2}$\n(B) $-\\frac{3}{2}$\n(C) $\\frac{5}{3}$",
+        "solution_content": "$|\\overrightarrow{O X} \\times \\overrightarrow{O Y}|=\\sin R=\\sin (P+Q)$\n15. Ans. (B)\n$-(\\cos P+\\cos Q+\\cos R) \\geq-\\frac{3}{2}$ as we know",
+        "answer_key": "B",
+        "level": "MEDIUM",
+        "line_start": 529,
+        "line_end": 534,
+        "sol_line_start": 2459,
+        "sol_line_end": 2461
+      }
+    ],
+    "answer_key": null,
+    "question_content": null,
+    "solution_content": null,
+    "line_start": 518,
+    "line_end": 534,
+    "sol_line_start": null,
+    "sol_line_end": null,
+    "qid": "EVAM_REPLAY_MATH_Q68",
+    "source": "EVAM_REPLAY",
+    "question_number": 68
+  }
+]

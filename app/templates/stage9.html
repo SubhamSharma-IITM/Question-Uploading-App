@@ -1,0 +1,910 @@
+{% extends "base.html" %}
+{% block title %}Stage 9: Quality Verifier - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>9. Quality Verifier</h1>
+    {% if current_stage == 'stage9_quality' or current_stage == 'completed' %}
+    <span class="badge" style="color: var(--success); font-size: 13px;">
+        {% if current_stage == 'completed' %}PIPELINE COMPLETE{% else %}FINAL STAGE{% endif %}
+    </span>
+    {% endif %}
+</div>
+<p class="stage-description">
+    3-model independent QA voting (Gemini Flash + GPT-5-mini + GPT-5.1).
+    Questions pass/fail based on consensus across 14 error types.
+    taggedBy=AITAI/NITAI requires QA; AIT/NIT can skip.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- QA Scan -->
+        <div class="card">
+            <div class="card-header">
+                <h2>QA Overview</h2>
+                <button class="btn btn-sm" onclick="scanQA()" id="scan-btn">Scan</button>
+            </div>
+            <div class="card-body">
+                <div id="scan-result" style="font-size: 13px; color: var(--text-secondary);">
+                    Click "Scan" to determine if quality verification is needed for this session.
+                </div>
+            </div>
+        </div>
+
+        <!-- Additional QA Context (user inputs) -->
+        <div class="card" id="context-card">
+            <div class="card-header"><h2>Additional QA Context</h2></div>
+            <div class="card-body">
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+                    Provide extra instructions or context for the QA models. This will be appended to the system prompt
+                    as ground truth (e.g., marking scheme, known errata, subject-specific rules).
+                </p>
+                <textarea id="qa-extra-context" class="form-textarea" rows="6"
+                    style="width: 100%; min-height: 100px; resize: vertical;"
+                    placeholder="e.g., 'Integer answers range from 0 to 9999. Negative marking does not apply to integer questions. Some solutions reference diagrams that may be missing from OCR.'"></textarea>
+                <div style="margin-top: 6px; display: flex; gap: 8px; align-items: center;">
+                    <label class="form-check">
+                        <input type="checkbox" id="strict-mode"> Strict mode (flag borderline cases)
+                    </label>
+                    <label class="form-check">
+                        <input type="checkbox" id="check-latex" checked> Check LaTeX/MathML integrity
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- QA Pipeline Steps -->
+        <div class="card" id="pipeline-card" style="display: none;">
+            <div class="card-header"><h2>QA Pipeline</h2></div>
+            <div class="card-body">
+                <div class="qa-pipeline">
+                    <!-- Step 1: Build -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">1</span>
+                            <strong>Build QA Batches</strong>
+                        </div>
+                        <span style="font-size: 11px; color: var(--text-muted);">Generate batch files for all 3 models</span>
+                        <button class="btn btn-sm" onclick="buildQA()" id="build-btn" style="margin-top: 6px;">Build Batches</button>
+                    </div>
+
+                    <!-- Step 2: Submit 3 Passes -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">2</span>
+                            <strong>Submit Passes</strong>
+                        </div>
+                        <div class="qa-passes" id="pass-buttons">
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass1-indicator"></span>
+                                <span>Pass 1: Gemini Flash</span>
+                                <span class="qa-pass-progress" id="pass1-progress"></span>
+                                <span class="qa-pass-status-text" id="pass1-status-text" style="font-size:11px; color:var(--text-muted);"></span>
+                            </div>
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass2-indicator"></span>
+                                <span>Pass 2: GPT-5-mini</span>
+                                <span class="qa-pass-progress" id="pass2-progress"></span>
+                                <span class="qa-pass-status-text" id="pass2-status-text" style="font-size:11px; color:var(--text-muted);"></span>
+                            </div>
+                            <div class="qa-pass-row">
+                                <span class="qa-pass-indicator" id="pass3-indicator"></span>
+                                <span>Pass 3: GPT-5.1</span>
+                                <span class="qa-pass-progress" id="pass3-progress"></span>
+                                <span class="qa-pass-status-text" id="pass3-status-text" style="font-size:11px; color:var(--text-muted);"></span>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px; display: flex; gap: 8px;">
+                            <button class="btn btn-sm btn-primary" onclick="submitAll()" id="submit-all-btn" disabled>Submit All Passes</button>
+                            <button class="btn btn-sm btn-danger" onclick="stopAll()" id="stop-btn" style="display: none;">Stop All</button>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Vote Merge -->
+                    <div class="qa-step">
+                        <div class="qa-step-label">
+                            <span class="qa-step-num">3</span>
+                            <strong>Merge Votes</strong>
+                        </div>
+                        <span style="font-size: 11px; color: var(--text-muted);">3/3 clean=upload, 2/3=review, 1/3 or 0/3=quarantine</span>
+                        <button class="btn btn-sm" onclick="mergeVotes()" id="vote-btn" disabled style="margin-top: 6px;">Merge Votes</button>
+                    </div>
+                </div>
+
+                <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+                    <button class="btn" onclick="skipQA()" id="skip-btn">Skip QA (AIT/NIT Path)</button>
+                    <button class="btn btn-primary" onclick="completeQA()" id="complete-btn" disabled style="margin-left: 8px;">
+                        Mark Pipeline Complete
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Vote Results -->
+        <div class="card" id="results-card" style="display: none;">
+            <div class="card-header"><h2>QA Results</h2></div>
+            <div class="card-body">
+                <div id="results-content"></div>
+                <!-- CSV downloads available in Stage 10 ZIP -->
+            </div>
+        </div>
+
+        <!-- Pass Status Table + Detailed Stats -->
+        <div class="card" id="status-card" style="display: none;">
+            <div class="card-header">
+                <h2>Pass Status</h2>
+                <button class="btn btn-sm" onclick="pollPasses()" id="refresh-poll-btn">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="status-content"></div>
+                <div id="pass-details" style="margin-top: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- Error Types Reference -->
+        <div class="card" id="error-types-card" style="display: none;">
+            <div class="card-header">
+                <h2>14 Error Types Checked</h2>
+                <button class="btn btn-sm" onclick="document.getElementById('error-types-card').style.display='none'">Close</button>
+            </div>
+            <div class="card-body" style="padding: 10px;">
+                <div id="error-types-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — scan to determine QA requirements</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Skip QA Warning Dialog -->
+<div id="skip-dialog" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:var(--bg-primary); border:2px solid var(--error); border-radius:12px; padding:28px 32px; max-width:480px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+        <h3 style="color:var(--error); margin:0 0 12px 0; font-size:18px;">Warning</h3>
+        <p style="font-size:14px; line-height:1.6; margin:0 0 20px 0; color:var(--text-primary);">
+            Skipping this step shall cause <strong>all questions</strong> to be uploaded as <strong>Error = Yes (error=2)</strong>. No QA verification will be performed.
+        </p>
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button class="btn" onclick="cancelSkipQA()" style="min-width:100px;">Don't Agree</button>
+            <button class="btn btn-danger" onclick="confirmSkipQA()" style="min-width:100px;">Agree</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.qa-pipeline { display: flex; flex-direction: column; gap: 12px; }
+.qa-step {
+    padding: 10px 14px; border-radius: 6px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+}
+.qa-step-label { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.qa-step-num {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--primary); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; flex-shrink: 0;
+}
+.qa-passes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.qa-pass-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 10px; border-radius: 4px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+    font-size: 13px;
+}
+.qa-pass-indicator {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--text-muted); flex-shrink: 0;
+}
+.qa-pass-indicator.running { background: var(--warning); animation: pulse-glow 1.5s infinite; }
+.qa-pass-indicator.complete { background: var(--success); }
+.qa-pass-indicator.stopped { background: #f59e0b; }
+.qa-pass-indicator.failed { background: var(--error); }
+.qa-pass-row span:nth-child(2) { flex: 1; }
+.qa-pass-progress {
+    font-size: 11px; color: var(--text-muted); font-family: monospace;
+    min-width: 90px; text-align: right;
+}
+@keyframes pulse-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.vote-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-top: 8px;
+}
+.vote-box {
+    padding: 12px; border-radius: 6px; text-align: center;
+    border: 1px solid var(--border);
+}
+.vote-box .vote-value { font-size: 24px; font-weight: 700; }
+.vote-box .vote-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.vote-clean { border-color: var(--success); background: rgba(46,160,67,0.05); }
+.vote-review { border-color: var(--warning); background: rgba(210,153,34,0.05); }
+.vote-manual { border-color: #e08700; background: rgba(224,135,0,0.05); }
+.vote-fix { border-color: var(--error); background: rgba(218,54,51,0.05); }
+
+.pass-detail-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    margin-bottom: 10px; overflow: hidden;
+}
+.pass-detail-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; background: var(--bg-secondary);
+    cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.pass-detail-header:hover { background: var(--border); }
+.pass-detail-body { padding: 10px 12px; display: none; }
+.pass-detail-card.expanded .pass-detail-body { display: block; }
+.error-type-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0; font-size: 12px;
+}
+.error-type-bar .et-label { width: 180px; font-family: monospace; color: var(--text-muted); }
+.error-type-bar .et-bar-bg {
+    flex: 1; height: 14px; background: var(--bg-secondary);
+    border-radius: 3px; overflow: hidden; position: relative;
+}
+.error-type-bar .et-bar-fill {
+    height: 100%; border-radius: 3px;
+    transition: width 0.3s ease;
+}
+.et-bar-fill.clean { background: var(--success); }
+.et-bar-fill.error { background: var(--error); }
+.error-type-bar .et-count { min-width: 30px; text-align: right; font-size: 11px; font-weight: 600; }
+
+.btn-danger {
+    background: var(--error); color: white; border-color: var(--error);
+}
+.btn-danger:hover { opacity: 0.9; }
+</style>
+
+<script>
+const ERROR_TYPES = [
+    "MISSING_QUESTION", "TRUNCATED_QUESTION", "GARBLED_OCR", "WRONG_OPTION_COUNT",
+    "MISSING_ANSWER", "WRONG_ANSWER_FORMAT", "ANSWER_MISMATCH",
+    "MISSING_SOLUTION", "TRUNCATED_SOLUTION", "SOLUTION_MISMATCH",
+    "WRONG_SUBJECT", "WRONG_QUESTION_TYPE", "BROKEN_LATEX", "BROKEN_HTML",
+    "malformed_mathml", "math_logic_error", "mathml_parsing_error",
+    "missing_options", "invalid_option", "wrong_answer", "wrong_tagging",
+    "cleaner_artifact", "latex_not_converted", "latex_artifacts",
+    "missing_image", "broken_image", "content_mismatch", "match_format_content",
+    "broken_chemical_structure"
+];
+
+let _pollInterval = null;
+let _qaRunning = false;
+let _submittingAll = false;       // guard against re-entry into submitAll()
+let _submittedPasses = new Set(); // track which passes have been submitted/completed
+let _batchesBuilt = false;        // track whether batches have been built
+
+function updateSubmitAllState() {
+    const btn = document.getElementById('submit-all-btn');
+    if (!btn) return;
+
+    // All 3 submitted or completed → permanently deactivate
+    if (_submittedPasses.size >= 3) {
+        btn.disabled = true;
+        btn.textContent = 'All Submitted \u2713';
+        return;
+    }
+
+    // Currently running or submitting → keep disabled
+    if (_qaRunning || _submittingAll) {
+        btn.disabled = true;
+        return;
+    }
+
+    // Batches not built yet → keep disabled
+    if (!_batchesBuilt) {
+        btn.disabled = true;
+        return;
+    }
+
+    // Some passes remaining and not running → enable with count
+    const remaining = 3 - _submittedPasses.size;
+    btn.disabled = false;
+    btn.textContent = _submittedPasses.size > 0
+        ? `Submit Remaining (${remaining})`
+        : 'Submit All Passes';
+}
+
+function setQARunning(running) {
+    _qaRunning = running;
+    window._activeProcess = running;
+    window._activeStopUrl = running ? '/api/sessions/{{ session.id }}/stage9/stop' : '';
+    document.getElementById('stop-btn').style.display = running ? 'inline-block' : 'none';
+    // Only DISABLE submit-all when running — never re-enable (only build enables it)
+    if (running) {
+        document.getElementById('submit-all-btn').disabled = true;
+    }
+    // Freeze inputs during processing
+    const inputs = ['qa-extra-context', 'strict-mode', 'check-latex'];
+    inputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = running;
+    });
+}
+
+function startAutoPoll() {
+    if (_pollInterval) return;
+    _pollInterval = setInterval(() => pollPasses(true), 4000);
+}
+
+function stopAutoPoll() {
+    if (_pollInterval) {
+        clearInterval(_pollInterval);
+        _pollInterval = null;
+    }
+}
+
+async function scanQA() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    appendLog('info', 'Scanning metadata for QA requirements...');
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage9/scan');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                document.getElementById('scan-result').innerHTML =
+                    '<div class="alert alert-error">' + escapeHtml(d.error) + '</div>';
+                btn.disabled = false;
+                btn.textContent = 'Scan';
+                return;
+            }
+
+            let subjectHtml = '';
+            if (d.by_subject) {
+                subjectHtml = '<div style="margin-top: 8px; font-size: 12px;">Subjects: ';
+                subjectHtml += Object.entries(d.by_subject).map(([s, c]) => '<strong>' + s + '</strong>: ' + c).join(' | ');
+                subjectHtml += '</div>';
+            }
+            let tagHtml = '';
+            if (d.tagged_by) {
+                tagHtml = '<div style="margin-top: 4px; font-size: 12px; color: var(--text-muted);">Tagged by: ';
+                tagHtml += Object.entries(d.tagged_by).map(([t, c]) => '<strong>' + t + '</strong>: ' + c).join(' | ');
+                tagHtml += '</div>';
+            }
+
+            let credHtml = '';
+            if (d.credentials) {
+                const cred = d.credentials;
+                credHtml = '<div style="margin-top: 8px; font-size: 11px;">API Keys: ';
+                credHtml += 'OpenAI ' + (cred.openai ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
+                credHtml += ' | Gemini ' + (cred.gemini ? '<span style="color:var(--success)">OK</span>' : '<span style="color:var(--error)">missing</span>');
+                credHtml += '</div>';
+            }
+
+            document.getElementById('scan-result').innerHTML = `
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="stat-value">${d.total_questions}</div><div class="stat-label">Live Questions</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.needs_qa}</div><div class="stat-label">Need QA</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.skip_qa}</div><div class="stat-label">Skip QA (AIT/NIT)</div></div>
+                    <div class="stat-box" style="border-color:var(--error);"><div class="stat-value" style="color:var(--error);">${d.quarantined || 0}</div><div class="stat-label">Quarantined</div></div>
+                    <div class="stat-box"><div class="stat-value">${d.error_types_checked || 14}</div><div class="stat-label">Error Types</div></div>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                    Total triplets: ${d.total_triplets || 0} = ${d.total_questions} live + ${d.quarantined || 0} quarantined
+                    ${d.err1 > 0 ? ' | <span style="color:var(--success);">err=1: ' + d.err1 + '</span>' : ''}
+                    ${d.err2 > 0 ? ' | <span style="color:var(--warning);">err=2: ' + d.err2 + '</span>' : ''}
+                </div>
+                ${subjectHtml}${tagHtml}${credHtml}
+            `;
+
+            if (d.qa_needed) {
+                appendLog('info', `${d.needs_qa} questions need QA verification (AITAI/NITAI tagged)`);
+            } else {
+                appendLog('info', 'No questions need QA — all tagged as AIT/NIT (faculty path)');
+            }
+
+            document.getElementById('pipeline-card').style.display = 'block';
+            showErrorTypes();
+
+            if (d.can_skip) {
+                appendLog('info', 'QA can be skipped — no AITAI/NITAI questions');
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Scan error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Scan';
+}
+
+function showErrorTypes() {
+    const card = document.getElementById('error-types-card');
+    card.style.display = 'block';
+    let html = '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; font-size: 12px;">';
+    for (const et of ERROR_TYPES) {
+        html += '<div style="padding: 4px 8px; background: var(--bg-secondary); border-radius: 3px; font-family: monospace;">' + et + '</div>';
+    }
+    html += '</div>';
+    document.getElementById('error-types-content').innerHTML = html;
+}
+
+async function buildQA() {
+    const btn = document.getElementById('build-btn');
+    btn.disabled = true;
+    btn.textContent = 'Building...';
+    appendLog('info', 'Building QA batch files for 3 models...');
+
+    try {
+        const extraContext = encodeURIComponent(document.getElementById('qa-extra-context').value || '');
+        const strictMode = document.getElementById('strict-mode').checked;
+        const checkLatex = document.getElementById('check-latex').checked;
+        const params = `extra_context=${extraContext}&strict_mode=${strictMode}&check_latex=${checkLatex}`;
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/build?' + params);
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Build Batches';
+                return;
+            } else if (!d.qa_needed) {
+                appendLog('info', d.message || 'QA not needed — you can mark pipeline complete');
+                document.getElementById('complete-btn').disabled = false;
+                btn.textContent = 'Built (no QA needed)';
+                return;
+            } else {
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML = `
+                    <div class="stat-grid">
+                        <div class="stat-box"><div class="stat-value">${d.qa_questions}</div><div class="stat-label">QA Questions</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass1 || 0}</div><div class="stat-label">Pass 1 Reqs</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass2 || 0}</div><div class="stat-label">Pass 2 Reqs</div></div>
+                        <div class="stat-box"><div class="stat-value">${d.batches?.pass3 || 0}</div><div class="stat-label">Pass 3 Reqs</div></div>
+                    </div>
+                `;
+                appendLog('success', `Built ${d.total_requests} total QA requests across 3 passes`);
+
+                // Enable Submit All
+                _batchesBuilt = true;
+                _submittedPasses.clear();
+                updateSubmitAllState();
+                btn.textContent = 'Built \u2713';
+                document.getElementById('skip-btn').disabled = true;
+                return;
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Build error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Build Batches';
+}
+
+async function submitSinglePass(passKey) {
+    // Internal: submit one pass, update indicator + status text
+    const indicator = document.getElementById(passKey + '-indicator');
+    const statusText = document.getElementById(passKey + '-status-text');
+    if (indicator) indicator.className = 'qa-pass-indicator running';
+    if (statusText) statusText.textContent = 'Submitting...';
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/submit?pass_key=' + passKey);
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', `${passKey}: ${d.error}`);
+                if (indicator) indicator.className = 'qa-pass-indicator failed';
+                if (statusText) statusText.textContent = 'Failed';
+                return false;
+            } else if (d.status === 'already_completed') {
+                _submittedPasses.add(passKey);
+                if (indicator) indicator.className = 'qa-pass-indicator complete';
+                if (statusText) statusText.textContent = 'Done ✓';
+                appendLog('info', `${passKey}: already completed`);
+                return true;
+            } else {
+                _submittedPasses.add(passKey);
+                if (statusText) statusText.textContent = 'Running...';
+                appendLog('info', `${passKey}: started in background`);
+                return true;
+            }
+        }
+    } catch (e) {
+        appendLog('error', `${passKey} error: ${e.message}`);
+        if (indicator) indicator.className = 'qa-pass-indicator failed';
+        if (statusText) statusText.textContent = 'Error';
+        return false;
+    }
+    return false;
+}
+
+async function submitAll() {
+    // Guard against re-entry and double-clicks
+    if (_submittingAll || _qaRunning) return;
+
+    const passesToSubmit = ['pass1', 'pass2', 'pass3'].filter(pk => !_submittedPasses.has(pk));
+    if (passesToSubmit.length === 0) {
+        updateSubmitAllState();
+        return;
+    }
+
+    _submittingAll = true;
+    window._activeProcess = true;  // Nav guard: batch processing active
+    const submitAllBtn = document.getElementById('submit-all-btn');
+    submitAllBtn.disabled = true;
+    submitAllBtn.textContent = 'Submitting...';
+
+    appendLog('info', `Submitting ${passesToSubmit.length} pass(es) concurrently...`);
+    setQARunning(true);
+
+    try {
+        // Submit each unsubmitted pass in parallel
+        await Promise.allSettled(passesToSubmit.map(pk => submitSinglePass(pk)));
+        appendLog('info', 'All passes launched — auto-polling for progress...');
+        startAutoPoll();
+    } catch (e) {
+        appendLog('error', 'Submit all error: ' + e.message);
+        setQARunning(false);
+    } finally {
+        _submittingAll = false;
+        updateSubmitAllState();
+    }
+}
+
+async function stopAll() {
+    if (!confirm('Stop all running QA passes?\n\nPartial results will be saved.')) return;
+
+    appendLog('warning', 'Requesting stop for all passes...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/stop');
+        if (r.success) {
+            appendLog('info', r.data.message);
+        }
+    } catch (e) {
+        appendLog('error', 'Stop error: ' + e.message);
+    }
+}
+
+async function pollPasses(silent) {
+    if (!silent) appendLog('info', 'Polling all QA passes...');
+    const refreshBtn = document.getElementById('refresh-poll-btn');
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = 'Polling...'; }
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage9/poll');
+        if (r.success) {
+            const d = r.data;
+            const card = document.getElementById('status-card');
+            card.style.display = 'block';
+
+            // Summary table
+            let html = '<table class="data-table"><thead><tr><th>Pass</th><th>Model</th><th>Status</th><th>Progress</th><th>Approved</th><th>Rejected</th></tr></thead><tbody>';
+
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                const statusColor = info.status === 'completed' ? 'var(--success)' :
+                    info.status === 'running' ? 'var(--warning)' :
+                    info.status === 'stopped' ? '#f59e0b' : 'var(--text-muted)';
+                const progressText = info.total > 0 ? `${info.results}/${info.total}` : '—';
+                html += `<tr>
+                    <td>${pk}</td>
+                    <td>${escapeHtml(info.model)}</td>
+                    <td style="color: ${statusColor}; font-weight: 600;">${info.status}</td>
+                    <td>${progressText}</td>
+                    <td style="color: var(--success); font-weight: 600;">${info.approved || 0}</td>
+                    <td style="color: var(--error); font-weight: 600;">${info.rejected || 0}</td>
+                </tr>`;
+
+                // Update indicators + progress text + status text
+                const indicator = document.getElementById(pk + '-indicator');
+                if (indicator) {
+                    indicator.className = 'qa-pass-indicator ' +
+                        (info.status === 'completed' ? 'complete' :
+                         info.status === 'running' || info.status === 'batch_submitted' || info.status === 'in_progress' || info.status === 'validating' || info.status === 'finalizing' ? 'running' :
+                         info.status === 'stopped' ? 'stopped' :
+                         info.status === 'failed' ? 'failed' : '');
+                }
+
+                const progressEl = document.getElementById(pk + '-progress');
+                if (progressEl) {
+                    progressEl.textContent = info.total > 0 ? `${info.results}/${info.total}` : '';
+                }
+
+                const statusText = document.getElementById(pk + '-status-text');
+                if (statusText) {
+                    if (info.status === 'completed') {
+                        statusText.textContent = `Done ✓ (${info.approved}/${info.total} approved)`;
+                        statusText.style.color = 'var(--success)';
+                    } else if (info.status === 'running' || info.status === 'batch_submitted' || info.status === 'in_progress' || info.status === 'validating' || info.status === 'finalizing') {
+                        statusText.textContent = 'Running...';
+                        statusText.style.color = 'var(--warning)';
+                    } else if (info.status === 'stopped' || info.status === 'failed') {
+                        statusText.textContent = info.status === 'stopped' ? 'Stopped' : 'Failed';
+                        statusText.style.color = 'var(--error)';
+                        _submittedPasses.delete(pk);  // Allow resubmission via Submit All
+                    } else if (info.status === 'batch_complete') {
+                        statusText.textContent = 'Downloading...';
+                        statusText.style.color = 'var(--warning)';
+                    } else {
+                        statusText.textContent = '';
+                    }
+                }
+            }
+            html += '</tbody></table>';
+            document.getElementById('status-content').innerHTML = html;
+
+            // Sync _submittedPasses from poll status
+            const nonIdleStatuses = ['completed', 'stopped', 'running', 'batch_submitted', 'in_progress', 'validating', 'finalizing', 'batch_complete'];
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                if (nonIdleStatuses.includes(info.status)) {
+                    _submittedPasses.add(pk);
+                }
+            }
+            // Update Submit All button state based on tracked submissions
+            updateSubmitAllState();
+            const allPassStatuses = Object.values(d.passes || {}).map(p => p.status);
+            const allDone = allPassStatuses.length > 0 && allPassStatuses.every(s => s === 'completed' || s === 'stopped');
+            if (allDone && allPassStatuses.length >= 3) {
+                const submitAllBtn = document.getElementById('submit-all-btn');
+                if (submitAllBtn) {
+                    submitAllBtn.disabled = true;
+                    submitAllBtn.textContent = 'All Done \u2713';
+                }
+            }
+
+            // Detailed per-pass breakdown
+            let detailsHtml = '';
+            for (const [pk, info] of Object.entries(d.passes || {})) {
+                if ((info.status === 'completed' || info.status === 'stopped') && info.error_breakdown) {
+                    detailsHtml += buildPassDetailCard(pk, info);
+                }
+            }
+            document.getElementById('pass-details').innerHTML = detailsHtml;
+
+            // Check if done or still running
+            if (d.any_running) {
+                _qaRunning = true;  // Track for auto-poll restart on reopen
+            } else {
+                stopAutoPoll();
+                setQARunning(false);
+                window._activeProcess = false;  // Clear nav guard
+                updateSubmitAllState();
+            }
+
+            if (d.can_vote) {
+                document.getElementById('vote-btn').disabled = false;
+                if (!silent) appendLog('success', 'All passes complete — ready to merge votes');
+            }
+        }
+    } catch (e) {
+        if (!silent) appendLog('error', 'Poll error: ' + e.message);
+    } finally {
+        if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
+    }
+}
+
+function checkIfAllDone() {
+    // Quick check if we should stop the running state
+    pollPasses(true);
+}
+
+function buildPassDetailCard(passKey, info) {
+    const total = info.results || 1;
+    const approved = info.approved || 0;
+    const rejected = info.rejected || 0;
+    const approvalRate = total > 0 ? ((approved / total) * 100).toFixed(1) : '0.0';
+
+    let html = `<div class="pass-detail-card" onclick="this.classList.toggle('expanded')">
+        <div class="pass-detail-header">
+            <span>${passKey.toUpperCase()}: ${escapeHtml(info.model)}</span>
+            <span style="font-size: 12px;">
+                <span style="color: var(--success);">${approved} approved</span> /
+                <span style="color: var(--error);">${rejected} rejected</span>
+                (${approvalRate}% pass rate)
+            </span>
+        </div>
+        <div class="pass-detail-body">`;
+
+    if (info.error_breakdown) {
+        const maxCount = Math.max(...Object.values(info.error_breakdown), 1);
+        html += '<div style="font-size: 12px; font-weight: 600; margin-bottom: 6px;">Error Type Breakdown:</div>';
+        for (const et of ERROR_TYPES) {
+            const count = info.error_breakdown[et] || 0;
+            const pct = (count / maxCount) * 100;
+            html += `<div class="error-type-bar">
+                <span class="et-label">${et}</span>
+                <div class="et-bar-bg"><div class="et-bar-fill error" style="width: ${pct}%;"></div></div>
+                <span class="et-count">${count}</span>
+            </div>`;
+        }
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+async function mergeVotes() {
+    const btn = document.getElementById('vote-btn');
+    btn.disabled = true;
+    btn.textContent = 'Merging...';
+    appendLog('info', 'Merging votes from all passes...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/vote');
+        if (r.success) {
+            const d = r.data;
+
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Merge Votes';
+            } else {
+                const res = d.results || {};
+                const quarantinedCount = (res.rejected_1of3 || 0) + (res.rejected_0of3 || 0);
+                const totalVoted = (res.approved_3of3 || 0) + (res.review_2of3 || 0) + quarantinedCount;
+                const card = document.getElementById('results-card');
+                card.style.display = 'block';
+                document.getElementById('results-content').innerHTML = `
+                    <div style="font-size: 13px; margin-bottom: 8px;">${totalVoted} questions verified across ${d.passes_used} passes</div>
+                    <div class="vote-grid">
+                        <div class="vote-box vote-clean">
+                            <div class="vote-value">${res.approved_3of3 || 0}</div>
+                            <div class="vote-label">Safe to Upload</div>
+                        </div>
+                        <div class="vote-box vote-review">
+                            <div class="vote-value">${res.review_2of3 || 0}</div>
+                            <div class="vote-label">Upload (Review)</div>
+                        </div>
+                        <div class="vote-box vote-fix">
+                            <div class="vote-value">${quarantinedCount}</div>
+                            <div class="vote-label">Quarantined</div>
+                        </div>
+                    </div>
+                `;
+
+                appendLog('success', `Votes merged: ${res.approved_3of3 || 0} clean, ${res.review_2of3 || 0} review, ${quarantinedCount} quarantined`);
+                // Refresh live stats bar to show updated err1/err2 counts
+                refreshSidebarStats();
+                // Update sidebar quarantine count
+                if (quarantinedCount > 0) {
+                    updateSidebarQuarantineCount(quarantinedCount);
+                }
+                document.getElementById('complete-btn').disabled = false;
+                btn.textContent = 'Merged \u2713';
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Vote merge error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Merge Votes';
+    }
+}
+
+function skipQA() {
+    // Show warning dialog instead of browser confirm
+    const dialog = document.getElementById('skip-dialog');
+    dialog.style.display = 'flex';
+}
+
+function cancelSkipQA() {
+    document.getElementById('skip-dialog').style.display = 'none';
+}
+
+async function confirmSkipQA() {
+    document.getElementById('skip-dialog').style.display = 'none';
+
+    const skipBtn = document.getElementById('skip-btn');
+    skipBtn.disabled = true;
+    appendLog('info', 'Skipping quality verification — setting error=2 on all questions...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/skip');
+        if (r.success) {
+            const d = r.data;
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                `<div class="alert alert-warning">Quality verification skipped. ${d.error_2_count || 'All'} questions set to error=2 (review required). No QA performed.</div>`;
+            document.getElementById('complete-btn').disabled = false;
+            document.getElementById('build-btn').disabled = true;
+            document.getElementById('submit-all-btn').disabled = true;
+            skipBtn.textContent = 'Skipped \u2713';
+            appendLog('success', `QA skipped — ${d.error_2_count || 0} questions set to error=2`);
+            return;
+        }
+    } catch (e) {
+        appendLog('error', 'Skip error: ' + e.message);
+    }
+    skipBtn.disabled = false;
+}
+
+async function completeQA() {
+    const btn = document.getElementById('complete-btn');
+    btn.disabled = true;
+    btn.textContent = 'Completing...';
+    appendLog('info', 'Marking pipeline as complete...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage9/complete');
+        if (r.success) {
+            appendLog('success', 'Pipeline complete! Redirecting to summary...');
+            window.location.href = '/session/{{ session.id }}';
+        }
+    } catch (e) {
+        appendLog('error', 'Complete error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Mark Pipeline Complete';
+    }
+}
+
+// Restore state from checkpoint when revisiting
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage9_quality');
+    if (cp && cp.status === 'completed') {
+        const d = cp.data || {};
+        _batchesBuilt = true;
+        _submittedPasses = new Set(['pass1', 'pass2', 'pass3']);
+        document.getElementById('pipeline-card').style.display = 'block';
+        document.getElementById('build-btn').disabled = true;
+        document.getElementById('build-btn').textContent = 'Built \u2713';
+        document.getElementById('skip-btn').disabled = true;
+        document.getElementById('complete-btn').disabled = true;
+        document.getElementById('complete-btn').textContent = 'Completed \u2713';
+        document.getElementById('submit-all-btn').disabled = true;
+        document.getElementById('submit-all-btn').textContent = 'All Done \u2713';
+        // Freeze inputs
+        ['qa-extra-context', 'strict-mode', 'check-latex'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        });
+        if (d.skipped) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            document.getElementById('results-content').innerHTML =
+                '<div class="alert alert-info">Quality verification was skipped (AIT/NIT path).</div>';
+        } else if (d.votes_merged || d.total) {
+            const card = document.getElementById('results-card');
+            card.style.display = 'block';
+            const resumeQuarantined = (d.error_3 || 0) + (d.error_4 || 0);
+            document.getElementById('results-content').innerHTML = `
+                <div class="vote-grid">
+                    <div class="vote-box vote-clean"><div class="vote-value">${d.error_1 || 0}</div><div class="vote-label">Safe to Upload</div></div>
+                    <div class="vote-box vote-review"><div class="vote-value">${d.error_2 || 0}</div><div class="vote-label">Upload (Review)</div></div>
+                    <div class="vote-box vote-fix"><div class="vote-value">${resumeQuarantined}</div><div class="vote-label">Quarantined</div></div>
+                </div>
+            `;
+            // CSV downloads available in Stage 10 ZIP (backend still generates them)
+        }
+        // Mark all pass indicators as complete
+        ['pass1-indicator', 'pass2-indicator', 'pass3-indicator'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.className = 'qa-pass-indicator complete';
+        });
+        ['pass1-status-text', 'pass2-status-text', 'pass3-status-text'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) { el.textContent = 'Done ✓'; el.style.color = 'var(--success)'; }
+        });
+    } else {
+        // Page reload mid-process or returning to incomplete stage:
+        // Show pipeline card and poll to detect current state
+        document.getElementById('pipeline-card').style.display = 'block';
+        _batchesBuilt = true;  // Assume batches built if we're at this stage
+        pollPasses(false).then(() => {
+            if (_qaRunning) {
+                startAutoPoll();
+                appendLog('info', 'Resumed auto-polling for active batch processes');
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block title %}Stage 1: PDF Upload - {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="stage-header">
+    <h1>1. PDF Upload (MathPIX OCR)</h1>
+    <button class="btn btn-primary" onclick="advanceStage('{{ session.id }}')" id="advance-btn" disabled>
+        Advance to Stage 2
+    </button>
+</div>
+<p class="stage-description">
+    Upload your exam PDF for MathPIX OCR processing.
+</p>
+
+<div class="stage-layout">
+    <div class="stage-controls">
+        <!-- Upload Card -->
+        <div class="card">
+            <div class="card-header"><h2>Upload PDF for OCR</h2></div>
+            <div class="card-body">
+                <form id="upload-form" enctype="multipart/form-data">
+                    <div class="form-group" style="max-width: 400px;">
+                        <label>Select PDF file</label>
+                        <input type="file" accept=".pdf" name="file" class="form-input" id="pdf-file">
+                    </div>
+                    <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
+                        <button type="submit" class="btn btn-primary" id="upload-btn">Upload PDF</button>
+                        <span id="upload-status" style="font-size: 12px;"></span>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- OCR Controls (shown after upload) -->
+        <div class="card" id="ocr-card" style="display: none;">
+            <div class="card-header">
+                <h2>MathPIX OCR</h2>
+                <div id="ocr-cred-status" style="font-size: 11px;"></div>
+            </div>
+            <div class="card-body">
+                <div id="ocr-status-display" style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary);">
+                    PDF uploaded. Start OCR processing.
+                </div>
+                <div id="ocr-progress" style="display: none; margin-bottom: 12px;">
+                    <div style="background: var(--bg-secondary); border-radius: 4px; height: 20px; overflow: hidden; border: 1px solid var(--border);">
+                        <div id="ocr-progress-bar" style="height: 100%; background: var(--accent); width: 0%; transition: width 0.5s; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600;"></div>
+                    </div>
+                    <div id="ocr-progress-text" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;"></div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="startOCR()" id="ocr-start-btn">Start OCR</button>
+                    <button class="btn" onclick="pollOCR()" id="ocr-poll-btn" disabled>Check Status</button>
+                    <button class="btn" onclick="downloadOCR()" id="ocr-download-btn" disabled>Download Results</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stage Status -->
+        <div class="card" id="status-card" style="display: none;">
+            <div class="card-header"><h2>Stage 1 Status</h2></div>
+            <div class="card-body">
+                <div id="stage-result"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Pane -->
+    <div class="log-pane" id="log-pane">
+        <div class="log-header">
+            <span>Live Logs</span>
+            <button class="log-clear" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-body" id="log-body">
+            <div class="log-entry info">
+                <span class="log-level">[INFO]</span>
+                <span class="log-msg">Ready — upload a PDF to begin</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let pollInterval = null;
+
+document.getElementById('upload-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('pdf-file');
+    if (!fileInput.files.length) {
+        appendLog('warning', 'No file selected');
+        return;
+    }
+
+    const btn = document.getElementById('upload-btn');
+    const status = document.getElementById('upload-status');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    appendLog('info', 'Uploading ' + fileInput.files[0].name + '...');
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    try {
+        const resp = await fetch('/api/sessions/{{ session.id }}/stage1/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        const r = await resp.json();
+        if (r.success) {
+            status.innerHTML = '<span style="color: var(--success);">Uploaded: ' + r.data.filename + '</span>';
+            appendLog('success', 'Uploaded ' + r.data.filename + ' (' + r.data.size.toLocaleString() + ' bytes)');
+
+            // Disable upload controls permanently
+            btn.disabled = true;
+            btn.textContent = 'Uploaded \u2713';
+            document.getElementById('pdf-file').disabled = true;
+
+            // Show OCR card and check credentials
+            document.getElementById('ocr-card').style.display = 'block';
+            checkMathPIXCredentials();
+            return;
+        } else {
+            status.innerHTML = '<span style="color: var(--error);">' + (r.error?.message || 'Failed') + '</span>';
+            appendLog('error', 'Upload failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        status.innerHTML = '<span style="color: var(--error);">Error: ' + e.message + '</span>';
+        appendLog('error', 'Upload error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Upload PDF';
+});
+
+async function checkMathPIXCredentials() {
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage1/credentials');
+        if (r.success) {
+            const d = r.data;
+            const credDiv = document.getElementById('ocr-cred-status');
+            if (d.configured) {
+                credDiv.innerHTML = '<span style="color: var(--success);">API OK</span>';
+                appendLog('info', 'MathPIX credentials configured: ' + d.app_id);
+            } else {
+                credDiv.innerHTML = '<span style="color: var(--error);">No API Key</span>';
+                appendLog('warning', d.message);
+                document.getElementById('ocr-start-btn').disabled = true;
+            }
+        }
+    } catch (e) {
+        appendLog('warning', 'Could not check MathPIX credentials: ' + e.message);
+    }
+}
+
+async function startOCR() {
+    const btn = document.getElementById('ocr-start-btn');
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+    appendLog('info', 'Submitting PDF to MathPIX for OCR...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage1/start-ocr');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Start OCR';
+                return;
+            }
+            appendLog('success', 'OCR started — pdf_id: ' + d.pdf_id);
+            document.getElementById('ocr-status-display').textContent = 'OCR processing... pdf_id: ' + d.pdf_id;
+            document.getElementById('ocr-progress').style.display = 'block';
+            document.getElementById('ocr-poll-btn').disabled = false;
+            btn.textContent = 'Submitted';
+
+            // Start auto-polling every 15 seconds
+            startAutoPoll();
+        } else {
+            appendLog('error', 'Start OCR failed: ' + (r.error?.message || 'Unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Start OCR';
+        }
+    } catch (e) {
+        appendLog('error', 'OCR error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Start OCR';
+    }
+}
+
+function startAutoPoll() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(pollOCR, 15000);
+    appendLog('info', 'Auto-polling every 15 seconds...');
+}
+
+async function pollOCR() {
+    const btn = document.getElementById('ocr-poll-btn');
+    btn.disabled = true;
+    btn.textContent = 'Polling...';
+
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage1/poll-ocr');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Check Status';
+                return;
+            }
+
+            const pct = d.percent_done || 0;
+            document.getElementById('ocr-progress-bar').style.width = pct + '%';
+            document.getElementById('ocr-progress-bar').textContent = pct + '%';
+            document.getElementById('ocr-progress-text').textContent =
+                'Status: ' + d.status + ' | Pages: ' + (d.num_pages || 0);
+
+            if (d.status === 'completed') {
+                if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+                document.getElementById('ocr-status-display').innerHTML =
+                    '<span style="color: var(--success); font-weight: 600;">OCR Complete!</span> Ready to download.';
+                document.getElementById('ocr-download-btn').disabled = false;
+                // Disable poll button permanently
+                btn.disabled = true;
+                btn.textContent = 'Complete \u2713';
+                appendLog('success', 'MathPIX OCR complete');
+                return;
+            } else {
+                appendLog('info', `OCR: ${d.status} (${pct}% done)`);
+            }
+        }
+    } catch (e) {
+        appendLog('error', 'Poll error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Check Status';
+}
+
+async function downloadOCR() {
+    const btn = document.getElementById('ocr-download-btn');
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+    appendLog('info', 'Downloading MathPIX results...');
+
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage1/download-ocr');
+        if (r.success) {
+            const d = r.data;
+            if (d.error) {
+                appendLog('error', d.error);
+                btn.disabled = false;
+                btn.textContent = 'Download Results';
+                return;
+            }
+
+            appendLog('success', `Downloaded: ${d.mmd_filename} (${d.mmd_lines} lines), ${d.images_count} images`);
+            showStatusCard({
+                files: [d.mmd_filename, d.images_count + ' images'],
+                count: 2,
+            });
+            document.getElementById('advance-btn').disabled = false;
+
+            // Disable all OCR buttons permanently
+            btn.disabled = true;
+            btn.textContent = 'Downloaded \u2713';
+            document.getElementById('ocr-start-btn').disabled = true;
+            document.getElementById('ocr-start-btn').textContent = 'Done';
+            document.getElementById('ocr-poll-btn').disabled = true;
+            document.getElementById('ocr-poll-btn').textContent = 'Complete \u2713';
+
+            // Run token safety check for Stage 2 model selection
+            runTokenCheck();
+            return;
+        } else {
+            appendLog('error', 'Download failed: ' + (r.error?.message || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Download error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Download Results';
+}
+
+function showStatusCard(data) {
+    const card = document.getElementById('status-card');
+    const result = document.getElementById('stage-result');
+    card.style.display = 'block';
+    let html = '<div class="alert alert-success" style="margin-bottom: 10px;">';
+    html += '<strong>Stage 1 Complete</strong> — ' + data.count + ' files ready for Stage 2';
+    html += '</div>';
+    html += '<div style="font-size: 12px;">';
+    for (const f of (data.files || [])) {
+        html += '<div style="padding: 3px 0; color: var(--text-secondary);">&#x2713; ' + f + '</div>';
+    }
+    html += '</div>';
+    result.innerHTML = html;
+}
+
+// Restore state from checkpoint when revisiting via sidebar
+document.addEventListener('DOMContentLoaded', () => {
+    const cp = _checkpoints.find(c => c.stage === 'stage1_upload');
+    if (cp && cp.status === 'completed') {
+        const data = cp.data || {};
+        // Disable upload controls
+        document.getElementById('upload-btn').disabled = true;
+        document.getElementById('upload-btn').textContent = 'Uploaded \u2713';
+        document.getElementById('pdf-file').disabled = true;
+        // Show OCR card with all buttons disabled
+        document.getElementById('ocr-card').style.display = 'block';
+        document.getElementById('ocr-start-btn').disabled = true;
+        document.getElementById('ocr-start-btn').textContent = 'Done';
+        document.getElementById('ocr-poll-btn').disabled = true;
+        document.getElementById('ocr-poll-btn').textContent = 'Complete \u2713';
+        document.getElementById('ocr-download-btn').disabled = true;
+        document.getElementById('ocr-download-btn').textContent = 'Downloaded \u2713';
+        // Show status
+        showStatusCard({ count: data.files_count || data.count || '?', files: data.files || [] });
+
+        // Run token check on revisit too
+        runTokenCheck();
+    }
+});
+
+async function autoSplitMMD() {
+    appendLog('info', 'Auto-splitting document into 2 parts...');
+    try {
+        const r = await apiPost('/api/sessions/{{ session.id }}/stage1/auto-split?num_parts=2');
+        if (r.success && r.data && !r.data.error) {
+            const d = r.data;
+            appendLog('success', `Split into ${d.parts} parts (${d.total_lines} total lines)`);
+            for (const p of d.part_info) {
+                const gOk = p.gemini_safe ? 'OK' : 'EXCEEDS';
+                const cOk = p.anthropic_safe ? 'OK' : 'EXCEEDS';
+                appendLog('info', `${p.name}: ${p.lines} lines — Gemini: ${gOk}, Claude: ${cOk}`);
+            }
+            // Refresh token check to show updated UI
+            runTokenCheck();
+        } else {
+            appendLog('error', 'Split failed: ' + (r.data?.error || 'Unknown'));
+        }
+    } catch (e) {
+        appendLog('error', 'Split error: ' + e.message);
+    }
+}
+
+async function runTokenCheck() {
+    appendLog('info', 'Checking document size vs model context windows...');
+    try {
+        const r = await apiGet('/api/sessions/{{ session.id }}/stage1/token-check');
+        if (r.success && r.data && !r.data.error) {
+            const d = r.data;
+            const card = document.getElementById('status-card');
+            const result = document.getElementById('stage-result');
+
+            let html = result.innerHTML;
+            html += '<div style="margin-top: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 6px; font-size: 12px;">';
+            html += '<div style="font-weight: 600; margin-bottom: 6px;">Model Context Window Check</div>';
+            html += `<div style="color: var(--text-secondary); margin-bottom: 6px;">Document: ~${d.document_tokens_est.toLocaleString()} tokens (${d.total_lines.toLocaleString()} lines)</div>`;
+
+            const models = {gemini: 'Gemini Flash (1M)', anthropic: 'Claude Sonnet 4.6 (200K)'};
+            for (const [key, label] of Object.entries(models)) {
+                if (d[key]) {
+                    const m = d[key];
+                    const icon = m.safe ? '\u2705' : '\u274c';
+                    const color = m.safe ? 'var(--success)' : 'var(--error)';
+                    const status = m.safe ? 'Safe to use' : 'EXCEEDS context limit';
+                    html += `<div style="padding: 2px 0; color: ${color};">${icon} ${label}: ${status} (headroom: ${(m.headroom / 1000).toFixed(0)}K tokens)</div>`;
+                }
+            }
+
+            if (d.needs_split && !d.has_parts) {
+                html += '<div style="margin-top: 8px; padding: 8px; background: var(--error); color: white; border-radius: 4px;">';
+                html += 'Both models exceed context limits. ';
+                html += '<button class="btn btn-sm" style="background: white; color: var(--error); margin-left: 8px;" onclick="autoSplitMMD()">Auto-Split Document</button>';
+                html += '</div>';
+            } else if (d.has_parts) {
+                html += '<div style="margin-top: 8px; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px;">';
+                html += `<div style="font-weight: 600; margin-bottom: 4px;">Document split into ${d.part_count} parts</div>`;
+                for (const p of d.part_info) {
+                    const gOk = p.gemini_safe ? '\u2705' : '\u274c';
+                    const cOk = p.anthropic_safe ? '\u2705' : '\u274c';
+                    html += `<div style="font-size: 11px; padding: 1px 0;">${p.name}: ${p.lines} lines — Gemini ${gOk} Claude ${cOk}</div>`;
+                }
+                html += '</div>';
+            }
+
+            html += '</div>';
+            result.innerHTML = html;
+
+            // Store compatibility data for Stage 2 to read
+            const configKey = 'token_check_{{ session.id }}';
+            try { localStorage.setItem(configKey, JSON.stringify(d)); } catch(e) {}
+
+            if (d.needs_split) {
+                appendLog('error', 'Document too large for all models. Manual split required.');
+            } else {
+                const safeModels = [];
+                if (d.gemini && d.gemini.safe) safeModels.push('Gemini');
+                if (d.anthropic && d.anthropic.safe) safeModels.push('Claude');
+                appendLog('success', `Model check: ${safeModels.join(' + ')} safe to use`);
+            }
+        }
+    } catch (e) {
+        appendLog('warning', 'Token check skipped: ' + e.message);
+    }
+}
+</script>
+{% endblock %}

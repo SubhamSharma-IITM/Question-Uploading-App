@@ -1,0 +1,81 @@
+# ── Render Blueprint — Acadza Question Uploading App ──
+# Deploy: connect GitHub repo, Render auto-detects this file
+
+services:
+  - type: web
+    name: acadza-question-uploader
+    runtime: docker
+    plan: standard  # 2GB RAM, 0.5 CPU — minimum for FAISS index loading
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+
+    # Persistent disk: survives deploys and restarts
+    disk:
+      name: acadza-data
+      mountPath: /data
+      sizeGB: 10
+
+    # Environment variables
+    envVars:
+      # ── Git LFS: skip download during clone (data lives on persistent disk) ──
+      - key: GIT_LFS_SKIP_SMUDGE
+        value: "1"
+
+      # ── Paths (override defaults to point to persistent disk) ──
+      - key: DATA_DIR
+        value: /data
+      - key: SESSIONS_DIR
+        value: /data/sessions
+      - key: DB_PATH
+        value: /data/allque030326.json
+      - key: DB_INDEX_DIR
+        value: /data/db_index_cache
+
+      # ── Server ──
+      - key: PORT
+        value: "10000"
+
+      # ── MathPIX (Stage 1 OCR) ──
+      - key: MATHPIX_APP_ID
+        sync: false
+      - key: MATHPIX_APP_KEY
+        sync: false
+
+      # ── Gemini (Stage 2 LLM extraction) ──
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # ── OpenAI (Stage 7 batch + Stage 8 embeddings + Stage 9 QA) ──
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # ── Vertex AI (Stage 9 QA Pass 1) ──
+      - key: VERTEX_AI_CREDENTIALS_B64
+        sync: false
+      - key: VERTEX_AI_PROJECT
+        value: gen-lang-client-0276374344
+      - key: VERTEX_AI_LOCATION
+        value: global
+      - key: VERTEX_AI_BUCKET
+        value: acadza-qa-batch-0276374344
+
+      # ── AWS S3 (Stage 6 CDN image upload) ──
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_S3_REGION
+        value: ap-south-1
+
+      # ── Acadza API (Stage 10 upload) ──
+      - key: ACADZA_API_USERNAME
+        sync: false
+      - key: ACADZA_API_PASSWORD
+        sync: false
+
+      # ── Anthropic (optional, fallback LLM) ──
+      - key: ANTHROPIC_API_KEY
+        sync: false

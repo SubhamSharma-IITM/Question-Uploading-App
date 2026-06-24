@@ -1,0 +1,4 @@
+{"qid": "MOCK_DB_Q1", "subject": "Physics", "questionType": "scq", "scq": {"question": "A point object of mass 1 mg and charge 1 micro-coulomb is placed on a smooth table.", "answer": "4", "solution": "First step: find electric force."}}
+{"qid": "MOCK_DB_Q2", "subject": "Chemistry", "questionType": "scq", "scq": {"question": "The chemical formula of water is H2O. What is the molecular mass of water?", "answer": "18", "solution": "Water has two hydrogens and one oxygen."}}
+{"qid": "MOCK_DB_Q3", "subject": "Mathematics", "questionType": "scq", "scq": {"question": "Find the integral of x^2 from 0 to 1.", "answer": "1/3", "solution": "Integration of x^2 is x^3/3."}}
+{"qid": "MOCK_DB_Q4", "subject": "Biology", "questionType": "scq", "scq": {"question": "Photosynthesis is a process used by plants and other organisms to convert light energy into chemical energy.", "answer": "Light energy", "solution": "It uses light energy."}}

@@ -1,0 +1,43 @@
+# ── Docker build exclusions ──
+# Keep image lean: only ship code + data files needed for production
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Local development
+.env
+*.sqlite
+app.db
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+
+# Test files
+test_*.py
+benchmark_*.py
+fire_test_passes.py
+experiments/
+tools/
+test_wm_output/
+
+# Documentation
+docs/
+CLAUDE.md
+README.md
+
+# Recovery / temp
+_recovery_sessions/
+Upload Stats Check/
+
+# Session data (lives on persistent disk, not in image)
+data/sessions/
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/

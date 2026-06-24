@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Acadza</title>
+    <script>
+    // Apply saved theme before render to prevent flash
+    (function() {
+        const t = localStorage.getItem('acadza_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+    })();
+    </script>
+    <style>
+        :root, [data-theme="dark"] {
+            --login-bg: #080910;
+            --login-card-bg: rgba(20, 24, 42, 0.4);
+            --login-card-border: rgba(79, 125, 249, 0.12);
+            --login-text: #e4e6ef;
+            --login-text-sub: #6b7194;
+            --login-input-bg: rgba(255, 255, 255, 0.06);
+            --login-input-border: rgba(255, 255, 255, 0.1);
+            --login-gear-opacity: 0.09;
+        }
+        [data-theme="light"] {
+            --login-bg: #eaecf0;
+            --login-card-bg: rgba(255, 255, 255, 0.88);
+            --login-card-border: rgba(0, 0, 0, 0.1);
+            --login-text: #1e2235;
+            --login-text-sub: #545a78;
+            --login-input-bg: #f4f5f8;
+            --login-input-border: #c8ccd8;
+            --login-gear-opacity: 0.16;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, system-ui, sans-serif;
+            background: var(--login-bg, #080910);
+            color: var(--login-text, #e4e6ef);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Background gear — emerging from right */
+        .bg-gear {
+            position: fixed;
+            right: -20%;
+            top: 50%;
+            transform: translateY(-50%) rotate(0deg);
+            width: 110vh;
+            height: 110vh;
+            opacity: var(--login-gear-opacity, 0.09);
+            pointer-events: none;
+            z-index: 0;
+            animation: gearArrive 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+        .bg-gear.gear-exit {
+            animation: gearLeave 1s cubic-bezier(0.55, 0, 1, 0.45) forwards;
+        }
+
+        @keyframes gearArrive {
+            0% { transform: translateY(-50%) rotate(-90deg); right: -60%; opacity: 0; }
+            40% { opacity: 0.05; }
+            100% { transform: translateY(-50%) rotate(0deg); right: -20%; opacity: 0.09; }
+        }
+        @keyframes gearLeave {
+            0% { transform: translateY(-50%) rotate(0deg); right: -20%; opacity: 0.09; }
+            100% { transform: translateY(-50%) rotate(90deg); right: -70%; opacity: 0; }
+        }
+
+        .login-wrap {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 420px;
+            padding: 24px;
+        }
+
+        .logo {
+            display: block;
+            margin: 0 auto 36px;
+            height: 38px;
+        }
+
+        /* Glass card */
+        .card {
+            background: var(--login-card-bg, rgba(20, 24, 42, 0.4));
+            backdrop-filter: blur(14px) saturate(1.4);
+            -webkit-backdrop-filter: blur(14px) saturate(1.4);
+            border: 1px solid var(--login-card-border, rgba(79, 125, 249, 0.12));
+            border-radius: 16px;
+            padding: 44px 36px;
+            box-shadow:
+                0 8px 32px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(255,255,255,0.05) inset,
+                0 0 80px rgba(79, 125, 249, 0.04);
+        }
+
+        .card h2 {
+            font-size: 24px;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 6px;
+            letter-spacing: -0.4px;
+            color: var(--login-text, #f0f2fa);
+        }
+
+        .card .sub {
+            font-size: 14px;
+            color: var(--login-text-sub, #6b7194);
+            text-align: center;
+            margin-bottom: 32px;
+            font-weight: 400;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--login-text-sub, #8890b0);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .field { margin-bottom: 24px; }
+
+        .phone-row { display: flex; gap: 8px; }
+
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--login-input-bg, rgba(26, 29, 42, 0.8));
+            border: 1.5px solid var(--login-input-border, rgba(45, 49, 72, 0.7));
+            border-radius: 8px;
+            color: var(--login-text, #e4e6ef);
+            font-size: 16px;
+            font-weight: 500;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        input:focus {
+            border-color: rgba(79, 125, 249, 0.5);
+            box-shadow: 0 0 0 3px rgba(79, 125, 249, 0.1);
+        }
+        input::placeholder { color: var(--login-text-sub, #3d4268); }
+
+        .cc {
+            width: 68px;
+            flex-shrink: 0;
+            text-align: center;
+            color: var(--login-text-sub, #8890b0);
+            font-weight: 600;
+            background: var(--login-input-bg, rgba(20, 22, 34, 0.9));
+        }
+
+        /* PIN boxes */
+        .pin-boxes { display: flex; gap: 10px; justify-content: center; }
+        .pin-box {
+            width: 48px;
+            height: 56px;
+            text-align: center;
+            font-size: 22px;
+            font-weight: 700;
+            padding: 0;
+            border-radius: 10px;
+            background: var(--login-input-bg, rgba(26, 29, 42, 0.8));
+            border: 1.5px solid var(--login-input-border, rgba(45, 49, 72, 0.7));
+            color: var(--login-text, #e4e6ef);
+            caret-color: #4f7df9;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            -webkit-text-security: disc;
+        }
+        .pin-box:focus {
+            border-color: #4f7df9;
+            box-shadow: 0 0 0 3px rgba(79, 125, 249, 0.15);
+        }
+        .pin-box.filled { border-color: rgba(79, 125, 249, 0.4); }
+        .pin-box.error { border-color: rgba(248, 113, 113, 0.5); animation: shake 0.4s ease; }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-4px); }
+            40%, 80% { transform: translateX(4px); }
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: #4f7df9;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .btn:hover { background: #3d6be6; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,125,249,0.3); }
+        .btn:active { transform: translateY(0); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+        .btn .spinner {
+            display: none;
+            width: 20px; height: 20px;
+            border: 2.5px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin: 0 auto;
+        }
+        .btn.loading .spinner { display: inline-block; }
+        .btn.loading .btn-text { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .msg {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .msg.err { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2); color: #f87171; }
+        .msg.ok  { background: rgba(79,125,249,0.08); border: 1px solid rgba(79,125,249,0.2); color: #8badff; }
+        .msg.vis { display: block; }
+
+        .step { display: none; }
+        .step.active { display: block; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        .link-row {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 13px;
+            color: #5c6280;
+        }
+        .link-row a { color: #4f7df9; cursor: pointer; text-decoration: none; font-weight: 500; }
+        .link-row a:hover { color: #8badff; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: linear-gradient(135deg, rgba(20, 24, 42, 0.95), rgba(30, 36, 58, 0.95));
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(79, 125, 249, 0.25);
+            border-radius: 12px;
+            padding: 14px 28px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset;
+            z-index: 100;
+            transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
+            opacity: 0;
+            min-width: 280px;
+            text-align: center;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast h3 { font-size: 18px; font-weight: 700; margin-bottom: 6px; color: #f0f2fa; }
+        .toast p { font-size: 14px; color: #8badff; font-weight: 500; font-style: italic; }
+        .toast::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, transparent, #4f7df9, transparent);
+            border-radius: 14px 14px 0 0;
+        }
+
+        /* Lockout countdown */
+        .lockout {
+            text-align: center;
+            padding: 16px;
+            color: #f87171;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .lockout .timer { font-size: 28px; font-weight: 700; margin: 8px 0; font-variant-numeric: tabular-nums; }
+
+        .login-footer {
+            text-align: center;
+            margin-top: 28px;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--login-text-sub, #1e2130);
+            letter-spacing: 2px;
+            opacity: 0.5;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            width: 500px; height: 500px;
+            background: radial-gradient(circle, rgba(79,125,249,0.06) 0%, transparent 70%);
+            top: 30%; left: 20%;
+            pointer-events: none;
+            z-index: 0;
+        }
+    </style>
+</head>
+<body>
+    <img src="/static/img/acadza-gear-white.svg" alt="" class="bg-gear" id="bg-gear">
+
+    <div id="toast" class="toast">
+        <h3 id="toast-title"></h3>
+        <p id="toast-sub"></p>
+    </div>
+
+    <div class="login-wrap">
+        <img id="login-logo" src="/static/img/acadza-logo-white.svg" alt="Acadza" class="logo">
+        <script>
+        // Swap logo for light theme
+        (function() {
+            var t = document.documentElement.getAttribute('data-theme') || 'dark';
+            if (t === 'light') {
+                document.getElementById('login-logo').src = '/static/img/acadza-logo.svg';
+                document.getElementById('bg-gear').src = '/static/img/acadza-gear.svg';
+            }
+        })();
+        </script>
+
+        <div class="card">
+            <h2 id="welcome-heading">Welcome back</h2>
+            <p class="sub">Enter your phone number and PIN</p>
+
+            <div id="msg-err" class="msg err"></div>
+            <div id="msg-ok" class="msg ok"></div>
+
+            <!-- Step 1: Phone -->
+            <div id="step-phone" class="step active">
+                <div class="field">
+                    <label>Phone number</label>
+                    <div class="phone-row">
+                        <input type="text" class="cc" value="+91" readonly>
+                        <input type="tel" id="phone" placeholder="10-digit number" maxlength="10" autofocus>
+                    </div>
+                </div>
+                <button id="btn-next" class="btn" onclick="goToPin()">
+                    <span class="btn-text">Continue</span>
+                </button>
+            </div>
+
+            <!-- Step 2: PIN -->
+            <div id="step-pin" class="step">
+                <div class="field">
+                    <label>6-digit PIN</label>
+                    <div class="pin-boxes">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="0">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="1">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="2">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="3">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="4">
+                        <input type="text" class="pin-box" maxlength="1" inputmode="numeric" data-idx="5">
+                    </div>
+                </div>
+                <button id="btn-login" class="btn" onclick="login()">
+                    <span class="btn-text">Sign In</span>
+                    <span class="spinner"></span>
+                </button>
+                <div class="link-row">
+                    <a onclick="goBack()">Change number</a>
+                </div>
+            </div>
+
+            <!-- Lockout -->
+            <div id="step-locked" class="step">
+                <div class="lockout">
+                    <div>Account locked</div>
+                    <div class="timer" id="lockout-timer">15:00</div>
+                    <div style="font-size:12px;color:#6b7194;font-weight:400;">Too many failed attempts. Try again later.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="login-footer">ACADZA AUTOMATION SUITE</div>
+    </div>
+
+    <script>
+    // User registry for instant heading update on phone entry
+    const USERS = {
+        '9661172783': 'Subham',
+        '7992279131': 'Manish',
+        '7667909991': 'Ashish',
+        '9125985931': 'Saurabh',
+        '9279006541': 'Khushboo',
+        '8108728834': 'Rubina',
+        '8452099268': 'Rutuja',
+        '7644045760': 'Raushan',
+    };
+
+    // localStorage cache
+    function getCachedUser() {
+        try { const r = localStorage.getItem('acadza_user'); return r ? JSON.parse(r) : null; }
+        catch(e) { return null; }
+    }
+    function setCachedUser(name, role) {
+        try { localStorage.setItem('acadza_user', JSON.stringify({name, role, ts: Date.now()})); }
+        catch(e) {}
+    }
+
+    // Motivational lines
+    const MOTIVATIONS = {
+        morning: ["Fresh day, fresh uploads.", "Build something great today.", "The early grind pays off.", "Let's make today count."],
+        afternoon: ["Momentum is everything.", "Keep the pipeline flowing.", "Halfway there, stay sharp.", "Great work takes persistence."],
+        evening: ["One more push, champion.", "Consistency builds empires.", "Strong finish to the day.", "Quality over quantity, always."],
+    };
+    function getMotivation() {
+        const h = new Date().getHours();
+        const b = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+        const l = MOTIVATIONS[b];
+        return l[Math.floor(Math.random() * l.length)];
+    }
+
+    function showErr(m) { const e = document.getElementById('msg-err'); e.textContent = m; e.classList.add('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
+    function showOk(m)  { const e = document.getElementById('msg-ok');  e.textContent = m; e.classList.add('vis'); document.getElementById('msg-err').classList.remove('vis'); }
+    function clearMsg()  { document.getElementById('msg-err').classList.remove('vis'); document.getElementById('msg-ok').classList.remove('vis'); }
+
+    function showToast(title, sub) {
+        const t = document.getElementById('toast');
+        document.getElementById('toast-title').textContent = title;
+        document.getElementById('toast-sub').textContent = sub;
+        t.classList.add('show');
+        setTimeout(() => t.classList.remove('show'), 6000);
+    }
+
+    // ── Phone input ──
+    const phoneInput = document.getElementById('phone');
+    phoneInput.addEventListener('input', function() {
+        this.value = this.value.replace(/\D/g, '').slice(0, 10);
+        const heading = document.getElementById('welcome-heading');
+        if (this.value.length === 10 && USERS[this.value]) {
+            heading.textContent = getGreetingPrefix() + ', ' + USERS[this.value];
+        } else {
+            const cached = getCachedUser();
+            heading.textContent = cached ? getGreetingPrefix() + ', ' + cached.name.split(' ')[0] : getGreetingPrefix();
+        }
+    });
+    phoneInput.addEventListener('keydown', e => { if (e.key === 'Enter') goToPin(); });
+
+    function goToPin() {
+        clearMsg();
+        const phone = phoneInput.value.trim();
+        if (!/^\d{10}$/.test(phone)) { showErr('Enter a valid 10-digit number'); return; }
+        document.getElementById('step-phone').classList.remove('active');
+        document.getElementById('step-pin').classList.add('active');
+        pinBoxes[0].focus();
+    }
+
+    // ── PIN boxes ──
+    const pinBoxes = document.querySelectorAll('.pin-box');
+    pinBoxes.forEach((box, i) => {
+        box.addEventListener('input', function() {
+            this.value = this.value.replace(/\D/g, '').slice(0, 1);
+            this.classList.remove('error');
+            if (this.value) {
+                this.classList.add('filled');
+                if (i < 5) pinBoxes[i + 1].focus();
+                if (i === 5 && getPIN().length === 6) setTimeout(() => login(), 100);
+            } else {
+                this.classList.remove('filled');
+            }
+        });
+        box.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace' && !this.value && i > 0) {
+                pinBoxes[i - 1].focus();
+                pinBoxes[i - 1].value = '';
+                pinBoxes[i - 1].classList.remove('filled');
+            }
+        });
+        box.addEventListener('paste', function(e) {
+            e.preventDefault();
+            const pasted = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+            for (let j = 0; j < 6; j++) {
+                pinBoxes[j].value = pasted[j] || '';
+                if (pasted[j]) pinBoxes[j].classList.add('filled');
+            }
+            pinBoxes[Math.min(pasted.length, 5)].focus();
+            if (pasted.length === 6) setTimeout(() => login(), 100);
+        });
+    });
+
+    function getPIN() { return Array.from(pinBoxes).map(b => b.value).join(''); }
+    function clearPIN() { pinBoxes.forEach(b => { b.value = ''; b.classList.remove('filled', 'error'); }); }
+    function shakePIN() { pinBoxes.forEach(b => { b.classList.add('error'); }); }
+
+    // ── Login ──
+    async function login() {
+        clearMsg();
+        const pin = getPIN();
+        if (pin.length !== 6) { showErr('Enter all 6 digits'); return; }
+
+        const btn = document.getElementById('btn-login');
+        btn.classList.add('loading'); btn.disabled = true;
+
+        try {
+            const resp = await fetch('/auth/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ phone: phoneInput.value.trim(), pin: pin, next: '{{ next_url | default("/", true) }}' }),
+            });
+            const data = await resp.json();
+
+            if (data.success) {
+                // Cache user
+                if (data.user_name) setCachedUser(data.user_name, data.user_role || '');
+
+                // Gear exit
+                document.getElementById('bg-gear').classList.add('gear-exit');
+
+                // Toast
+                const h = new Date().getHours();
+                const greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+                const firstName = (data.user_name || 'there').split(' ')[0];
+                setTimeout(() => showToast(greeting + ', ' + firstName + '!', getMotivation()), 400);
+
+                // Redirect
+                setTimeout(() => { window.location.href = data.redirect || '/'; }, 3000);
+            } else {
+                // Failed
+                shakePIN();
+                clearPIN();
+                showErr(data.error);
+                btn.classList.remove('loading'); btn.disabled = false;
+
+                // Show lockout screen if locked
+                if (data.locked) {
+                    showLockout(data.locked_seconds || 900);
+                } else {
+                    pinBoxes[0].focus();
+                }
+            }
+        } catch (err) {
+            showErr('Network error: ' + err.message);
+            btn.classList.remove('loading'); btn.disabled = false;
+        }
+    }
+
+    // ── Lockout ──
+    let lockoutInterval = null;
+    function showLockout(seconds) {
+        document.getElementById('step-pin').classList.remove('active');
+        document.getElementById('step-phone').classList.remove('active');
+        document.getElementById('step-locked').classList.add('active');
+
+        let remaining = seconds;
+        updateTimer(remaining);
+        lockoutInterval = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+                clearInterval(lockoutInterval);
+                document.getElementById('step-locked').classList.remove('active');
+                document.getElementById('step-phone').classList.add('active');
+                clearMsg();
+                phoneInput.focus();
+            } else {
+                updateTimer(remaining);
+            }
+        }, 1000);
+    }
+    function updateTimer(s) {
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        document.getElementById('lockout-timer').textContent = m + ':' + String(sec).padStart(2, '0');
+    }
+
+    // ── Go back ──
+    function goBack() {
+        clearMsg();
+        clearPIN();
+        document.getElementById('step-pin').classList.remove('active');
+        document.getElementById('step-phone').classList.add('active');
+        const cached = getCachedUser();
+        document.getElementById('welcome-heading').textContent = cached
+            ? getGreetingPrefix() + ', ' + cached.name.split(' ')[0]
+            : getGreetingPrefix();
+        phoneInput.focus();
+    }
+
+    // ── Time-based greeting ──
+    function getGreetingPrefix() {
+        const h = new Date().getHours();
+        if (h < 12) return 'Good morning';
+        if (h < 17) return 'Good afternoon';
+        return 'Good evening';
+    }
+
+    // ── Init ──
+    document.addEventListener('DOMContentLoaded', () => {
+        const cached = getCachedUser();
+        const heading = document.getElementById('welcome-heading');
+        if (cached && cached.name) {
+            const firstName = cached.name.split(' ')[0];
+            const sameDay = cached.ts && new Date(cached.ts).toDateString() === new Date().toDateString();
+            heading.textContent = sameDay
+                ? 'Welcome back, ' + firstName
+                : getGreetingPrefix() + ', ' + firstName;
+        } else {
+            heading.textContent = getGreetingPrefix();
+        }
+    });
+    </script>
+</body>
+</html>

@@ -1,0 +1,1111 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Acadza Question Uploader{% endblock %}
+
+{% block head %}
+<style>
+/* ── Dashboard Glass Panel System ── */
+.dash-grid {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.glass-card {
+    background: var(--glass-bg, rgba(30, 33, 48, 0.65));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border, rgba(79, 125, 249, 0.08));
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.glass-card .card-header {
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 18px;
+}
+
+.glass-card .card-header h2 {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+}
+
+.glass-card .card-body {
+    padding: 18px;
+}
+
+/* ── Stat Boxes ── */
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.stat-box {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-align: center;
+}
+
+.stat-box .stat-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.stat-box .stat-number {
+    font-size: 28px;
+    font-weight: 800;
+    font-family: 'Segoe UI', monospace;
+    letter-spacing: -1px;
+    line-height: 1;
+}
+
+.stat-box .stat-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.stat-box.primary .stat-number { color: var(--accent); }
+.stat-box.success .stat-number { color: var(--success); }
+.stat-box.warning .stat-number { color: var(--warning); }
+.stat-box.info .stat-number { color: var(--info); }
+
+/* ── Err1/Err2 Split Display ── */
+.err-split {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 2px;
+    font-family: 'Consolas', monospace;
+    font-size: 13px;
+    font-weight: 600;
+}
+.err1-val { color: var(--success); }
+.err2-val { color: var(--warning); }
+.err-sep { color: var(--text-muted); font-weight: 400; }
+
+/* ── Section Dividers ── */
+.section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 8px 0 6px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+}
+
+/* ── Subject Distribution Mini-Table ── */
+.subject-grid {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 4px 12px;
+    font-size: 12px;
+}
+.subject-grid .sg-head {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+.subject-grid .sg-name { color: var(--text-secondary); }
+.subject-grid .sg-e1 { color: var(--success); font-weight: 600; text-align: right; font-family: monospace; }
+.subject-grid .sg-e2 { color: var(--warning); font-weight: 600; text-align: right; font-family: monospace; }
+
+/* ── Daily Target Bar ── */
+.target-bar-wrap {
+    margin-top: 12px;
+}
+.target-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.target-bar {
+    height: 8px;
+    background: var(--bg-input);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.target-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.6s ease;
+    background: linear-gradient(90deg, var(--accent), var(--success));
+}
+.target-bar-fill.low { background: linear-gradient(90deg, var(--error), var(--warning)); }
+.target-bar-fill.mid { background: linear-gradient(90deg, var(--warning), var(--accent)); }
+
+/* ── Sessions Table Improvements ── */
+.sessions-card { grid-column: 1 / -1; }
+
+/* Breathing space between glass cards */
+.dashboard > .glass-card + .glass-card {
+    margin-top: 20px;
+}
+
+.sessions-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0 4px;
+}
+
+.sessions-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 6px 12px;
+}
+
+.sessions-table td {
+    padding: 10px 12px;
+    font-size: 13px;
+    background: var(--bg-card);
+}
+
+.sessions-table tr td:first-child { border-radius: 6px 0 0 6px; }
+.sessions-table tr td:last-child { border-radius: 0 6px 6px 0; }
+.sessions-table tbody tr:hover td { background: rgba(79, 125, 249, 0.06); }
+
+/* Sparkline bar colors for light theme */
+[data-theme="light"] .spark-bar { background: rgba(59, 108, 231, 0.2); }
+[data-theme="light"] .spark-bar.today { background: var(--accent); }
+[data-theme="light"] .spark-tip { background: var(--bg-card); border-color: var(--border); color: var(--text-primary); }
+[data-theme="light"] .stat-box { background: var(--bg-input); border-color: var(--border); }
+[data-theme="light"] .motivation-banner.great { background: rgba(22,163,100,0.06); border-color: rgba(22,163,100,0.2); }
+[data-theme="light"] .motivation-banner.good { background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.2); }
+[data-theme="light"] .motivation-banner.push { background: rgba(202,138,4,0.06); border-color: rgba(202,138,4,0.2); }
+
+.session-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.session-name-cell .complete-check {
+    color: var(--success);
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.session-name-cell .session-id-mini {
+    font-family: 'Consolas', monospace;
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
+/* ── Admin Team Panel ── */
+.team-row {
+    display: grid;
+    grid-template-columns: 180px 1fr auto;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+}
+.team-row:last-child { border-bottom: none; }
+
+.team-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.team-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.team-avatar.admin { background: rgba(79, 125, 249, 0.15); color: var(--accent); }
+.team-avatar.team { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+
+.team-stats-mini {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+}
+.team-stats-mini .ts-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+.team-stats-mini .ts-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.team-stats-mini .ts-val {
+    font-weight: 700;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+.activity-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+}
+.activity-dot.online { background: var(--success); }
+.activity-dot.away { background: var(--warning); }
+.activity-dot.offline { background: var(--text-muted); }
+
+/* ── Create Session (right panel) ── */
+.create-card .form-input {
+    width: 100%;
+}
+
+/* ── Motivation Banner ── */
+.motivation-banner {
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    margin-top: 12px;
+    border: 1px solid;
+}
+.motivation-banner.great { background: rgba(52,211,153,0.08); border-color: rgba(52,211,153,0.2); color: var(--success); }
+.motivation-banner.good { background: rgba(96,165,250,0.08); border-color: rgba(96,165,250,0.2); color: var(--info); }
+.motivation-banner.push { background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.2); color: var(--warning); }
+
+/* ── 7-Day Sparkline ── */
+.sparkline-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 40px;
+    margin: 8px 0;
+}
+.spark-bar {
+    flex: 1;
+    background: rgba(79, 125, 249, 0.3);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    position: relative;
+}
+.spark-bar .spark-label {
+    position: absolute;
+    bottom: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 8px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.spark-bar.today { background: var(--accent); }
+
+/* Sparkline tooltip */
+.spark-bar { cursor: pointer; position: relative; }
+.spark-tip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10px;
+    white-space: nowrap;
+    z-index: 10;
+    pointer-events: none;
+    line-height: 1.5;
+}
+.spark-bar:hover .spark-tip { display: block; }
+
+/* Range selector active */
+.range-btn.active {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    color: #fff !important;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="page-header">
+        <h1>Question Uploading Dashboard</h1>
+        <p class="subtitle">10-stage pipeline: PDF to database-ready questions</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <!-- ── TOP GRID: Stats (left) + Create Session (right) ── -->
+    <div class="dash-grid">
+
+        <!-- LEFT: Stats Panel -->
+        <div class="glass-card">
+            <div class="card-header">
+                <h2>Today's Progress</h2>
+                <span class="badge" id="dash-date">--</span>
+            </div>
+            <div class="card-body">
+                <!-- Main stat boxes -->
+                <div class="stat-grid">
+                    <div class="stat-box success">
+                        <div class="stat-label">Uploaded (err=1)</div>
+                        <div class="stat-number" id="today-err1">--</div>
+                        <div class="stat-sub">approved</div>
+                    </div>
+                    <div class="stat-box warning">
+                        <div class="stat-label">Uploaded (err=2)</div>
+                        <div class="stat-number" id="today-err2">--</div>
+                        <div class="stat-sub">review needed</div>
+                    </div>
+                    <div class="stat-box primary">
+                        <div class="stat-label">Active Sessions</div>
+                        <div class="stat-number" id="today-active">{{ active_count }}</div>
+                        <div class="stat-sub">in pipeline</div>
+                    </div>
+                    <div class="stat-box info">
+                        <div class="stat-label">In Process</div>
+                        <div class="stat-number" id="today-process">{{ in_process }}</div>
+                        <div class="stat-sub">questions</div>
+                    </div>
+                </div>
+
+                <!-- Daily Target Bar -->
+                <div class="target-bar-wrap">
+                    <div class="target-bar-label">
+                        <span>Daily Target (err=1)</span>
+                        <span id="target-progress-text">-- / 1,000</span>
+                    </div>
+                    <div class="target-bar">
+                        <div class="target-bar-fill" id="target-bar-fill" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Yesterday summary -->
+                <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text-muted);">
+                    <span>Yesterday: <span class="err1-val" id="yesterday-err1">--</span> <span class="err-sep">/</span> <span class="err2-val" id="yesterday-err2">--</span></span>
+                </div>
+
+                <!-- Motivation Banner -->
+                <div class="motivation-banner good" id="motivation-banner" style="display:none;"></div>
+
+                <!-- Range selector + History -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;">
+                    <div class="section-label" style="margin:0;border:none;padding:0;">History</div>
+                    <div style="display:flex;gap:4px;" id="range-selector">
+                        <button class="btn btn-xs range-btn active" data-days="7" onclick="switchRange(7)">7d</button>
+                        <button class="btn btn-xs range-btn" data-days="14" onclick="switchRange(14)">14d</button>
+                        <button class="btn btn-xs range-btn" data-days="9999" onclick="switchRange(9999)">All</button>
+                    </div>
+                </div>
+                <div class="sparkline-row" id="sparkline-row"></div>
+                <div style="display:flex;justify-content:space-between;margin-top:4px;">
+                    <div style="font-size:11px;color:var(--text-secondary);">
+                        Total: <span class="err1-val" id="range-err1">--</span> <span class="err-sep">/</span> <span class="err2-val" id="range-err2">--</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted);">
+                        avg/day: <span id="range-avg" style="color:var(--text-primary);font-weight:600;">--</span>
+                    </div>
+                </div>
+
+                <!-- Subject Distribution -->
+                <div class="section-label" style="margin-top: 16px;">Subject Distribution</div>
+                <div class="subject-grid" id="subject-grid">
+                    <span class="sg-head">Subject</span>
+                    <span class="sg-head" style="text-align:right;">Err=1</span>
+                    <span class="sg-head" style="text-align:right;">Err=2</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: Create Session -->
+        <div>
+            <div class="glass-card create-card">
+                <div class="card-header">
+                    <h2>Create New Session</h2>
+                </div>
+                <div class="card-body">
+                    <form id="create-session-form" style="text-align:center;">
+                        <div class="form-group" style="margin-bottom:14px;text-align:left;">
+                            <label for="session-name" style="font-weight:700;font-size:12px;">Session Name</label>
+                            <input type="text" id="session-name" name="name"
+                                   placeholder="e.g. Brahmanda Physics BRM-01"
+                                   class="form-input" required
+                                   style="font-weight:600;font-size:14px;">
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="font-weight:700;font-size:14px;padding:10px 32px;">Create Session</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Quick Stats Card -->
+            <div class="glass-card" style="margin-top:16px;">
+                <div class="card-header">
+                    <h2>My All-Time Stats</h2>
+                    <button class="btn btn-xs" id="refresh-btn" onclick="refreshPlatformTotals(this)" title="Refresh">Refresh</button>
+                </div>
+                <div class="card-body">
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <div style="display:flex;justify-content:space-between;font-size:12px;">
+                            <span style="color:var(--text-secondary);">My sessions</span>
+                            <span style="font-weight:700;" id="pt-total">{{ sessions|length }}</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:12px;">
+                            <span style="color:var(--text-secondary);">Completed</span>
+                            <span style="font-weight:700;color:var(--success);" id="pt-completed">{{ completed_count }}</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:12px;">
+                            <span style="color:var(--text-secondary);">In pipeline</span>
+                            <span style="font-weight:700;color:var(--accent);" id="pt-active">{{ active_count }}</span>
+                        </div>
+                        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:8px;">
+                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                                <span style="color:var(--text-secondary);">Uploaded (err=1)</span>
+                                <span style="font-weight:700;color:var(--success);" id="pt-alltime-err1">--</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;font-size:12px;">
+                                <span style="color:var(--text-secondary);">Uploaded (err=2)</span>
+                                <span style="font-weight:700;color:var(--warning);" id="pt-alltime-err2">--</span>
+                            </div>
+                        </div>
+                        <!-- All-time subject breakdown -->
+                        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;" id="pt-alltime-subjects"></div>
+                        <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
+                            <div style="font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">Last Session</div>
+                            <div id="pt-last-session" style="font-size:12px;color:var(--text-secondary);">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Last Night's Stage 11 Conversion ── -->
+    <div class="glass-card" id="stage11-last-night-card" style="display:none;">
+        <div class="card-header">
+            <h2>Last Night's Auto-Correction (Stage 11)</h2>
+            <span class="badge" id="s11-card-date">--</span>
+        </div>
+        <div class="card-body">
+            <div class="stat-grid">
+                <div class="stat-box success">
+                    <div class="stat-label">Promoted err=2 -> err=1</div>
+                    <div class="stat-number" id="s11-promoted">--</div>
+                    <div class="stat-sub">live DB</div>
+                </div>
+                <div class="stat-box warning">
+                    <div class="stat-label">Flagged for faculty</div>
+                    <div class="stat-number" id="s11-flagged">--</div>
+                    <div class="stat-sub">LLM rejected</div>
+                </div>
+                <div class="stat-box info">
+                    <div class="stat-label">Failed (retry tonight)</div>
+                    <div class="stat-number" id="s11-failed-retry">--</div>
+                    <div class="stat-sub">API/network</div>
+                </div>
+                <div class="stat-box primary">
+                    <div class="stat-label">Cohort verified</div>
+                    <div class="stat-number" id="s11-cohort">--</div>
+                    <div class="stat-sub">err=2 OIDs</div>
+                </div>
+            </div>
+            <div id="s11-my-slice" style="margin-top:10px;font-size:12px;color:var(--text-secondary);"></div>
+            <div id="s11-per-op-wrap" style="margin-top:12px;display:none;">
+                <div class="section-label" style="margin:0 0 4px 0;">Per-operator breakdown (admin)</div>
+                <div id="s11-per-op"></div>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">
+                Nightly auto-sweep fires at 00:30 IST. Results reflect the most recent run within the last 3 IST days.
+            </div>
+        </div>
+    </div>
+
+    <!-- ── ADMIN: Team Performance Panel (above sessions) ── -->
+    {% if user_role in ('Admin', 'Architect') %}
+    <div class="glass-card" id="team-panel">
+        <div class="card-header">
+            <h2>Team Performance</h2>
+            <button class="btn btn-xs" onclick="loadTeamStats()">Refresh</button>
+        </div>
+        <div class="card-body" id="team-panel-body">
+            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:16px;">
+                Loading team data...
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ── SESSIONS LIST (full width) ── -->
+    <div class="glass-card sessions-card">
+        <div class="card-header">
+            <h2>Sessions</h2>
+            <span class="badge">{{ sessions|length }}</span>
+        </div>
+        <div class="card-body" style="padding:12px;">
+            {% if sessions %}
+            <table class="sessions-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Stage</th>
+                        <th>Questions (err1 / err2)</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in sessions %}
+                    <tr>
+                        <td>
+                            <div class="session-name-cell">
+                                {% if s.current_stage == 'completed' %}
+                                <span class="complete-check">&#x2713;</span>
+                                {% endif %}
+                                <div>
+                                    <a href="/session/{{ s.id }}" class="session-link">{{ s.name }}</a>
+                                    <span class="session-id-mini">{{ s.id[:8] }}</span>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            {% if s.current_stage == 'completed' %}
+                            <span class="stage-chip completed">Complete</span>
+                            {% else %}
+                            <span class="stage-chip {{ s.current_stage }}">{{ s.current_stage.replace('stage', 'S').replace('_', ' ').title()[:12] }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if s.get('upload_err1', 0) > 0 or s.get('upload_err2', 0) > 0 %}
+                            <div class="err-split">
+                                <span class="err1-val">{{ s.get('upload_err1', 0) }}</span>
+                                <span class="err-sep">/</span>
+                                <span class="err2-val">{{ s.get('upload_err2', 0) }}</span>
+                            </div>
+                            {% elif s.get('stats') and s.stats.get('total', 0) > 0 %}
+                            <span style="color:var(--text-secondary);font-size:12px;">{{ s.stats.total }} triplets</span>
+                            {% else %}
+                            <span style="color:var(--text-muted);font-size:12px;">--</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size:12px;color:var(--text-secondary);">
+                            {{ (s.updated_at or s.created_at)[:10] }}
+                            {% if s.current_stage == 'completed' %}
+                            <div style="font-size:10px;color:var(--success);">completed</div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group">
+                                <a href="/session/{{ s.id }}" class="btn btn-xs">Open</a>
+                                <button class="btn btn-xs btn-danger" onclick="deleteSession('{{ s.id }}', '{{ s.name }}')">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state" style="padding:24px;">
+                <p style="color:var(--text-muted);">No sessions yet. Create one to start processing questions.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Create Session ──
+document.getElementById('create-session-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('session-name').value.trim();
+    if (!name) return;
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+        const resp = await fetch('/api/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name}),
+        });
+        const result = await resp.json();
+        if (result.success) {
+            window.location.href = '/session/' + result.data.session_id;
+        } else {
+            alert('Error: ' + (result.error?.message || 'Unknown error'));
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Session';
+    }
+});
+
+// ── Delete Session ──
+async function deleteSession(id, name) {
+    if (!confirm('Delete session "' + name + '"? This will remove all data.')) return;
+    try {
+        const resp = await fetch('/api/sessions/' + id, {method: 'DELETE'});
+        const result = await resp.json();
+        if (result.success) window.location.reload();
+        else alert('Error: ' + (result.error?.message || 'Unknown error'));
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+// ── State ──
+let _currentDays = 7;
+
+// ── Load Dashboard Stats ──
+async function loadStats(days) {
+    if (days !== undefined) _currentDays = days;
+    try {
+        const resp = await fetch('/api/dashboard/stats?days=' + _currentDays);
+        if (resp.status === 401) return;
+        const result = await resp.json();
+        if (!result.success) { console.warn('Stats API:', result); return; }
+        const d = result.data;
+
+        // Date header
+        document.getElementById('dash-date').textContent =
+            new Date().toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'});
+
+        // Today
+        document.getElementById('today-err1').textContent = (d.today.err1 || 0).toLocaleString();
+        document.getElementById('today-err2').textContent = (d.today.err2 || 0).toLocaleString();
+        if (d.active_sessions !== undefined) document.getElementById('today-active').textContent = d.active_sessions;
+        if (d.in_process !== undefined) document.getElementById('today-process').textContent = d.in_process.toLocaleString();
+
+        // Yesterday
+        document.getElementById('yesterday-err1').textContent = (d.yesterday.err1 || 0).toLocaleString();
+        document.getElementById('yesterday-err2').textContent = (d.yesterday.err2 || 0).toLocaleString();
+
+        // Target bar
+        const todayErr1 = d.today.err1 || 0;
+        const pct = Math.min(100, (todayErr1 / 1000) * 100);
+        const fill = document.getElementById('target-bar-fill');
+        fill.style.width = pct + '%';
+        fill.className = 'target-bar-fill' + (pct < 30 ? ' low' : pct < 70 ? ' mid' : '');
+        document.getElementById('target-progress-text').textContent = todayErr1.toLocaleString() + ' / 1,000';
+
+        showMotivation(todayErr1);
+
+        // Range totals
+        const r = d.range || {};
+        document.getElementById('range-err1').textContent = (r.err1 || 0).toLocaleString();
+        document.getElementById('range-err2').textContent = (r.err2 || 0).toLocaleString();
+        const numDays = r.by_day ? r.by_day.length : 1;
+        document.getElementById('range-avg').textContent =
+            numDays > 0 ? Math.round((r.err1 || 0) / Math.max(numDays, 1)).toLocaleString() : '0';
+
+        renderSparkline(r.by_day || []);
+        renderSubjects(r.by_subject || {});
+
+        // My all-time stats (personal upload_log)
+        if (d.all_time) {
+            const el1 = document.getElementById('pt-alltime-err1');
+            const el2 = document.getElementById('pt-alltime-err2');
+            if (el1) el1.textContent = (d.all_time.err1 || 0).toLocaleString();
+            if (el2) el2.textContent = (d.all_time.err2 || 0).toLocaleString();
+
+            // Subject breakdown
+            const subjContainer = document.getElementById('pt-alltime-subjects');
+            if (subjContainer && d.all_time.by_subject) {
+                const entries = Object.entries(d.all_time.by_subject).sort((a,b) => (b[1].err1||0) - (a[1].err1||0));
+                if (entries.length) {
+                    let sh = '<div style="font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">By Subject</div>';
+                    entries.forEach(([name, vals]) => {
+                        sh += '<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;">' +
+                            '<span style="color:var(--text-secondary);">' + name + '</span>' +
+                            '<span><span style="color:var(--success);font-weight:600;">' + (vals.err1||0) + '</span>' +
+                            ' <span style="color:var(--text-muted);">/</span> ' +
+                            '<span style="color:var(--warning);font-weight:600;">' + (vals.err2||0) + '</span></span>' +
+                        '</div>';
+                    });
+                    subjContainer.innerHTML = sh;
+                }
+            }
+        }
+
+        // Update session counts from API (personal only)
+        const ptTotal = document.getElementById('pt-total');
+        const ptCompleted = document.getElementById('pt-completed');
+        const ptActive = document.getElementById('pt-active');
+        if (ptTotal) ptTotal.textContent = (d.active_sessions || 0) + (d.completed_sessions || 0);
+        if (ptCompleted) ptCompleted.textContent = d.completed_sessions || 0;
+        if (ptActive) ptActive.textContent = d.active_sessions || 0;
+
+        // Last session
+        if (d.last_session) {
+            const ls = d.last_session;
+            const stageLabel = ls.stage === 'completed' ? 'Complete' : ls.stage.replace('stage','S').replace('_',' ');
+            document.getElementById('pt-last-session').innerHTML =
+                '<a href="/session/' + ls.id + '" style="color:var(--accent);font-weight:600;">' + ls.name + '</a>' +
+                ' <span style="font-size:10px;color:var(--text-muted);">(' + stageLabel + ')</span>';
+        }
+
+        // Admin team panel
+        if ((d.role === 'Admin' || d.role === 'Architect') && d.team) {
+            renderTeamPanel(d.team, d.heartbeats || []);
+        }
+    } catch (err) {
+        console.error('Stats load error:', err);
+        const tp = document.getElementById('team-panel-body');
+        if (tp) tp.innerHTML = '<div style="color:var(--error);font-size:12px;padding:12px;">API error: ' + err.message + '</div>';
+    }
+}
+
+// ── Range Selector ──
+function switchRange(days) {
+    _currentDays = days;
+    document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.range-btn[data-days="' + days + '"]').classList.add('active');
+    loadStats(days);
+}
+
+// ── Motivation ──
+function showMotivation(err1Today) {
+    const banner = document.getElementById('motivation-banner');
+    const h = new Date().getHours();
+    const before3 = h < 15;
+    let msg = '', cls = 'good';
+
+    if (before3) {
+        if (err1Today >= 600) { msg = 'Outstanding pace! Well ahead of target.'; cls = 'great'; }
+        else if (err1Today >= 300) { msg = 'Good progress. Steady pace will hit the target.'; cls = 'good'; }
+        else if (err1Today > 0) { msg = 'Day is young. Focus on sessions closest to Stage 10.'; cls = 'push'; }
+    } else {
+        if (err1Today >= 1000) { msg = 'Target achieved! Every extra question is a bonus.'; cls = 'great'; }
+        else if (err1Today >= 500) { msg = 'Over halfway. Strong finish will close the gap.'; cls = 'good'; }
+        else if (err1Today > 0) { msg = 'Keep pushing. Prioritize sessions nearest completion.'; cls = 'push'; }
+    }
+
+    if (msg) { banner.textContent = msg; banner.className = 'motivation-banner ' + cls; banner.style.display = 'block'; }
+    else { banner.style.display = 'none'; }
+}
+
+// ── Sparkline with hover tooltips ──
+function renderSparkline(byDay) {
+    const container = document.getElementById('sparkline-row');
+    container.innerHTML = '';
+    if (!byDay.length) {
+        container.innerHTML = '<span style="font-size:11px;color:var(--text-muted);padding:8px;">No upload data for this range</span>';
+        return;
+    }
+
+    const maxVal = Math.max(...byDay.map(d => d.err1 + d.err2), 1);
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    byDay.forEach(d => {
+        const total = d.err1 + d.err2;
+        const h = Math.max(4, (total / maxVal) * 36);
+        const isToday = d.date === todayStr;
+        const dayLabel = new Date(d.date + 'T00:00:00').toLocaleDateString('en', {weekday: 'short'}).slice(0, 2);
+        const dateShort = d.date.slice(5); // MM-DD
+
+        const bar = document.createElement('div');
+        bar.className = 'spark-bar' + (isToday ? ' today' : '');
+        bar.style.height = h + 'px';
+        bar.innerHTML =
+            '<span class="spark-label">' + dayLabel + '</span>' +
+            '<div class="spark-tip">' +
+                '<div style="font-weight:700;margin-bottom:2px;">' + dateShort + (isToday ? ' (today)' : '') + '</div>' +
+                '<div><span style="color:var(--success);font-weight:700;">' + d.err1 + '</span> <span style="color:var(--text-muted);">err=1</span></div>' +
+                '<div><span style="color:var(--warning);font-weight:700;">' + d.err2 + '</span> <span style="color:var(--text-muted);">err=2</span></div>' +
+            '</div>';
+        container.appendChild(bar);
+    });
+}
+
+// ── Subject Distribution ──
+function renderSubjects(bySubject) {
+    const grid = document.getElementById('subject-grid');
+    grid.innerHTML = '<span class="sg-head">Subject</span><span class="sg-head" style="text-align:right;">Err=1</span><span class="sg-head" style="text-align:right;">Err=2</span>';
+
+    const subjects = Object.entries(bySubject).sort((a, b) => (b[1].err1 || 0) - (a[1].err1 || 0));
+    if (!subjects.length) {
+        grid.innerHTML += '<span class="sg-name" style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:8px;">No data</span>';
+        return;
+    }
+    subjects.forEach(([name, vals]) => {
+        grid.innerHTML +=
+            '<span class="sg-name">' + name + '</span>' +
+            '<span class="sg-e1">' + (vals.err1 || 0) + '</span>' +
+            '<span class="sg-e2">' + (vals.err2 || 0) + '</span>';
+    });
+}
+
+// ── Admin: Team Panel (professional table with headers) ──
+function renderTeamPanel(teamData, heartbeats) {
+    const body = document.getElementById('team-panel-body');
+    if (!body) return;
+
+    const hbMap = {};
+    (heartbeats || []).forEach(h => { hbMap[h.user_phone] = h; });
+
+    if (!teamData || !teamData.length) {
+        body.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:16px;">No team members registered</div>';
+        return;
+    }
+
+    // Sort: highest today_err1 first
+    teamData.sort((a, b) => (b.today_err1 || 0) - (a.today_err1 || 0));
+
+    function fmtIST(utcStr) {
+        if (!utcStr || utcStr.length < 10) return '';
+        try {
+            // now_iso() returns +00:00 suffix; normalize to Z for Date parser
+            let s = utcStr;
+            if (s.endsWith('+00:00')) s = s.slice(0, -6) + 'Z';
+            else if (!s.endsWith('Z')) s = s + 'Z';
+            const d = new Date(s);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true});
+        } catch(e) { return ''; }
+    }
+
+    function getActivity(member) {
+        const hb = hbMap[member.phone];
+        if (hb && hb.last_ping) {
+            let pp = hb.last_ping;
+            if (pp.endsWith('+00:00')) pp = pp.slice(0, -6) + 'Z';
+            else if (!pp.endsWith('Z')) pp = pp + 'Z';
+            const pingTime = new Date(pp);
+            const diffMin = isNaN(pingTime.getTime()) ? 9999 : (Date.now() - pingTime.getTime()) / 60000;
+            if (diffMin < 10) return {cls: 'online', text: 'Active now'};
+            if (diffMin < 30) return {cls: 'away', text: Math.round(diffMin) + 'm ago'};
+        }
+        const lastFmt = fmtIST(member.last_login);
+        return {cls: 'offline', text: lastFmt ? 'Last: ' + lastFmt : 'Never logged in'};
+    }
+
+    // ── Helper: merge subject data into 4 groups (Math, Physics, Chemistry, Biology) ──
+    function mergeSubjects(bySubj) {
+        const m = {err1: 0, err2: 0}, p = {err1: 0, err2: 0}, c = {err1: 0, err2: 0}, b = {err1: 0, err2: 0};
+        for (const [s, v] of Object.entries(bySubj || {})) {
+            const sl = s.toLowerCase();
+            if (sl.includes('math')) { m.err1 += (v.err1||0); m.err2 += (v.err2||0); }
+            else if (sl.includes('physics')) { p.err1 += (v.err1||0); p.err2 += (v.err2||0); }
+            else if (sl.includes('botan') || sl.includes('zoolog') || sl.includes('biology')) { b.err1 += (v.err1||0); b.err2 += (v.err2||0); }
+            else if (sl.includes('chem') || sl.includes('inorganic') || sl.includes('organic') || sl.includes('physical c')) { c.err1 += (v.err1||0); c.err2 += (v.err2||0); }
+            else { c.err1 += (v.err1||0); c.err2 += (v.err2||0); } // default to chem
+        }
+        return {M: m, P: p, C: c, B: b};
+    }
+    function subjCell(g, key) {
+        const v = g[key];
+        if (!v || (v.err1 + v.err2) === 0) return '<td style="text-align:center;color:var(--text-muted);font-family:monospace;font-size:10px;">-</td>';
+        return '<td style="text-align:center;font-family:monospace;font-size:10px;"><span style="color:var(--success);">' + v.err1 + '</span><span style="color:var(--text-muted);">/</span><span style="color:var(--warning);">' + v.err2 + '</span></td>';
+    }
+
+    // ── Main table with header row ──
+    const hdr = 'font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:var(--text-muted);padding:6px 3px;text-align:center;';
+    const sep = '<th style="width:1px;padding:0;border-left:1px solid var(--border);"></th>';
+    let html = '<table style="width:100%;border-collapse:separate;border-spacing:0 2px;font-size:11px;">';
+    html += '<thead><tr>' +
+        '<th style="' + hdr + 'text-align:left;padding-left:8px;">Member</th>' +
+        '<th style="' + hdr + 'color:var(--success);">Today</th>' +
+        '<th style="' + hdr + '">Yday</th>' +
+        '<th style="' + hdr + 'color:var(--accent);">' + _currentDays + 'd</th>' +
+        '<th style="' + hdr + '">All</th>' +
+        sep +
+        '<th style="' + hdr + '" title="Math">M</th>' +
+        '<th style="' + hdr + '" title="Physics">P</th>' +
+        '<th style="' + hdr + '" title="Chemistry">C</th>' +
+        '<th style="' + hdr + '" title="Biology">B</th>' +
+        sep +
+        '<th style="' + hdr + '">Sess</th>' +
+        '<th style="' + hdr + '">Status</th>' +
+    '</tr></thead><tbody>';
+
+    let totTodayE1 = 0, totTodayE2 = 0, totYdayE1 = 0, totRangeE1 = 0, totRangeE2 = 0, totAllE1 = 0, totAllE2 = 0, totActive = 0, totDone = 0;
+    const totSubj = {M:{err1:0,err2:0}, P:{err1:0,err2:0}, C:{err1:0,err2:0}, B:{err1:0,err2:0}};
+
+    teamData.forEach(member => {
+        const name = member.name || 'Unknown';
+        const role = member.role || 'Team';
+        const isAdmin = role === 'Admin' || role === 'Architect';
+        const act = getActivity(member);
+
+        totTodayE1 += (member.today_err1 || 0);
+        totTodayE2 += (member.today_err2 || 0);
+        totYdayE1 += (member.yesterday_err1 || 0);
+        totRangeE1 += (member.range_err1 || 0);
+        totRangeE2 += (member.range_err2 || 0);
+        totAllE1 += (member.all_time_err1 || 0);
+        totAllE2 += (member.all_time_err2 || 0);
+        totActive += (member.active_sessions || 0);
+        totDone += (member.completed_sessions || 0);
+
+        // Subject breakdown for selected range
+        const sg = mergeSubjects(member.range_by_subject || member.all_time_by_subject || {});
+        for (const k of ['M','P','C','B']) { totSubj[k].err1 += sg[k].err1; totSubj[k].err2 += sg[k].err2; }
+
+        const roleBadge = '<span style="font-size:8px;font-weight:600;color:' + (isAdmin ? 'var(--accent)' : 'var(--text-muted)') +
+            ';background:' + (isAdmin ? 'rgba(79,125,249,0.1)' : 'transparent') +
+            ';padding:0 3px;border-radius:2px;">' + role + '</span>';
+
+        const td = 'text-align:center;font-family:monospace;';
+        const sepTd = '<td style="width:1px;padding:0;border-left:1px solid var(--border);"></td>';
+
+        // E1/E2 cell helper
+        function e12(e1, e2, bold) {
+            const w = bold ? 'font-weight:700;font-size:12px;' : 'font-size:11px;';
+            return '<td style="' + td + w + '"><span style="color:var(--success);">' + e1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + e2 + '</span></td>';
+        }
+
+        html += '<tr style="background:var(--bg-card);">' +
+            '<td style="padding:6px 8px;border-radius:6px 0 0 6px;">' +
+                '<div style="display:flex;align-items:center;gap:6px;">' +
+                    '<div class="team-avatar ' + (isAdmin ? 'admin' : 'team') + '" style="width:24px;height:24px;font-size:10px;">' + name[0] + '</div>' +
+                    '<div style="font-weight:600;font-size:11px;line-height:1.2;">' + name.split(' ')[0] + ' ' + roleBadge + '</div>' +
+                '</div>' +
+            '</td>' +
+            e12(member.today_err1||0, member.today_err2||0, true) +
+            '<td style="' + td + 'font-size:11px;color:var(--text-secondary);">' + (member.yesterday_err1||0) + '</td>' +
+            e12(member.range_err1||0, member.range_err2||0, false) +
+            e12(member.all_time_err1||0, member.all_time_err2||0, false) +
+            sepTd +
+            subjCell(sg, 'M') + subjCell(sg, 'P') + subjCell(sg, 'C') + subjCell(sg, 'B') +
+            sepTd +
+            '<td style="' + td + 'font-size:10px;">' + (member.active_sessions||0) + '<span style="color:var(--text-muted);">/</span>' + (member.completed_sessions||0) + '</td>' +
+            '<td style="text-align:center;border-radius:0 6px 6px 0;">' +
+                '<span class="activity-dot ' + act.cls + '"></span>' +
+                '<span style="font-size:9px;color:var(--text-muted);">' + act.text + '</span>' +
+            '</td>' +
+        '</tr>';
+    });
+
+    // Totals row
+    const ttd = 'text-align:center;font-family:monospace;font-weight:700;';
+    const sepTd = '<td style="width:1px;padding:0;border-left:1px solid var(--border);"></td>';
+    html += '<tr style="font-weight:700;border-top:2px solid var(--border);">' +
+        '<td style="padding:8px;font-size:11px;border-radius:6px 0 0 6px;">TOTALS</td>' +
+        '<td style="' + ttd + 'font-size:12px;"><span style="color:var(--success);">' + totTodayE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totTodayE2 + '</span></td>' +
+        '<td style="' + ttd + 'color:var(--text-secondary);">' + totYdayE1 + '</td>' +
+        '<td style="' + ttd + '"><span style="color:var(--success);">' + totRangeE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totRangeE2 + '</span></td>' +
+        '<td style="' + ttd + '"><span style="color:var(--success);">' + totAllE1 + '</span><span style="color:var(--text-muted);font-size:9px;">/</span><span style="color:var(--warning);">' + totAllE2 + '</span></td>' +
+        sepTd +
+        subjCell(totSubj, 'M') + subjCell(totSubj, 'P') + subjCell(totSubj, 'C') + subjCell(totSubj, 'B') +
+        sepTd +
+        '<td style="' + ttd + 'font-size:10px;">' + totActive + '/' + totDone + '</td>' +
+        '<td style="border-radius:0 6px 6px 0;"></td>' +
+    '</tr>';
+
+    html += '</tbody></table>';
+
+    body.innerHTML = html;
+}
+
+// ── Refresh handlers ──
+function loadTeamStats() {
+    const btn = document.querySelector('#team-panel .btn');
+    if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+    loadStats().then(() => { if (btn) { btn.textContent = 'Refresh'; btn.disabled = false; } });
+}
+
+async function refreshPlatformTotals(btn) {
+    btn.textContent = 'Loading...'; btn.disabled = true;
+    await loadStats();
+    btn.textContent = 'Refresh'; btn.disabled = false;
+}
+
+// ── Last Night's Stage 11 Conversion ──
+async function loadStage11LastNight() {
+    const card = document.getElementById('stage11-last-night-card');
+    if (!card) return;
+    try {
+        const resp = await fetch('/api/dashboard/stage11/last-night?days_back=3');
+        if (resp.status === 401) return;
+        const d = await resp.json();
+        if (!d || d.found === false) {
+            // Hide card on cold start. Once the first nightly fires, this becomes visible.
+            return;
+        }
+        card.style.display = 'block';
+
+        const fmtDate = d.report_date_ist || '--';
+        const tag = d.dryrun ? ' (DRY RUN)' : '';
+        document.getElementById('s11-card-date').textContent = fmtDate + tag;
+        document.getElementById('s11-promoted').textContent = (d.promoted || 0).toLocaleString();
+        document.getElementById('s11-flagged').textContent = (d.flagged || 0).toLocaleString();
+        document.getElementById('s11-failed-retry').textContent = (d.failed_retry || 0).toLocaleString();
+        document.getElementById('s11-cohort').textContent = (d.cohort_verified || 0).toLocaleString();
+
+        // My slice (team users see only their numbers; admin sees this + per-op grid)
+        const mySlice = d.my_slice;
+        const mySliceEl = document.getElementById('s11-my-slice');
+        if (mySlice && (mySlice.promoted || mySlice.flagged || mySlice.failed_retry)) {
+            mySliceEl.innerHTML = '<strong>Your contribution last night:</strong> ' +
+                '<span style="color:var(--success);font-weight:600;">' + (mySlice.promoted||0) + '</span> promoted, ' +
+                '<span style="color:#e08700;font-weight:600;">' + (mySlice.flagged||0) + '</span> flagged, ' +
+                '<span style="color:var(--error);font-weight:600;">' + (mySlice.failed_retry||0) + '</span> failed.';
+        } else {
+            mySliceEl.innerHTML = '';
+        }
+
+        if (d.is_admin && d.per_operator && Object.keys(d.per_operator).length) {
+            const wrap = document.getElementById('s11-per-op-wrap');
+            const grid = document.getElementById('s11-per-op');
+            const rows = Object.entries(d.per_operator)
+                .sort((a, b) => (b[1].promoted || 0) - (a[1].promoted || 0));
+            let h = '<table class="breakdown-table" style="width:100%;font-size:12px;">' +
+                '<thead><tr><th>Operator</th><th style="text-align:right;">Promoted</th>' +
+                '<th style="text-align:right;">Flagged</th>' +
+                '<th style="text-align:right;">Failed (retry)</th></tr></thead><tbody>';
+            for (const [phone, stats] of rows) {
+                h += '<tr>' +
+                    '<td style="font-family:monospace;font-size:11px;">' + phone + '</td>' +
+                    '<td style="text-align:right;color:var(--success);font-weight:600;">' + (stats.promoted||0) + '</td>' +
+                    '<td style="text-align:right;color:#e08700;font-weight:600;">' + (stats.flagged||0) + '</td>' +
+                    '<td style="text-align:right;color:var(--error);font-weight:600;">' + (stats.failed_retry||0) + '</td>' +
+                    '</tr>';
+            }
+            h += '</tbody></table>';
+            grid.innerHTML = h;
+            wrap.style.display = 'block';
+        }
+    } catch (err) {
+        // Silent: this card is supplementary; main dashboard still works
+        console.warn('Stage 11 last-night load failed:', err);
+    }
+}
+
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+    loadStats(7);
+    loadStage11LastNight();
+});
+</script>
+{% endblock %}

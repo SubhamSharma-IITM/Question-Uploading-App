@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Acadza Question Uploading App{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <!-- Theme: apply BEFORE render to prevent flash -->
+    <script>
+    (function() {
+        var saved = localStorage.getItem('acadza_theme');
+        var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', theme);
+    })();
+    </script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <div class="logo-link" style="display:flex;align-items:center;gap:10px;cursor:default;">
+                    <img class="theme-logo" src="/static/img/acadza-logo-white.svg" alt="Acadza" style="height:22px;opacity:0.9;">
+                    <span style="font-weight:800;font-size:15px;letter-spacing:-0.3px;">Question Uploader</span>
+                </div>
+            </div>
+            <div class="top-bar-right">
+                <!-- Theme toggle -->
+                <button onclick="toggleTheme()" title="Toggle theme" style="background:none;border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;cursor:pointer;color:var(--text-secondary);font-size:14px;line-height:1;transition:border-color 0.15s;" onmouseover="this.style.borderColor='var(--border-hover)'" onmouseout="this.style.borderColor='var(--border)'" id="theme-toggle-btn">
+                    <span id="theme-icon">&#9790;</span>
+                </button>
+                {% if session %}
+                <span class="session-badge">{{ session.name }}</span>
+                <span class="session-id">{{ session.id }}</span>
+                {% endif %}
+                {% if user_name %}
+                <div style="display:flex;align-items:center;gap:8px;margin-left:16px;padding-left:16px;border-left:1px solid var(--border);">
+                    <div style="width:28px;height:28px;border-radius:50%;background:rgba(79,125,249,0.15);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#4f7df9;">{{ user_name[0] }}</div>
+                    <div style="line-height:1.2;">
+                        <div style="font-size:12px;font-weight:500;color:var(--text-primary);">{{ user_name }}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">{{ user_role }}</div>
+                    </div>
+                    <a href="/auth/logout" title="Logout" style="margin-left:8px;color:var(--text-muted);font-size:14px;opacity:0.6;transition:opacity 0.15s;text-decoration:none;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    </a>
+                </div>
+                {% else %}
+                <a href="/auth/logout" class="btn btn-sm" style="font-size:11px;padding:4px 10px;opacity:0.7;">Logout</a>
+                {% endif %}
+            </div>
+        </header>
+
+        <div class="main-wrapper">
+            <!-- Sidebar (only on session pages) -->
+            {% if sidebar_stages is defined and sidebar_stages %}
+            <nav class="sidebar">
+                <div class="sidebar-section">
+                    <div class="sidebar-label">PIPELINE</div>
+                    {% for s in sidebar_stages %}
+                    <a href="/session/{{ session.id }}?stage={{ s.key }}"
+                       class="sidebar-item {{ 'viewing' if s.key == view_stage else '' }} {{ s.status }} {% if s.status == 'active' %}stage-active{% endif %}"
+                       {% if not s.accessible %}aria-disabled="true"{% endif %}>
+                        <span class="stage-indicator">
+                            {% if s.status == 'completed' %}
+                            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5.5 9.5L2.5 6.5L3.5 5.5L5.5 7.5L10.5 2.5L11.5 3.5Z" fill="currentColor"/></svg>
+                            {% elif s.status == 'active' %}
+                            <span class="pulse-dot"></span>
+                            {% else %}
+                            <span class="lock-dot"></span>
+                            {% endif %}
+                        </span>
+                        <span class="stage-text">{{ s.label }}</span>
+                    </a>
+                    {% endfor %}
+                </div>
+
+                <div class="sidebar-section">
+                    <div class="sidebar-label">NAVIGATION</div>
+                    <a href="/" class="sidebar-item" id="nav-dashboard-link" onclick="return checkNavGuard(event)">
+                        <span class="stage-indicator"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1L1 6H3V12H6V9H8V12H11V6H13L7 1Z" fill="currentColor"/></svg></span>
+                        <span class="stage-text">Dashboard</span>
+                    </a>
+                </div>
+
+                {% if stats %}
+                <div class="sidebar-section">
+                    <div class="sidebar-label">STATS</div>
+                    <div class="sidebar-stats">
+                        <div class="stat-row">
+                            <span>Triplets</span>
+                            <span class="stat-val" id="sidebar-triplets">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Quarantined</span>
+                            <span class="stat-val warn" id="sidebar-quarantine-count">{{ stats.quarantined }}</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Live</span>
+                            <span class="stat-val" id="sidebar-live-count" style="color: var(--success);">--</span>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </nav>
+            {% endif %}
+
+            <!-- Main Content -->
+            <main class="content">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+
+    <!-- Theme toggle + icon sync -->
+    <script>
+    function toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('acadza_theme', next);
+        _syncThemeUI(next);
+    }
+    function _syncThemeUI(theme) {
+        const icon = document.getElementById('theme-icon');
+        if (icon) icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
+        // Swap logo: white version for dark, default (blue) for light
+        document.querySelectorAll('.theme-logo').forEach(el => {
+            el.src = theme === 'dark' ? '/static/img/acadza-logo-white.svg' : '/static/img/acadza-logo.svg';
+        });
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        _syncThemeUI(document.documentElement.getAttribute('data-theme') || 'dark');
+    });
+
+    // Navigation guard: warn if active background process (upload, batch)
+    // Stages set window._activeProcess = true when a background task is running
+    window._activeProcess = false;
+    function checkNavGuard(event) {
+        if (!window._activeProcess) return true;
+        event.preventDefault();
+        const choice = confirm(
+            'A background process is currently running (upload/batch).\n\n' +
+            'If you leave, the process continues server-side but you may lose the progress view.\n\n' +
+            'Click OK to open Dashboard in a new tab (recommended).\n' +
+            'Click Cancel to stay on this page.'
+        );
+        if (choice) {
+            window.open('/', '_blank');
+        }
+        return false;
+    }
+    </script>
+
+    <script src="/static/js/sse_client.js"></script>
+    <script src="/static/js/app.js"></script>
+    {% if session %}
+    <script>
+        // Stage checkpoint data from server (for restoring button states on revisit)
+        const _checkpoints = {{ checkpoints | tojson if checkpoints else '[]' }};
+        const _viewStage = '{{ view_stage }}';
+
+        // Global active process tracking (set by individual stages)
+        window._activeProcess = false;
+        window._activeStopUrl = '';
+
+        // Global beforeunload: warn if any stage is actively processing
+        window.addEventListener('beforeunload', (e) => {
+            if (window._activeProcess && window._activeStopUrl) {
+                navigator.sendBeacon(window._activeStopUrl);
+                e.preventDefault();
+                e.returnValue = 'Confirm close the page? The process shall be terminated.';
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initLogs('{{ session.id }}');
+
+            // Re-enable advance button if current stage checkpoint is "completed" or "background"
+            const cp = _checkpoints.find(c => c.stage === _viewStage);
+            if (cp && (cp.status === 'completed' || cp.status === 'background')) {
+                const advBtn = document.getElementById('advance-btn');
+                if (advBtn) advBtn.disabled = false;
+            }
+
+            // Populate sidebar stats from live metadata (single source of truth)
+            const tripletEl = document.getElementById('sidebar-triplets');
+            const liveEl = document.getElementById('sidebar-live-count');
+            const qEl = document.getElementById('sidebar-quarantine-count');
+            // Store globally so stages can read current counts
+            window._liveStats = null;
+
+            function updateSidebarFromStats(stats) {
+                window._liveStats = stats;
+                if (tripletEl) tripletEl.textContent = stats.total || 0;
+                if (qEl) qEl.textContent = stats.quarantined || 0;
+                if (liveEl) liveEl.textContent = stats.live || 0;
+            }
+
+            // Fetch live stats from metadata files
+            apiGet('/api/sessions/{{ session.id }}/live-stats').then(r => {
+                if (r.success && r.data) {
+                    updateSidebarFromStats(r.data);
+                }
+            }).catch(() => {
+                // Fallback: checkpoint-derived count if metadata not available yet
+                const s4cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
+                const s2cp = _checkpoints.find(c => c.stage === 'stage2_mapping');
+                let tripletCount = (s4cp && s4cp.data && s4cp.data.triplets) || (s2cp && s2cp.data && s2cp.data.triplets) || 0;
+                if (tripletEl && tripletCount > 0) tripletEl.textContent = tripletCount;
+            });
+
+            // Global helper for stages to update sidebar after quarantine operations
+            window.updateSidebarQuarantineCount = function(delta) {
+                if (qEl) {
+                    const current = parseInt(qEl.textContent) || 0;
+                    const updated = Math.max(0, current + delta);
+                    qEl.textContent = updated;
+                    if (liveEl) {
+                        const total = parseInt(tripletEl?.textContent) || 0;
+                        liveEl.textContent = Math.max(0, total - updated);
+                    }
+                }
+            };
+
+            // Global: refresh sidebar stats (call after any metadata-modifying operation)
+            window.refreshSidebarStats = function() {
+                apiGet('/api/sessions/{{ session.id }}/live-stats').then(r => {
+                    if (r.success && r.data) updateSidebarFromStats(r.data);
+                }).catch(() => {});
+            };
+
+            // renderLiveStatsBar removed — stats wired through backend scan endpoints
+        });
+    </script>
+    {% endif %}
+
+    <!-- Heartbeat: ping server every 5 min for activity tracking -->
+    <script>
+    (function() {
+        function sendHeartbeat() {
+            const payload = {};
+            {% if session %}
+            payload.session_id = '{{ session.id }}';
+            payload.stage = '{{ view_stage | default("", true) }}';
+            {% endif %}
+            fetch('/api/heartbeat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            }).catch(() => {});
+        }
+        // Send immediately on page load, every 3 min, and on tab focus
+        sendHeartbeat();
+        setInterval(sendHeartbeat, 3 * 60 * 1000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) sendHeartbeat();
+        });
+    })();
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
