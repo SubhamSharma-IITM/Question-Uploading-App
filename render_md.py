@@ -656,24 +656,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (!text) return text;
             let cleaned = text;
             if (isHTML) {
-                cleaned = cleaned.replace(/\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/gi, '<img src="$1" alt="" />');
+                cleaned = cleaned.replace(/\\\\includegraphics(?:\\\\[[^\\\\]]*\\\\])?\\\\{([^}]+)\\\\}/gi, '<img src="$1" alt="" />');
             } else {
-                cleaned = cleaned.replace(/\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/gi, '![]($1)');
+                cleaned = cleaned.replace(/\\\\includegraphics(?:\\\\[[^\\\\]]*\\\\])?\\\\{([^}]+)\\\\}/gi, '![]($1)');
             }
-            cleaned = cleaned.replace(/\\begin\{figure\}/gi, '');
-            cleaned = cleaned.replace(/\\end\{figure\}/gi, '');
-            cleaned = cleaned.replace(/\\begin\{center\}/gi, '');
-            cleaned = cleaned.replace(/\\end\{center\}/gi, '');
-            cleaned = cleaned.replace(/\\centering/gi, '');
-            cleaned = cleaned.replace(/\\hfill/gi, '');
-            cleaned = cleaned.replace(/\\hspace\*?\{[^}]*\}/gi, '');
-            cleaned = cleaned.replace(/\\vspace\*?\{[^}]*\}/gi, '');
-            cleaned = cleaned.replace(/\\label\{[^}]*\}/gi, '');
-            cleaned = cleaned.replace(/\\captionsetup(?:\[[^\]]*\])?\{[^}]*\}/gi, '');
+            cleaned = cleaned.replace(/\\\\begin\\\\{figure\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\end\\\\{figure\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\begin\\\\{center\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\end\\\\{center\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\centering/gi, '');
+            cleaned = cleaned.replace(/\\\\hfill/gi, '');
+            cleaned = cleaned.replace(/\\\\hspace\\\\*?\\\\{[^}]*\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\vspace\\\\*?\\\\{[^}]*\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\label\\\\{[^}]*\\\\}/gi, '');
+            cleaned = cleaned.replace(/\\\\captionsetup(?:\\\\[[^\\\\]]*\\\\])?\\\\{[^}]*\\\\}/gi, '');
             if (isHTML) {
-                cleaned = cleaned.replace(/\\caption(?:\[[^\]]*\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/gi, '<p>$1</p>');
+                cleaned = cleaned.replace(/\\\\caption(?:\\\\[[^\\\\]]*\\\\])?\\\\{([^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*)\\\\}/gi, '<p>$1</p>');
             } else {
-                cleaned = cleaned.replace(/\\caption(?:\[[^\]]*\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/gi, '\n\n$1\n\n');
+                cleaned = cleaned.replace(/\\\\caption(?:\\\\[[^\\\\]]*\\\\])?\\\\{([^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*)\\\\}/gi, '\\n\\n$1\\n\\n');
             }
             return cleaned;
         }
