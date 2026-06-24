@@ -967,10 +967,10 @@ def _process_match_item(
     if q_start is None or q_end is None:
         return None
 
-    q_start_idx = int(q_start) - 1
-    q_end_idx = int(q_end) - 1
+    q_start_idx = max(0, int(q_start))
+    q_end_idx = min(int(q_end), len(raw_lines) - 1)
 
-    if q_start_idx < 0 or q_end_idx >= len(raw_lines) or q_start_idx > q_end_idx:
+    if q_start_idx > q_end_idx:
         return None
 
     # Slice question content (matchQuestion -> tabular content allowed)
@@ -984,8 +984,8 @@ def _process_match_item(
         s_start = s_range.get("start")
         s_end = s_range.get("end")
         if s_start is not None and s_end is not None:
-            s_start_idx = int(s_start) - 1
-            s_end_idx = int(s_end) - 1
+            s_start_idx = int(s_start)
+            s_end_idx = int(s_end)
             if 0 <= s_start_idx <= s_end_idx < len(raw_lines):
                 s_content = _slice_content(raw_lines, s_start_idx, s_end_idx)
 
@@ -1062,9 +1062,9 @@ def _process_passage_item(
 
     p_start = int(p_start) if isinstance(p_start, (int, float, str)) else 0
     p_end = int(p_end) if isinstance(p_end, (int, float, str)) else 0
-    # LLM emits 1-indexed line numbers; _slice_content uses 0-indexed.
-    p_start_idx = max(0, p_start - 1)
-    p_end_idx = min(p_end - 1, len(raw_lines) - 1)
+    # LLM emits 0-indexed line numbers matching decoration index.
+    p_start_idx = max(0, p_start)
+    p_end_idx = min(p_end, len(raw_lines) - 1)
 
     # Dedup by passage start line
     uid = f"PL{p_start}"
@@ -1097,9 +1097,9 @@ def _process_passage_item(
 
         sq_start = int(sq_start) if isinstance(sq_start, (int, float, str)) else 0
         sq_end = int(sq_end) if isinstance(sq_end, (int, float, str)) else 0
-        # 1-indexed -> 0-indexed for slicing
-        sq_start_idx = max(0, sq_start - 1)
-        sq_end_idx = min(sq_end - 1, len(raw_lines) - 1)
+        # LLM emits 0-indexed line numbers
+        sq_start_idx = max(0, sq_start)
+        sq_end_idx = min(sq_end, len(raw_lines) - 1)
 
         q_content = _slice_content(raw_lines, sq_start_idx, sq_end_idx)
         if not q_content or _is_garbage(q_content):
@@ -1114,8 +1114,8 @@ def _process_passage_item(
             ss_start = int(ss_start) if isinstance(ss_start, (int, float, str)) else None
             ss_end = int(ss_end) if isinstance(ss_end, (int, float, str)) else None
             if ss_start is not None and ss_end is not None:
-                ss_start_idx = ss_start - 1
-                ss_end_idx = ss_end - 1
+                ss_start_idx = ss_start
+                ss_end_idx = ss_end
                 s_content = _slice_content(raw_lines, ss_start_idx, ss_end_idx)
                 # Do NOT pull solution end into overall_end — solutions live in a
                 # separate section far below questions; using ss_end as the cursor

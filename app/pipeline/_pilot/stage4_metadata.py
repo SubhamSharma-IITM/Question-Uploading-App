@@ -236,8 +236,10 @@ def _replace_md_images_with_img(html: str) -> Tuple[str, List[str]]:
 
     def _repl(m):
         raw_url = m.group(1).strip()
+        # Remove any newlines, carriage returns, spaces, or tabs inside the URL
+        clean_url = "".join(raw_url.split())
         # Strip any escaped ampersands from URL (MathPix uses \&)
-        clean_url = raw_url.replace("\\&", "&")
+        clean_url = clean_url.replace("\\&", "&")
         base = _basename_from_url(clean_url)
         alt = base.rsplit('.', 1)[0] if '.' in base else base
         found_images.append(base)
@@ -321,6 +323,78 @@ _LIST_II_LABEL_MAP = {
 }
 
 
+def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
+    """Parse match columns when they are formatted as plain text instead of LaTeX tabular.
+    Handles:
+      (A) at t = 0 (P) Total energy per unit length at x = 0 is 2μA²ω².
+      or separate lists:
+      (A) ...
+      (P) ...
+    """
+    if not content:
+        return "", [], []
+
+    lines = content.splitlines()
+    intro_lines = []
+    list_i = []
+    list_ii = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Look for inline columns: (A) some text (P) some text
+        match_inline = re.match(
+            r"^\s*[\(\$]*\s*([A-Ea-e1-4])\s*[\)\.\$]\s+(.*?)\s+[\(\$]*\s*([P-Tp-t])\s*[\)\.\$]\s+(.*)$",
+            stripped
+        )
+        if match_inline:
+            lbl_i, val_i, lbl_ii, val_ii = match_inline.groups()
+            val_i = val_i.strip()
+            val_ii = val_ii.strip()
+
+            lbl_i_can = _LIST_I_LABEL_MAP.get(lbl_i.upper(), lbl_i)
+            lbl_ii_can = _LIST_II_LABEL_MAP.get(lbl_ii.lower(), _LIST_II_LABEL_MAP.get(lbl_ii.upper(), lbl_ii))
+
+            val_i_html, _ = _replace_md_images_with_img(val_i)
+            val_ii_html, _ = _replace_md_images_with_img(val_ii)
+
+            list_i.append({"label": lbl_i_can, "content": val_i_html})
+            list_ii.append({"label": lbl_ii_can, "content": val_ii_html})
+            continue
+
+        # Check if it's a single item:
+        # e.g., (A) at t = 0  or  (P) Total energy...
+        match_single = re.match(r"^\s*[\(\$]*\s*([A-Ea-e1-4|P-Tp-t])\s*[\)\.\$]\s+(.*)$", stripped)
+        if match_single:
+            lbl, val = match_single.groups()
+            lbl_upper = lbl.upper()
+            val = val.strip()
+            val_html, _ = _replace_md_images_with_img(val)
+
+            if lbl_upper in ("A", "B", "C", "D", "E", "1", "2", "3", "4"):
+                lbl_can = _LIST_I_LABEL_MAP.get(lbl.upper(), lbl)
+                list_i.append({"label": lbl_can, "content": val_html})
+            elif lbl_upper in ("P", "Q", "R", "S", "T"):
+                lbl_can = _LIST_II_LABEL_MAP.get(lbl.lower(), _LIST_II_LABEL_MAP.get(lbl.upper(), lbl))
+                list_ii.append({"label": lbl_can, "content": val_html})
+            continue
+
+        # Skip column/list header lines
+        if "column" in stripped.lower() or "list-i" in stripped.lower() or "list-ii" in stripped.lower():
+            continue
+
+        # If it doesn't match either, and we haven't started parsing items, it's part of the intro
+        if not list_i and not list_ii:
+            intro_lines.append(line)
+
+    intro_raw = "\n".join(intro_lines).strip()
+    intro_html, _ = _replace_md_images_with_img(intro_raw)
+
+    return intro_html, list_i, list_ii
+
+
 # ── PILOT: Parse Stage-2 emitted LaTeX tabular -> list_i / list_ii ───────
 def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
     """Parse a raw match-type question_content (containing a LaTeX `tabular` block)
@@ -351,6 +425,9 @@ def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
     import re
 
     if not content or "\\begin{tabular}" not in content:
+        intro_html, list_i, list_ii = _parse_match_plain_text(content)
+        if list_i and list_ii:
+            return intro_html, list_i, list_ii
         return content or "", [], []
 
     # Split intro from tabular block

@@ -143,7 +143,7 @@ async def start_mapping(
             return
 
         # Process result BEFORE cleanup (no finally block that races)
-        if "error" not in result:
+        if result and "error" not in result:
             update_session(session_id, current_stage="stage2_mapping")
             from app.db import upsert_checkpoint as _ucp, get_checkpoint
 
@@ -174,7 +174,8 @@ async def start_mapping(
             _ucp(session_id, "stage2_mapping", status, cp_data)
         else:
             from app.db import upsert_checkpoint as _ucp
-            _ucp(session_id, "stage2_mapping", "failed", result)
+            error_data = result or {"error": "Extraction failed: Stage 2 produced 0 questions. Please verify your API key and file contents."}
+            _ucp(session_id, "stage2_mapping", "failed", error_data)
 
     def _task_done_callback(task: asyncio.Task):
         """Cleanup tracking dicts AFTER task is truly finished."""

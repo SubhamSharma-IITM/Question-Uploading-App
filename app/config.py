@@ -18,8 +18,9 @@ if _env_path.exists():
 
 def _default_data_dir() -> str:
     """Use /data (Render persistent disk) if it exists, else local data/ dir."""
+    import platform
     render_disk = Path("/data")
-    if render_disk.exists() and render_disk.is_dir():
+    if platform.system() != "Windows" and render_disk.exists() and render_disk.is_dir():
         return str(render_disk)
     return str(Path(__file__).parent.parent / "data")
 

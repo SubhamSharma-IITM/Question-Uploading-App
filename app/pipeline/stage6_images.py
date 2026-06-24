@@ -318,6 +318,20 @@ def _replace_img_tags_in_text(text: str, cdn_cache: Dict[str, Dict]) -> Tuple[st
     new_text = FIGURE_BLOCK_PATTERN.sub(_latex_replacer, new_text)
     # Catch any bare \includegraphics that wasn't inside a figure block.
     new_text = INCLUDEGRAPHICS_PATTERN.sub(_latex_replacer, new_text)
+
+    # Post-replacement LaTeX Figure cleanup pass to prevent leaks if FIGURE_BLOCK_PATTERN was bypassed
+    new_text = re.sub(r"\\begin\{figure\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\end\{figure\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\begin\{center\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\end\{center\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\centering", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\hfill", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\hspace\*?\{[^}]*\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\vspace\*?\{[^}]*\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\label\{[^}]*\}", "", new_text, flags=re.IGNORECASE)
+    new_text = re.sub(r"\\captionsetup(?:\[[^\]]*\])?\{[^}]*\}", "", new_text, flags=re.IGNORECASE | re.DOTALL)
+    new_text = re.sub(r"\\caption(?:\[[^\]]*\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", r"<p>\1</p>", new_text, flags=re.IGNORECASE | re.DOTALL)
+
     return new_text, count
 
 
