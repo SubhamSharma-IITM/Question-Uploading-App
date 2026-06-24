@@ -285,18 +285,35 @@ function buildMetaPreviewItem(meta) {
 
     if (qtype === 'passageQuestion') {
         let rawParts = [];
-        rawParts.push("Passage: " + (qdata.passage || ''));
+        let passageText = qdata.passage || '';
+        // Prettify passage line breaks for preview readability
+        passageText = passageText.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
+        rawParts.push("Passage:\n" + passageText);
+
         if (qdata.questions && qdata.questions.length > 0) {
             qdata.questions.forEach((sq, idx) => {
                 const sqtype = Object.keys(sq)[0];
                 const sqdata = sq[sqtype] || {};
-                rawParts.push(`\nSub-Q ${idx + 1} (${sqtype}): ` + (sqdata.ques || sqdata.question || '') + ` (Ans: ${sqdata.answer || '?'})`);
+                let sqQues = sqdata.ques || sqdata.question || '';
+
+                // Split inline horizontal options to separate lines for preview
+                sqQues = sqQues.replace(/\s+(\([B-D]\))/g, '\n$1');
+                sqQues = sqQues.replace(/\s+(\([b-d]\))/g, '\n$1');
+                sqQues = sqQues.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
+
+                rawParts.push(`\n────────────────────────────────────────\nSub-Question ${idx + 1} (${sqtype})   [Answer: ${sqdata.answer || '?'}]\n${sqQues}`);
             });
         }
         questionContentHtml = rawParts.join('\n');
         solutionContentHtml = qdata.solution || '';
     } else {
-        questionContentHtml = qdata.question || '';
+        let qText = qdata.question || '';
+        // Split inline horizontal options and format breaks
+        qText = qText.replace(/\s+(\([B-D]\))/g, '\n$1');
+        qText = qText.replace(/\s+(\([b-d]\))/g, '\n$1');
+        qText = qText.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
+
+        questionContentHtml = qText;
         solutionContentHtml = qdata.solution || '';
     }
 

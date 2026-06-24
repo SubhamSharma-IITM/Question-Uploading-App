@@ -150,17 +150,56 @@ def _normalize_options_to_ABCD(html: str) -> str:
         # Already uppercase — just ensure <br/> before (A) if missing
         if re.search(r'[^>]\(A\)', html) and not re.search(r'(<br/>|<br>)\s*\(A\)', html):
             html = re.sub(r'(?<!<br/>)(?<!<br>)\s*(\(A\))', r'<br/>\1', html, count=1)
+        for letter in ("B", "C", "D"):
+            if re.search(rf'[^>]\({letter}\)', html) and not re.search(rf'(<br/>|<br>)\s*\({letter}\)', html):
+                html = re.sub(rf'(?<!<br/>)(?<!<br>)\s*(\({letter}\))', rf'<br/>\1', html, count=1)
         return html
 
     result = html
 
-    # ── Handle (a)(b)(c)(d) lowercase parenthesized → uppercase ──
+    # ── Handle inline horizontal options (convert to <br/>(Letter) format) ──
+    # Handle (a), (b), (c), (d)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*a\s*\)', r'<br/>(A)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*b\s*\)', r'<br/>(B)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*c\s*\)', r'<br/>(C)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*d\s*\)', r'<br/>(D)', result)
+
+    # Handle 1., 2., 3., 4.
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+1\.\s*', r'<br/>(A) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+2\.\s*', r'<br/>(B) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+3\.\s*', r'<br/>(C) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+4\.\s*', r'<br/>(D) ', result)
+
+    # Handle (1), (2), (3), (4)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*1\s*\)', r'<br/>(A)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*2\s*\)', r'<br/>(B)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*3\s*\)', r'<br/>(C)', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s*\(\s*4\s*\)', r'<br/>(D)', result)
+
+    # Handle 1), 2), 3), 4)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+1\)\s*', r'<br/>(A) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+2\)\s*', r'<br/>(B) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+3\)\s*', r'<br/>(C) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+4\)\s*', r'<br/>(D) ', result)
+
+    # Handle A), B), C), D)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Aa]\)\s*', r'<br/>(A) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Bb]\)\s*', r'<br/>(B) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Cc]\)\s*', r'<br/>(C) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Dd]\)\s*', r'<br/>(D) ', result)
+
+    # Handle A. B. C. D.
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Aa]\.\s*', r'<br/>(A) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Bb]\.\s*', r'<br/>(B) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Cc]\.\s*', r'<br/>(C) ', result)
+    result = re.sub(r'(?<!<br/>)(?<!<br>)(?<!^)\s+[Dd]\.\s*', r'<br/>(D) ', result)
+
+    # ── Standard multiline/boundary replacements ──
+    # Handle (a)(b)(c)(d) lowercase parenthesized → uppercase
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*a\s*\)', r'\1(A)', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*b\s*\)', r'\1(B)', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*c\s*\)', r'\1(C)', result, flags=re.MULTILINE)
     result = re.sub(r'(<br/>|<br>|^)\s*\(\s*d\s*\)', r'\1(D)', result, flags=re.MULTILINE)
-    # Also catch (a) without preceding <br> (inline after question text)
-    result = re.sub(r'(?<!<br/>)(?<!<br>)\s*\(\s*a\s*\)', r'<br/>(A)', result, count=1)
 
     # Pattern: <br/>N. or start-of-string followed by N.
     result = re.sub(r'(<br/>|<br>|^)1\.\s*', r'\1(A) ', result, flags=re.MULTILINE)
