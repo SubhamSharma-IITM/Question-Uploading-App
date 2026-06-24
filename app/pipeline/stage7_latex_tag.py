@@ -228,8 +228,21 @@ def latex_table_to_html(latex: str) -> str:
         if not row_text:
             continue
         cells = [c.strip() for c in row_text.split('&')]
-        cells_html = ''.join(f'<td>{c}</td>' for c in cells)
-        rows_html.append(f'  <tr>{cells_html}</tr>')
+        
+        cells_html = []
+        for c in cells:
+            m = re.search(
+                r'\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{[^}]*\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}',
+                c, re.DOTALL | re.IGNORECASE
+            )
+            if m:
+                colspan = m.group(1)
+                content = m.group(2)
+                cells_html.append(f'<td colspan="{colspan}">{content}</td>')
+            else:
+                cells_html.append(f'<td>{c}</td>')
+                
+        rows_html.append(f"  <tr>{''.join(cells_html)}</tr>")
 
     border_attr = ' border="1" cellpadding="4" cellspacing="0"' if has_border else ''
     table_html = f'<table{border_attr}>\n' + '\n'.join(rows_html) + '\n</table>'

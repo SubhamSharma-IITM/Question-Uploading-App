@@ -280,6 +280,26 @@ function buildMetaPreviewItem(meta) {
     const qtype = meta.questionType;
     const qdata = meta[qtype] || {};
 
+    let questionContentHtml = '';
+    let solutionContentHtml = '';
+
+    if (qtype === 'passageQuestion') {
+        let rawParts = [];
+        rawParts.push("Passage: " + (qdata.passage || ''));
+        if (qdata.questions && qdata.questions.length > 0) {
+            qdata.questions.forEach((sq, idx) => {
+                const sqtype = Object.keys(sq)[0];
+                const sqdata = sq[sqtype] || {};
+                rawParts.push(`\nSub-Q ${idx + 1} (${sqtype}): ` + (sqdata.ques || sqdata.question || '') + ` (Ans: ${sqdata.answer || '?'})`);
+            });
+        }
+        questionContentHtml = rawParts.join('\n');
+        solutionContentHtml = qdata.solution || '';
+    } else {
+        questionContentHtml = qdata.question || '';
+        solutionContentHtml = qdata.solution || '';
+    }
+
     return `
     <div class="preview-item">
         <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
@@ -290,10 +310,10 @@ function buildMetaPreviewItem(meta) {
             </span>
         </div>
         <div class="preview-item-body collapsed">
-            <div class="preview-field-label">Question HTML</div>
-            <div class="preview-field-content">${escapeHtml(qdata.question || '')}</div>
+            <div class="preview-field-label">Question/Passage HTML</div>
+            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(questionContentHtml)}</div>
             <div class="preview-field-label">Solution HTML</div>
-            <div class="preview-field-content">${escapeHtml(truncate(qdata.solution || '', 400))}</div>
+            <div class="preview-field-content">${escapeHtml(truncate(solutionContentHtml, 400))}</div>
             <div class="preview-field-label">Fields</div>
             <div class="preview-field-content">level: ${meta.level} | class: ${meta.class} | isNEET: ${meta.isNEET} | isPrevious: ${meta.isPrevious}${meta.isPrevious ? ' | exam: ' + meta.previousExam + ' | year: ' + meta.previousExamYear : ''}</div>
         </div>
