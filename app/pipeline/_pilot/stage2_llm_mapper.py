@@ -257,7 +257,8 @@ def _build_system_instruction(extra_context: str = "") -> str:
         "Never return \"Unknown\".\n"
         "- Detect subject from section headers or infer from question content.\n"
         "- Stop extracting when you reach the Key Sheet, Answer Key, or Solutions section "
-        "(those are NOT questions)."
+        "(those are NOT questions).\n"
+        "- OCR LAYOUT ISSUES (merged lines): If the OCR engine has merged text from two separate questions or columns horizontally onto the same line (for example, option (D) of an SCQ is followed by option (B) of a match-the-column question on the same line), you MUST split them. Put the text belonging to the second question/column into its correct question entry, and do NOT include it in the options/stem of the first question."
     )
     if extra_context:
         base += (

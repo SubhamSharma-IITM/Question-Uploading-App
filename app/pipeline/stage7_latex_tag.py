@@ -187,7 +187,7 @@ def latex_table_to_html(latex: str) -> str:
     while changed:
         changed = False
         pattern = re.compile(
-            r'\\begin\{tabular\}\{[^}]*\}((?:(?!\\begin\{tabular\}).)*?)\\end\{tabular\}',
+            r'\\begin\{tabular\}\{[^}]*}((?:(?!\\begin\{tabular\}).)*?)\\end\{tabular\}',
             re.DOTALL
         )
         matches = list(pattern.finditer(text))
@@ -219,7 +219,9 @@ def latex_table_to_html(latex: str) -> str:
     # Step 4: Split into rows by \\
     raw_rows = re.split(r'\\\\', body)
 
-    rows_html = []
+    # First pass: parse all rows to find max columns and gather cell details
+    parsed_rows = []
+    max_cols = 0
     for raw_row in raw_rows:
         raw_row = raw_row.strip()
         if not raw_row:
@@ -229,23 +231,81 @@ def latex_table_to_html(latex: str) -> str:
             continue
         cells = [c.strip() for c in row_text.split('&')]
         
-        cells_html = []
+        row_cells = []
+        row_col_sum = 0
         for c in cells:
             m = re.search(
                 r'\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{[^}]*\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}',
                 c, re.DOTALL | re.IGNORECASE
             )
             if m:
-                colspan = m.group(1)
+                colspan = int(m.group(1))
                 content = m.group(2)
+                row_cells.append({"colspan": colspan, "content": content, "is_mult": True})
+                row_col_sum += colspan
+            else:
+                row_cells.append({"colspan": 1, "content": c, "is_mult": False})
+                row_col_sum += 1
+                
+        parsed_rows.append((row_cells, row_col_sum))
+        if row_col_sum > max_cols:
+            max_cols = row_col_sum
+
+    # Extra Step: Extract full-width leading rows (intro text) to render BEFORE the table
+    intro_paragraphs = []
+    table_rows = []
+    
+    extracting_intro = True
+    for idx, (row_cells, row_col_sum) in enumerate(parsed_rows):
+        if extracting_intro and len(row_cells) == 1 and (row_cells[0]["colspan"] == max_cols or row_cells[0]["is_mult"]):
+            content = row_cells[0]["content"].strip()
+            # Clean up LaTeX/bold prefix markers if any
+            content_clean = re.sub(r'^Code:\s*', '', content, flags=re.IGNORECASE)
+            if content_clean:
+                # Wrap in a clean paragraph
+                intro_paragraphs.append(f"<p><strong>{content_clean}</strong></p>")
+        else:
+            extracting_intro = False
+            table_rows.append((row_cells, row_col_sum))
+
+    # Second pass: build rows and apply colspan auto-distribution if needed
+    rows_html = []
+    for idx, (row_cells, row_col_sum) in enumerate(table_rows):
+        # Auto-distribute column span for header-like rows that are under-filled
+        if row_col_sum < max_cols and len(row_cells) > 0:
+            is_header_like = False
+            if idx == 0:
+                is_header_like = True
+            else:
+                for cell in row_cells:
+                    content_lower = cell["content"].lower()
+                    if any(kw in content_lower for kw in ["list", "column", "col", "group", "header", "match"]):
+                        is_header_like = True
+                        break
+            
+            if is_header_like and not any(cell["is_mult"] for cell in row_cells):
+                base_span = max_cols // len(row_cells)
+                remainder = max_cols % len(row_cells)
+                for i, cell in enumerate(row_cells):
+                    cell["colspan"] = base_span + (remainder if i == len(row_cells) - 1 else 0)
+
+        # Build HTML cells for this row
+        cells_html = []
+        for cell in row_cells:
+            colspan = cell["colspan"]
+            content = cell["content"]
+            if colspan > 1:
                 cells_html.append(f'<td colspan="{colspan}">{content}</td>')
             else:
-                cells_html.append(f'<td>{c}</td>')
+                cells_html.append(f'<td>{content}</td>')
                 
         rows_html.append(f"  <tr>{''.join(cells_html)}</tr>")
 
     border_attr = ' border="1" cellpadding="4" cellspacing="0"' if has_border else ''
     table_html = f'<table{border_attr}>\n' + '\n'.join(rows_html) + '\n</table>'
+    
+    if intro_paragraphs:
+        return "\n".join(intro_paragraphs) + "\n" + table_html
     return table_html
 
 

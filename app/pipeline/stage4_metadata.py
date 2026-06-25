@@ -381,6 +381,18 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
             lbl, val = match_single.groups()
             lbl_upper = lbl.upper()
             val = val.strip()
+
+            # Filter out numbered question headers/introductions (e.g. "2. Match the statements...")
+            is_intro_header = False
+            if lbl_upper in ("1", "2", "3", "4") and not list_i and not list_ii:
+                if "match" in val.lower() or "following" in val.lower() or "statement" in val.lower() or not (stripped.startswith("(") or stripped.startswith("$(")):
+                    is_intro_header = True
+
+            if is_intro_header:
+                if not list_i and not list_ii:
+                    intro_lines.append(line)
+                continue
+
             val_html, _ = _replace_md_images_with_img(val)
 
             if lbl_upper in ("A", "B", "C", "D", "E", "1", "2", "3", "4"):

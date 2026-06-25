@@ -9,19 +9,23 @@
     </button>
 </div>
 <p class="stage-description">
-    Convert cleaned questions into the Acadza Metadata V2 schema with QID, question type, subject, and all required fields.
+    Convert cleaned questions into the Acadza Metadata V2 schema with QID, question type, subject, and all required
+    fields.
 </p>
 
 <div class="stage-layout">
     <div class="stage-controls">
         <!-- Conversion Settings -->
         <div class="card">
-            <div class="card-header"><h2>Conversion Settings</h2></div>
+            <div class="card-header">
+                <h2>Conversion Settings</h2>
+            </div>
             <div class="card-body">
                 <div class="form-inline" style="margin-bottom: 12px;">
                     <div class="form-group flex-1">
                         <label>Source Name</label>
-                        <input type="text" id="source-name" value="" placeholder="e.g. Aakash Preparatory Test-2" class="form-input">
+                        <input type="text" id="source-name" value="" placeholder="e.g. Aakash Preparatory Test-2"
+                            class="form-input">
                     </div>
                     <div class="form-group" style="max-width: 160px;">
                         <label>Test Code</label>
@@ -49,11 +53,13 @@
                 </div>
 
                 <div class="tag-description" id="tag-desc">
-                    <strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.
+                    <strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality
+                    verifier. No faculty review needed.
                 </div>
 
                 <!-- PYQ indicator (auto-loaded from Stage 2 session config, not editable here) -->
-                <div id="pyq-indicator" style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+                <div id="pyq-indicator"
+                    style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
                     <div style="font-size: 12px; color: var(--text-secondary);">
                         PYQ Mode: <strong id="pyq-indicator-text"></strong>
                     </div>
@@ -91,7 +97,8 @@
         <div class="card" id="json-card" style="display: none;">
             <div class="card-header">
                 <h2>Raw JSON Preview</h2>
-                <button class="btn btn-sm" onclick="document.getElementById('json-card').style.display='none'">Close</button>
+                <button class="btn btn-sm"
+                    onclick="document.getElementById('json-card').style.display='none'">Close</button>
             </div>
             <div class="card-body" style="padding: 10px;">
                 <div id="json-content" class="json-preview"></div>
@@ -117,107 +124,107 @@
 
 {% block scripts %}
 <script>
-const TAG_DESCRIPTIONS = {
-    'AITAI': '<strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
-    'NITAI': '<strong>NITAI</strong> — NEET AI-Tagged + AI-Verified. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
-    'NITRAI': '<strong>NITRAI</strong> — Select exclusively for Assertion-Reason based questions of Biology (Botany/Zoology) for NEET.',
-};
+    const TAG_DESCRIPTIONS = {
+        'AITAI': '<strong>AITAI</strong> — AI-Tagged + AI-Verified for JEE. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
+        'NITAI': '<strong>NITAI</strong> — NEET AI-Tagged + AI-Verified. Full pipeline through Stage 9 quality verifier. No faculty review needed.',
+        'NITRAI': '<strong>NITRAI</strong> — Select exclusively for Assertion-Reason based questions of Biology (Botany/Zoology) for NEET.',
+    };
 
-function updateTagDesc() {
-    const val = document.getElementById('tagged-by').value;
-    document.getElementById('tag-desc').innerHTML = TAG_DESCRIPTIONS[val] || '';
-}
+    function updateTagDesc() {
+        const val = document.getElementById('tagged-by').value;
+        document.getElementById('tag-desc').innerHTML = TAG_DESCRIPTIONS[val] || '';
+    }
 
-// Auto-load session config (test_code, PYQ settings)
-async function loadSessionConfig() {
-    try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage2/config');
-        if (r.success && r.data) {
-            const cfg = r.data;
-            window._sessionConfig = cfg;  // Store for PYQ year params
-            // Load test_code if available and field is empty
-            if (cfg.test_code && !document.getElementById('test-code').value) {
-                document.getElementById('test-code').value = cfg.test_code;
+    // Auto-load session config (test_code, PYQ settings)
+    async function loadSessionConfig() {
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage2/config');
+            if (r.success && r.data) {
+                const cfg = r.data;
+                window._sessionConfig = cfg;  // Store for PYQ year params
+                // Load test_code if available and field is empty
+                if (cfg.test_code && !document.getElementById('test-code').value) {
+                    document.getElementById('test-code').value = cfg.test_code;
+                }
+                // Load PDF filename as source name if field is empty
+                if (cfg.pdf_filename && !document.getElementById('source-name').value) {
+                    const stem = cfg.pdf_filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+                    document.getElementById('source-name').value = stem;
+                }
+                // Show PYQ indicator if set in Stage 2
+                if (cfg.is_pyq) {
+                    const ind = document.getElementById('pyq-indicator');
+                    ind.style.display = 'block';
+                    const yearRange = cfg.pyq_year_from ? ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')' : '';
+                    document.getElementById('pyq-indicator-text').textContent = (cfg.prev_exam || 'Yes') + yearRange;
+                    appendLog('info', 'PYQ mode from Stage 2: ' + (cfg.prev_exam || 'enabled') + yearRange);
+                }
             }
-            // Load PDF filename as source name if field is empty
-            if (cfg.pdf_filename && !document.getElementById('source-name').value) {
-                const stem = cfg.pdf_filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
-                document.getElementById('source-name').value = stem;
-            }
-            // Show PYQ indicator if set in Stage 2
-            if (cfg.is_pyq) {
-                const ind = document.getElementById('pyq-indicator');
-                ind.style.display = 'block';
-                const yearRange = cfg.pyq_year_from ? ' (' + cfg.pyq_year_from + '-' + cfg.pyq_year_to + ')' : '';
-                document.getElementById('pyq-indicator-text').textContent = (cfg.prev_exam || 'Yes') + yearRange;
-                appendLog('info', 'PYQ mode from Stage 2: ' + (cfg.prev_exam || 'enabled') + yearRange);
-            }
+        } catch (e) {
+            // Silently ignore — config may not exist yet
         }
-    } catch (e) {
-        // Silently ignore — config may not exist yet
-    }
-}
-
-document.addEventListener('DOMContentLoaded', loadSessionConfig);
-
-async function convertMetadata() {
-    const btn = document.getElementById('convert-btn');
-    const source = document.getElementById('source-name').value;
-    const code = document.getElementById('test-code').value;
-    const taggedBy = document.getElementById('tagged-by').value;
-    btn.disabled = true;
-    btn.textContent = 'Converting...';
-    appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ', difficulty: per-question by LLM)...');
-
-    let url = '/api/sessions/{{ session.id }}/stage4/convert?source=' +
-        encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
-        '&tagged_by=' + encodeURIComponent(taggedBy);
-
-    // Auto-inject PYQ params from Stage 2 session config (no manual selection needed here)
-    if (window._sessionConfig && window._sessionConfig.is_pyq) {
-        url += '&is_pyq=true';
-        url += '&prev_exam=' + encodeURIComponent(window._sessionConfig.prev_exam || '');
-        const yf = window._sessionConfig.pyq_year_from;
-        const yt = window._sessionConfig.pyq_year_to;
-        if (yf) url += '&pyq_year_from=' + yf;
-        if (yt) url += '&pyq_year_to=' + yt;
-        appendLog('info', 'PYQ mode (from Stage 2): ' + (window._sessionConfig.prev_exam || '') + ' (' + (yf||'?') + '-' + (yt||'?') + ')');
     }
 
-    try {
-        const r = await apiPost(url);
-        if (r.success) {
-            showResults(r.data);
-            document.getElementById('advance-btn').disabled = false;
-            appendLog('success', 'Metadata V2: ' + r.data.total + ' entries, ' + r.data.triplets + ' triplets' +
-                (r.data.non_triplets_quarantined ? ', ' + r.data.non_triplets_quarantined + ' quarantined' : ''));
-            // Update sidebar quarantine count
-            if (r.data.non_triplets_quarantined > 0) {
-                updateSidebarQuarantineCount(r.data.non_triplets_quarantined);
-            }
-            btn.textContent = 'Converted \u2713';
-            metadataGenerated = true;
-            lastConvertSettings = captureSettings();
-            // Keep btn disabled after success (re-enables on settings change)
-            return;
-        } else {
-            appendLog('error', 'Conversion failed: ' + (r.error?.message || 'Unknown'));
+    document.addEventListener('DOMContentLoaded', loadSessionConfig);
+
+    async function convertMetadata() {
+        const btn = document.getElementById('convert-btn');
+        const source = document.getElementById('source-name').value;
+        const code = document.getElementById('test-code').value;
+        const taggedBy = document.getElementById('tagged-by').value;
+        btn.disabled = true;
+        btn.textContent = 'Converting...';
+        appendLog('info', 'Converting to Metadata V2 (tagged: ' + taggedBy + ', difficulty: per-question by LLM)...');
+
+        let url = '/api/sessions/{{ session.id }}/stage4/convert?source=' +
+            encodeURIComponent(source) + '&test_code=' + encodeURIComponent(code) +
+            '&tagged_by=' + encodeURIComponent(taggedBy);
+
+        // Auto-inject PYQ params from Stage 2 session config (no manual selection needed here)
+        if (window._sessionConfig && window._sessionConfig.is_pyq) {
+            url += '&is_pyq=true';
+            url += '&prev_exam=' + encodeURIComponent(window._sessionConfig.prev_exam || '');
+            const yf = window._sessionConfig.pyq_year_from;
+            const yt = window._sessionConfig.pyq_year_to;
+            if (yf) url += '&pyq_year_from=' + yf;
+            if (yt) url += '&pyq_year_to=' + yt;
+            appendLog('info', 'PYQ mode (from Stage 2): ' + (window._sessionConfig.prev_exam || '') + ' (' + (yf || '?') + '-' + (yt || '?') + ')');
         }
-    } catch (e) {
-        appendLog('error', 'Error: ' + e.message);
+
+        try {
+            const r = await apiPost(url);
+            if (r.success) {
+                showResults(r.data);
+                document.getElementById('advance-btn').disabled = false;
+                appendLog('success', 'Metadata V2: ' + r.data.total + ' entries, ' + r.data.triplets + ' triplets' +
+                    (r.data.non_triplets_quarantined ? ', ' + r.data.non_triplets_quarantined + ' quarantined' : ''));
+                // Update sidebar quarantine count
+                if (r.data.non_triplets_quarantined > 0) {
+                    updateSidebarQuarantineCount(r.data.non_triplets_quarantined);
+                }
+                btn.textContent = 'Converted \u2713';
+                metadataGenerated = true;
+                lastConvertSettings = captureSettings();
+                // Keep btn disabled after success (re-enables on settings change)
+                return;
+            } else {
+                appendLog('error', 'Conversion failed: ' + (r.error?.message || 'Unknown'));
+            }
+        } catch (e) {
+            appendLog('error', 'Error: ' + e.message);
+        }
+        btn.disabled = false;
+        btn.textContent = 'Convert to Metadata V2';
     }
-    btn.disabled = false;
-    btn.textContent = 'Convert to Metadata V2';
-}
 
-function showResults(data) {
-    const card = document.getElementById('results-card');
-    card.style.display = 'block';
+    function showResults(data) {
+        const card = document.getElementById('results-card');
+        card.style.display = 'block';
 
-    const summary = document.getElementById('results-summary');
-    const rate = data.total > 0 ? Math.round(data.triplets / data.total * 100) : 0;
-    const quarantined = data.non_triplets_quarantined || (data.total - data.triplets);
-    summary.innerHTML = `
+        const summary = document.getElementById('results-summary');
+        const rate = data.total > 0 ? Math.round(data.triplets / data.total * 100) : 0;
+        const quarantined = data.non_triplets_quarantined || (data.total - data.triplets);
+        summary.innerHTML = `
         <div class="stat-grid">
             <div class="stat-box"><div class="stat-value">${data.total}</div><div class="stat-label">Total Entries</div></div>
             <div class="stat-box"><div class="stat-value">${data.triplets}</div><div class="stat-label">Q+A+S Triplets</div></div>
@@ -226,106 +233,129 @@ function showResults(data) {
         </div>
     `;
 
-    // Fetch subject breakdown
-    fetchSubjectStats();
-}
-
-async function fetchSubjectStats() {
-    const r = await apiGet('/api/sessions/{{ session.id }}');
-    if (!r.success) return;
-
-    const tableDiv = document.getElementById('results-table');
-    const stats = r.data.stats;
-
-    let html = '<table class="data-table">';
-    html += '<thead><tr><th>Subject</th><th>Count</th></tr></thead><tbody>';
-    for (const [subj, cnt] of Object.entries(stats.by_subject || {})) {
-        html += '<tr><td>' + subj + '</td><td>' + cnt + '</td></tr>';
+        // Fetch subject breakdown
+        fetchSubjectStats();
     }
-    html += '</tbody></table>';
 
-    html += '<div style="margin-top: 8px; color: var(--text-secondary); font-size: 12px;">';
-    html += 'With Answer: ' + stats.with_answer + ' | With Solution: ' + stats.with_solution;
-    html += ' | Quarantined: ' + stats.quarantined;
-    html += '</div>';
+    async function fetchSubjectStats() {
+        const r = await apiGet('/api/sessions/{{ session.id }}');
+        if (!r.success) return;
 
-    tableDiv.innerHTML = html;
-}
+        const tableDiv = document.getElementById('results-table');
+        const stats = r.data.stats;
 
-async function loadMetaPreview() {
-    const card = document.getElementById('preview-card');
-    const content = document.getElementById('preview-content');
-    card.style.display = 'block';
-    document.getElementById('json-card').style.display = 'none';
-    content.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Loading...</div>';
+        let html = '<table class="data-table">';
+        html += '<thead><tr><th>Subject</th><th>Count</th></tr></thead><tbody>';
+        for (const [subj, cnt] of Object.entries(stats.by_subject || {})) {
+            html += '<tr><td>' + subj + '</td><td>' + cnt + '</td></tr>';
+        }
+        html += '</tbody></table>';
 
-    try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=7');
-        if (r.success && r.data.samples && r.data.samples.length > 0) {
-            let html = '';
-            for (const s of r.data.samples) {
-                html += buildMetaPreviewItem(s);
+        html += '<div style="margin-top: 8px; color: var(--text-secondary); font-size: 12px;">';
+        html += 'With Answer: ' + stats.with_answer + ' | With Solution: ' + stats.with_solution;
+        html += ' | Quarantined: ' + stats.quarantined;
+        html += '</div>';
+
+        tableDiv.innerHTML = html;
+    }
+
+    async function loadMetaPreview() {
+        const card = document.getElementById('preview-card');
+        const content = document.getElementById('preview-content');
+        card.style.display = 'block';
+        document.getElementById('json-card').style.display = 'none';
+        content.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Loading...</div>';
+
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=7');
+            if (r.success && r.data.samples && r.data.samples.length > 0) {
+                let html = '';
+                for (const s of r.data.samples) {
+                    html += buildMetaPreviewItem(s);
+                }
+                content.innerHTML = html;
+                appendLog('success', 'Loaded ' + r.data.samples.length + ' metadata entries');
+            } else {
+                content.innerHTML = '<div class="alert alert-warning">No metadata available. Convert first.</div>';
             }
-            content.innerHTML = html;
-            appendLog('success', 'Loaded ' + r.data.samples.length + ' metadata entries');
+        } catch (e) {
+            content.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
+        }
+    }
+
+    function buildMetaPreviewItem(meta) {
+        const qtype = meta.questionType;
+        const qdata = meta[qtype] || {};
+
+        let questionContentHtml = '';
+        let solutionContentHtml = '';
+
+        if (qtype === 'passageQuestion') {
+            let rawParts = [];
+            let passageText = qdata.passage || '';
+            // Prettify passage line breaks for preview readability and strip HTML tags
+            passageText = passageText
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/p>/gi, '\n')
+                .replace(/<\/h3>/gi, '\n')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            rawParts.push("Passage:\n" + passageText);
+
+            if (qdata.questions && qdata.questions.length > 0) {
+                qdata.questions.forEach((sq, idx) => {
+                    const sqtype = Object.keys(sq)[0];
+                    const sqdata = sq[sqtype] || {};
+                    let sqQues = sqdata.ques || sqdata.question || '';
+
+                    if (sqQues.includes('<table') || sqQues.includes('<tbody')) {
+                        rawParts.push(`\nSub-Q ${idx + 1} (${sqtype}):\n${sqQues}\n(Ans: ${sqdata.answer || '?'})`);
+                    } else {
+                        // Replace HTML breaks/headers with newlines and strip raw tags
+                        sqQues = sqQues
+                            .replace(/<br\s*\/?>/gi, '\n')
+                            .replace(/<\/p>/gi, '\n')
+                            .replace(/<\/h3>/gi, '\n')
+                            .replace(/<[^>]+>/g, '')
+                            .trim();
+                        
+                        // Split inline horizontal options to separate lines for preview
+                        sqQues = sqQues.replace(/\s+(\([B-D]\))/g, '\n$1');
+                        sqQues = sqQues.replace(/\s+(\([b-d]\))/g, '\n$1');
+
+                        rawParts.push(`\nSub-Q ${idx + 1} (${sqtype}):\n${sqQues}\n(Ans: ${sqdata.answer || '?'})`);
+                    }
+                });
+            }
+            questionContentHtml = rawParts.join('\n');
+            solutionContentHtml = qdata.solution || '';
         } else {
-            content.innerHTML = '<div class="alert alert-warning">No metadata available. Convert first.</div>';
+            let qText = qdata.question || '';
+            // Replace HTML breaks/headers with newlines and strip raw tags
+            qText = qText
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/p>/gi, '\n')
+                .replace(/<\/h3>/gi, '\n')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+
+            // Split inline horizontal options to separate lines for preview
+            qText = qText.replace(/\s+(\([B-D]\))/g, '\n$1');
+            qText = qText.replace(/\s+(\([b-d]\))/g, '\n$1');
+
+            questionContentHtml = qText;
+            solutionContentHtml = qdata.solution || '';
         }
-    } catch (e) {
-        content.innerHTML = '<div class="alert alert-error">Error: ' + e.message + '</div>';
-    }
-}
 
-function buildMetaPreviewItem(meta) {
-    const qtype = meta.questionType;
-    const qdata = meta[qtype] || {};
+        // Prettify solution text
+        let solutionContentHtmlClean = solutionContentHtml
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/p>/gi, '\n')
+            .replace(/<\/h3>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .trim();
 
-    let fieldsHtml = '';
-    let solutionContentHtml = qdata.solution || '';
-
-    if (qtype === 'passageQuestion') {
-        let passageText = qdata.passage || '';
-        // Prettify passage line breaks for preview readability
-        passageText = passageText.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
-        
-        fieldsHtml += `
-            <div class="preview-field-label">Passage HTML</div>
-            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(passageText)}</div>
-        `;
-
-        if (qdata.questions && qdata.questions.length > 0) {
-            qdata.questions.forEach((sq, idx) => {
-                const sqtype = Object.keys(sq)[0];
-                const sqdata = sq[sqtype] || {};
-                let sqQues = sqdata.ques || sqdata.question || '';
-
-                // Split inline horizontal options to separate lines for preview
-                sqQues = sqQues.replace(/\s+(\([B-D]\))/g, '\n$1');
-                sqQues = sqQues.replace(/\s+(\([b-d]\))/g, '\n$1');
-                sqQues = sqQues.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
-
-                fieldsHtml += `
-                    <div class="preview-field-label" style="color: var(--info); font-weight: bold; border-left: 2px solid var(--info); padding-left: 6px; margin-top: 14px;">
-                        Sub-Question ${idx + 1} (${sqtype}) &nbsp; [Answer: ${sqdata.answer || '?'}]
-                    </div>
-                    <div class="preview-field-content" style="white-space: pre-wrap; border-color: rgba(96,165,250,0.3);">${escapeHtml(sqQues)}</div>
-                `;
-            });
-        }
-    } else {
-        let qText = qdata.question || '';
-        // Split inline horizontal options and format breaks
-        qText = qText.replace(/\s+(\([B-D]\))/g, '\n$1');
-        qText = qText.replace(/\s+(\([b-d]\))/g, '\n$1');
-        qText = qText.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
-
-        fieldsHtml += `
-            <div class="preview-field-label">Question HTML</div>
-            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(qText)}</div>
-        `;
-    }
-
-    return `
+        return `
     <div class="preview-item">
         <div class="preview-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
             <span>${meta.qid} — ${meta.subject} (${qtype})</span>
@@ -335,93 +365,94 @@ function buildMetaPreviewItem(meta) {
             </span>
         </div>
         <div class="preview-item-body collapsed">
-            ${fieldsHtml}
+            <div class="preview-field-label">Question/Passage HTML</div>
+            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(questionContentHtml)}</div>
             <div class="preview-field-label">Solution HTML</div>
-            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(solutionContentHtml.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n'))}</div>
+            <div class="preview-field-content" style="white-space: pre-wrap;">${escapeHtml(truncate(solutionContentHtmlClean, 400))}</div>
             <div class="preview-field-label">Fields</div>
             <div class="preview-field-content">level: ${meta.level} | class: ${meta.class} | isNEET: ${meta.isNEET} | isPrevious: ${meta.isPrevious}${meta.isPrevious ? ' | exam: ' + meta.previousExam + ' | year: ' + meta.previousExamYear : ''}</div>
         </div>
     </div>`;
-}
-
-async function loadJsonPreview() {
-    const card = document.getElementById('json-card');
-    const content = document.getElementById('json-content');
-    card.style.display = 'block';
-    document.getElementById('preview-card').style.display = 'none';
-    content.textContent = 'Loading...';
-
-    try {
-        const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=2');
-        if (r.success && r.data.samples) {
-            content.textContent = JSON.stringify(r.data.samples, null, 2);
-        } else {
-            content.textContent = 'No data available';
-        }
-    } catch (e) {
-        content.textContent = 'Error: ' + e.message;
     }
-}
 
-function truncate(str, max) {
-    if (!str) return '';
-    return str.length > max ? str.substring(0, max) + '...' : str;
-}
+    async function loadJsonPreview() {
+        const card = document.getElementById('json-card');
+        const content = document.getElementById('json-content');
+        card.style.display = 'block';
+        document.getElementById('preview-card').style.display = 'none';
+        content.textContent = 'Loading...';
 
-// Track whether metadata has been generated (for settings-change re-enable)
-let metadataGenerated = false;
-let lastConvertSettings = null;
+        try {
+            const r = await apiGet('/api/sessions/{{ session.id }}/stage4/preview?count=2');
+            if (r.success && r.data.samples) {
+                content.textContent = JSON.stringify(r.data.samples, null, 2);
+            } else {
+                content.textContent = 'No data available';
+            }
+        } catch (e) {
+            content.textContent = 'Error: ' + e.message;
+        }
+    }
 
-function captureSettings() {
-    const pyqEl = document.getElementById('is-pyq');
-    const examEl = document.getElementById('prev-exam');
-    return JSON.stringify({
-        source: document.getElementById('source-name').value,
-        code: document.getElementById('test-code').value,
-        taggedBy: document.getElementById('tagged-by').value,
-        isPYQ: pyqEl ? pyqEl.checked : false,
-        prevExam: examEl ? examEl.value : '',
+    function truncate(str, max) {
+        if (!str) return '';
+        return str.length > max ? str.substring(0, max) + '...' : str;
+    }
+
+    // Track whether metadata has been generated (for settings-change re-enable)
+    let metadataGenerated = false;
+    let lastConvertSettings = null;
+
+    function captureSettings() {
+        const pyqEl = document.getElementById('is-pyq');
+        const examEl = document.getElementById('prev-exam');
+        return JSON.stringify({
+            source: document.getElementById('source-name').value,
+            code: document.getElementById('test-code').value,
+            taggedBy: document.getElementById('tagged-by').value,
+            isPYQ: pyqEl ? pyqEl.checked : false,
+            prevExam: examEl ? examEl.value : '',
+        });
+    }
+
+    function onSettingsChange() {
+        if (!metadataGenerated) return;
+        const current = captureSettings();
+        if (current !== lastConvertSettings) {
+            // Settings changed — allow re-generation
+            const btn = document.getElementById('convert-btn');
+            btn.disabled = false;
+            btn.textContent = 'Re-generate Metadata V2';
+            appendLog('info', 'Settings changed — click Re-generate to update metadata files');
+        }
+    }
+
+    // Attach change listeners to all settings inputs
+    document.addEventListener('DOMContentLoaded', () => {
+        ['source-name', 'test-code', 'tagged-by', 'is-pyq', 'prev-exam'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', onSettingsChange);
+                el.addEventListener('input', onSettingsChange);
+            }
+        });
     });
-}
 
-function onSettingsChange() {
-    if (!metadataGenerated) return;
-    const current = captureSettings();
-    if (current !== lastConvertSettings) {
-        // Settings changed — allow re-generation
-        const btn = document.getElementById('convert-btn');
-        btn.disabled = false;
-        btn.textContent = 'Re-generate Metadata V2';
-        appendLog('info', 'Settings changed — click Re-generate to update metadata files');
-    }
-}
-
-// Attach change listeners to all settings inputs
-document.addEventListener('DOMContentLoaded', () => {
-    ['source-name', 'test-code', 'tagged-by', 'is-pyq', 'prev-exam'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.addEventListener('change', onSettingsChange);
-            el.addEventListener('input', onSettingsChange);
+    // Restore state from checkpoint when revisiting
+    document.addEventListener('DOMContentLoaded', () => {
+        const cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
+        if (cp && cp.status === 'completed') {
+            const d = cp.data || {};
+            metadataGenerated = true;
+            document.getElementById('convert-btn').disabled = true;
+            document.getElementById('convert-btn').textContent = 'Converted \u2713';
+            lastConvertSettings = captureSettings();
+            // Note: inputs are NOT frozen — user can change settings to re-generate
+            if (d.total !== undefined) {
+                showResults(d);
+            }
+            document.getElementById('advance-btn').disabled = false;
         }
     });
-});
-
-// Restore state from checkpoint when revisiting
-document.addEventListener('DOMContentLoaded', () => {
-    const cp = _checkpoints.find(c => c.stage === 'stage4_metadata');
-    if (cp && cp.status === 'completed') {
-        const d = cp.data || {};
-        metadataGenerated = true;
-        document.getElementById('convert-btn').disabled = true;
-        document.getElementById('convert-btn').textContent = 'Converted \u2713';
-        lastConvertSettings = captureSettings();
-        // Note: inputs are NOT frozen — user can change settings to re-generate
-        if (d.total !== undefined) {
-            showResults(d);
-        }
-        document.getElementById('advance-btn').disabled = false;
-    }
-});
 </script>
 {% endblock %}

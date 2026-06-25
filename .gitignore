@@ -12,7 +12,9 @@ data/ocr_cache/
 .env
 .env.*
 !.env.example
-.myenv/
+
+myenv/
+
 
 # Python
 __pycache__/
