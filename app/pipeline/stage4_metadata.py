@@ -448,7 +448,8 @@ def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
         intro_html, list_i, list_ii = _parse_match_plain_text(content)
         if list_i and list_ii:
             return intro_html, list_i, list_ii
-        return content or "", [], []
+        converted, _ = _replace_md_images_with_img(content or "")
+        return converted, [], []
 
     tab_start = content.find("\\begin{tabular}")
     intro_raw = content[:tab_start].strip()
@@ -683,6 +684,7 @@ def _build_match_table_html(intro_html: str, list_i: list, list_ii: list) -> str
     if not list_i and not list_ii:
         cleaned_intro = re.sub(r"^\s*\d+[\.\)]\s+", "", intro_html, count=1)
         cleaned_intro = _convert_markdown_bold(cleaned_intro)
+        cleaned_intro, _ = _replace_md_images_with_img(cleaned_intro)
         return cleaned_intro if cleaned_intro.lstrip().startswith("<") else f"<p>{cleaned_intro}</p>"
 
     parts = []
@@ -690,6 +692,7 @@ def _build_match_table_html(intro_html: str, list_i: list, list_ii: list) -> str
         # Strip leading question-number prefix like "1.", "2.", "1)" from raw mmd
         cleaned_intro = re.sub(r"^\s*\d+[\.\)]\s+", "", intro_html, count=1)
         cleaned_intro = _convert_markdown_bold(cleaned_intro)
+        cleaned_intro, _ = _replace_md_images_with_img(cleaned_intro)
         intro = cleaned_intro if cleaned_intro.lstrip().startswith("<") else f"<p>{cleaned_intro}</p>"
         parts.append(intro)
 
