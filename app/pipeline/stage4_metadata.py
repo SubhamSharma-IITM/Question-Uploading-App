@@ -403,8 +403,15 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
                 list_ii.append({"label": lbl_can, "content": val_html})
             continue
 
-        # Skip column/list header lines
-        if "column" in stripped.lower() or "list-i" in stripped.lower() or "list-ii" in stripped.lower():
+        # Skip pure standalone column/list header lines (e.g. "Column-I Column-II",
+        # "List - I", "List-II"). A line that merely CONTAINS the word "column" but
+        # also has label content (e.g. the full single-line blob from OCR) must NOT
+        # be skipped here — it would silently drop the entire question content.
+        _is_pure_col_header = re.fullmatch(
+            r'[\s|–\-]*(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*(?:(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*)?',
+            stripped, re.IGNORECASE
+        )
+        if _is_pure_col_header:
             continue
 
         # If it doesn't match either, and we haven't started parsing items, it's part of the intro
@@ -414,6 +421,54 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
     intro_raw = "\n".join(intro_lines).strip()
     intro_html, _ = _replace_md_images_with_img(intro_raw)
 
+    return intro_html, list_i, list_ii
+
+
+# ── Last-resort single-line inline blob extractor ────────────────────────
+def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
+    """Extract list_i / list_ii from a single-line inline blob.
+
+    Handles content that OCR emits as one continuous string:
+        "Intro text Column-I Column-II (A) item (P) item (B) item (Q) item..."
+
+    Strategy:
+      1. Find the first List-I label (A/B/C/D or 1/2/3/4) to anchor the split.
+      2. Everything before that anchor is the intro.
+      3. Split the remaining text on any label boundary and classify each chunk
+         as List-I (A-D / 1-4) or List-II (P-T) by label letter.
+
+    Only activated when both tabular and plain-text parsers have already failed.
+    """
+    if not content:
+        return "", [], []
+
+    first_li = re.search(r'\(\s*[A-Da-d1-4]\s*\)', content)
+    if not first_li:
+        return "", [], []
+
+    intro_raw = content[:first_li.start()].strip()
+    items_str = content[first_li.start():]
+
+    parts = re.split(r'(?=\(\s*[A-Da-d1-4P-Sp-t]\s*\)\s)', items_str)
+
+    list_i: list = []
+    list_ii: list = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lm = re.match(r'^\(\s*([A-Da-d1-4P-Sp-t])\s*\)\s+(.*)', part, re.DOTALL)
+        if not lm:
+            continue
+        lbl = lm.group(1).upper()
+        val_html, _ = _replace_md_images_with_img(lm.group(2).strip())
+        if lbl in ("A", "B", "C", "D", "1", "2", "3", "4"):
+            list_i.append({"label": _LIST_I_LABEL_MAP.get(lbl, lbl), "content": val_html})
+        elif lbl in ("P", "Q", "R", "S", "T"):
+            lbl_can = _LIST_II_LABEL_MAP.get(lbl.lower(), _LIST_II_LABEL_MAP.get(lbl, lbl))
+            list_ii.append({"label": lbl_can, "content": val_html})
+
+    intro_html, _ = _replace_md_images_with_img(intro_raw)
     return intro_html, list_i, list_ii
 
 
@@ -448,6 +503,11 @@ def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
         intro_html, list_i, list_ii = _parse_match_plain_text(content)
         if list_i and list_ii:
             return intro_html, list_i, list_ii
+        # Plain-text parser failed (e.g. single-line OCR blob). Try the inline
+        # blob extractor which anchors on the first List-I label boundary.
+        intro_html2, list_i2, list_ii2 = _parse_match_inline_blob(content)
+        if list_i2 and list_ii2:
+            return intro_html2, list_i2, list_ii2
         converted, _ = _replace_md_images_with_img(content or "")
         return converted, [], []
 
