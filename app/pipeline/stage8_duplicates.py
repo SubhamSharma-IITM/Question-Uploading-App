@@ -1063,7 +1063,11 @@ class DuplicateCheckStage(BasePipelineStage):
             index_dir = self._get_index_dir() / name
             if (index_dir / "faiss.index").exists():
                 # FIX-C: full-RAM read (no IO_FLAG_MMAP)
-                index = faiss.read_index(str(index_dir / "faiss.index"))
+                try:
+                    index = faiss.read_index(str(index_dir / "faiss.index"))
+                except Exception as e:
+                    self.log("warning", f"Failed to load session-local FAISS index '{name}': {e}")
+                    return None, None, None
                 metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
                 self._assert_metadata_provenance(metadata, name, "session-local")
                 self.log("info", f"Loaded session-local FAISS index '{name}': {index.ntotal} vectors (full-RAM)")

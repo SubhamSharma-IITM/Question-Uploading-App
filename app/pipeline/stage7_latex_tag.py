@@ -811,10 +811,14 @@ class LatexTagStage(BasePipelineStage):
             (r'\\\[(.+?)\\\]', True),
             # \(...\) (inline math)
             (r'\\\((.+?)\\\)', False),
-            # Bare LaTeX math environments from OCR/LLM output.
-            (r'(\\begin\{(?!tabular\})[^}]+\}.*?\\end\{[^}]+\})', True),
             # $...$ (inline math) --last to avoid matching $$ content
             (r'(?<!\$)\$(?!\$)([^$]+)\$(?!\$)', False),
+            # Bare LaTeX math environments from OCR/LLM output.
+            # Keep this AFTER all delimited math forms. Otherwise an inner
+            # matrix like $P=\begin{bmatrix}...\end{bmatrix}$ is converted
+            # first, then the surrounding $...$ pass converts the generated
+            # <math> HTML as if it were LaTeX text.
+            (r'(\\begin\{(?!tabular\})[^}]+\}.*?\\end\{[^}]+\})', True),
         ]
 
         # Matrix environments where \\ must be replaced with \cr for latex2mathml

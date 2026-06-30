@@ -22,6 +22,7 @@ Key rules (from CLAUDE.md):
 import json
 import re
 from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,8 @@ IMAGE_STYLE = 'style="height:169px; width:350px"'
 # asterisks inside — avoids matching across paragraph boundaries.
 _MARKDOWN_BOLD = re.compile(r'\*\*([^*\n]+?)\*\*')
 
+TABLE_HEADER_BG = "#e6e6e6"
+
 
 def _convert_markdown_bold(html: str) -> str:
     """Convert leftover **X** markdown bold to <strong>X</strong>.
@@ -49,6 +52,103 @@ def _convert_markdown_bold(html: str) -> str:
     if not html:
         return html
     return _MARKDOWN_BOLD.sub(r'<strong>\1</strong>', html)
+
+
+class _TableHeaderStyler(HTMLParser):
+    """Add the canonical grey background to first-row table cells."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.out: List[str] = []
+        self.table_depth = 0
+        self.in_first_row_stack: List[bool] = []
+        self.seen_row_stack: List[bool] = []
+
+    def _attrs_to_html(self, attrs) -> str:
+        if not attrs:
+            return ""
+        parts = []
+        for name, value in attrs:
+            if value is None:
+                parts.append(name)
+            else:
+                escaped = (
+                    str(value)
+                    .replace("&", "&amp;")
+                    .replace('"', "&quot;")
+                )
+                parts.append(f'{name}="{escaped}"')
+        return " " + " ".join(parts)
+
+    def _with_header_style(self, attrs):
+        style_seen = False
+        updated = []
+        for name, value in attrs:
+            if name.lower() == "style":
+                style_seen = True
+                style = value or ""
+                if "background-color" not in style.lower():
+                    style = style.rstrip()
+                    if style and not style.endswith(";"):
+                        style += ";"
+                    style += f" background-color:{TABLE_HEADER_BG};"
+                updated.append((name, style))
+            else:
+                updated.append((name, value))
+        if not style_seen:
+            updated.append(("style", f"background-color:{TABLE_HEADER_BG};"))
+        return updated
+
+    def handle_starttag(self, tag, attrs):
+        lower = tag.lower()
+        if lower == "table":
+            self.table_depth += 1
+            self.seen_row_stack.append(False)
+        elif lower == "tr" and self.table_depth:
+            is_first = not self.seen_row_stack[-1]
+            self.in_first_row_stack.append(is_first)
+            self.seen_row_stack[-1] = True
+        elif lower in ("td", "th") and self.table_depth:
+            if self.in_first_row_stack and self.in_first_row_stack[-1]:
+                attrs = self._with_header_style(attrs)
+        self.out.append(f"<{tag}{self._attrs_to_html(attrs)}>")
+
+    def handle_startendtag(self, tag, attrs):
+        self.out.append(f"<{tag}{self._attrs_to_html(attrs)}/>")
+
+    def handle_endtag(self, tag):
+        lower = tag.lower()
+        self.out.append(f"</{tag}>")
+        if lower == "tr" and self.in_first_row_stack:
+            self.in_first_row_stack.pop()
+        elif lower == "table" and self.table_depth:
+            self.table_depth -= 1
+            if self.seen_row_stack:
+                self.seen_row_stack.pop()
+
+    def handle_data(self, data):
+        self.out.append(data)
+
+    def handle_entityref(self, name):
+        self.out.append(f"&{name};")
+
+    def handle_charref(self, name):
+        self.out.append(f"&#{name};")
+
+    def handle_comment(self, data):
+        self.out.append(f"<!--{data}-->")
+
+
+def _style_table_headers(html: str) -> str:
+    if not html or "<table" not in html.lower():
+        return html
+    try:
+        parser = _TableHeaderStyler()
+        parser.feed(html)
+        parser.close()
+        return "".join(parser.out)
+    except Exception:
+        return html
 
 
 # ── Match-type label canonicalization ─────────────────────────────────────
@@ -294,7 +394,7 @@ def _prepare_html_fragment(text: str) -> str:
     """Repair structural OCR markup before wrapping it as HTML."""
     if not text:
         return ""
-    return repair_text_markup(text)
+    return _style_table_headers(repair_text_markup(text))
 
 
 # ── Answer normalization ────────────────────────────────────────────────────
