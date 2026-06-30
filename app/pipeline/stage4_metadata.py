@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.pipeline.base import BasePipelineStage
+from app.pipeline.markup_repair import repair_text_markup
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -289,6 +290,13 @@ def _wrap_h3(text: str) -> str:
     return text
 
 
+def _prepare_html_fragment(text: str) -> str:
+    """Repair structural OCR markup before wrapping it as HTML."""
+    if not text:
+        return ""
+    return repair_text_markup(text)
+
+
 # ── Answer normalization ────────────────────────────────────────────────────
 def _normalize_answer(answer: str, question_type: str) -> str:
     """Normalize answer value based on question type."""
@@ -463,6 +471,7 @@ def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
             continue
         lbl = lm.group(1).upper()
         val_html, _ = _replace_md_images_with_img(lm.group(2).strip())
+        val_html = _prepare_html_fragment(val_html)
         if lbl in ("A", "B", "C", "D", "1", "2", "3", "4"):
             list_i.append({"label": _LIST_I_LABEL_MAP.get(lbl, lbl), "content": val_html})
         elif lbl in ("P", "Q", "R", "S", "T"):
@@ -470,6 +479,7 @@ def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
             list_ii.append({"label": lbl_can, "content": val_html})
 
     intro_html, _ = _replace_md_images_with_img(intro_raw)
+    intro_html = _prepare_html_fragment(intro_html)
     return intro_html, list_i, list_ii
 
 
@@ -815,16 +825,18 @@ def _build_match_table_html(intro_html: str, list_i: list, list_ii: list) -> str
     """
     if not list_i and not list_ii:
         cleaned_intro = re.sub(r"^\s*\d+[\.\)]\s+", "", intro_html, count=1)
-        cleaned_intro = _convert_markdown_bold(cleaned_intro)
         cleaned_intro, _ = _replace_md_images_with_img(cleaned_intro)
+        cleaned_intro = _prepare_html_fragment(cleaned_intro)
+        cleaned_intro = _convert_markdown_bold(cleaned_intro)
         return cleaned_intro if cleaned_intro.lstrip().startswith("<") else f"<p>{cleaned_intro}</p>"
 
     parts = []
     if intro_html:
         # Strip leading question-number prefix like "1.", "2.", "1)" from raw mmd
         cleaned_intro = re.sub(r"^\s*\d+[\.\)]\s+", "", intro_html, count=1)
-        cleaned_intro = _convert_markdown_bold(cleaned_intro)
         cleaned_intro, _ = _replace_md_images_with_img(cleaned_intro)
+        cleaned_intro = _prepare_html_fragment(cleaned_intro)
+        cleaned_intro = _convert_markdown_bold(cleaned_intro)
         intro = cleaned_intro if cleaned_intro.lstrip().startswith("<") else f"<p>{cleaned_intro}</p>"
         parts.append(intro)
 
@@ -913,6 +925,7 @@ def _build_question_html(entry: Dict) -> str:
 
     # Replace markdown images with <img> tags
     question_text, _ = _replace_md_images_with_img(question_text)
+    question_text = _prepare_html_fragment(question_text)
 
     # Convert any leftover **X** markdown bold to <strong>X</strong>
     question_text = _convert_markdown_bold(question_text)
@@ -936,6 +949,7 @@ def _build_solution_html(entry: Dict) -> str:
 
     # Replace markdown images
     solution_text, _ = _replace_md_images_with_img(solution_text)
+    solution_text = _prepare_html_fragment(solution_text)
 
     # Convert any leftover **X** markdown bold to <strong>X</strong>
     solution_text = _convert_markdown_bold(solution_text)
@@ -998,6 +1012,7 @@ def _build_metadata_v2(
 
         if passage_raw:
             passage_raw, _ = _replace_md_images_with_img(passage_raw)
+            passage_raw = _prepare_html_fragment(passage_raw)
             passage_raw = _convert_markdown_bold(passage_raw)
         passage_html = _wrap_h3(passage_raw)
 
@@ -1045,6 +1060,14 @@ def _build_metadata_v2(
         if (not list_i or not list_ii):
             raw_content = entry.get("question_content", "")
             parsed_intro, parsed_li, parsed_lii = _parse_match_latex_tabular(raw_content)
+            if not parsed_li or not parsed_lii:
+                plain_intro, plain_li, plain_lii = _parse_match_plain_text(raw_content)
+                if plain_li and plain_lii:
+                    parsed_intro, parsed_li, parsed_lii = plain_intro, plain_li, plain_lii
+            if not parsed_li or not parsed_lii:
+                inline_intro, inline_li, inline_lii = _parse_match_inline_blob(raw_content)
+                if inline_li and inline_lii:
+                    parsed_intro, parsed_li, parsed_lii = inline_intro, inline_li, inline_lii
             if not intro:
                 intro = parsed_intro
             if not list_i:

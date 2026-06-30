@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.pipeline.base import BasePipelineStage
+from app.pipeline.markup_repair import count_latex_segments, latex_is_balanced, repair_text_markup
 
 try:
     from latex2mathml.converter import convert as latex_to_mathml
@@ -360,6 +361,7 @@ def _one_line_html(s: str) -> str:
     """Collapse HTML to single line for JSON embedding."""
     if not s:
         return "<p></p>"
+    s = repair_text_markup(s)
     s = s.replace("\r", "").replace("\n", " ")
     s = re.sub(r"\s+", " ", s).strip()
     if not s.startswith("<p") and not s.startswith("<h"):
@@ -625,19 +627,7 @@ class LatexTagStage(BasePipelineStage):
         bail on the first inner ``)`` and miss the block. ``(.+?)\\\\)`` matches
         until the FIRST literal ``\\)`` close-delimiter.
         """
-        if not html:
-            return 0
-        patterns = [
-            r'\$\$([^$]+)\$\$',
-            r'(?<!\$)\$(?!\$)[^$]+\$(?!\$)',
-            r'\\\((.+?)\\\)',
-            r'\\\[(.+?)\\\]',
-            r'\\begin\{tabular\}',
-        ]
-        count = 0
-        for pat in patterns:
-            count += len(re.findall(pat, html, re.DOTALL))
-        return count
+        return count_latex_segments(html)
 
     # Common hex entities from latex2mathml that CKEditor may not handle.
     # Replace with direct Unicode characters for maximum compatibility.
@@ -801,6 +791,8 @@ class LatexTagStage(BasePipelineStage):
 
         success_count = 0
         fail_count = 0
+        original_balanced = latex_is_balanced(html)
+        html = repair_text_markup(html)
 
         # Define patterns in order: longer delimiters first to avoid partial matches.
         # Each tuple: (regex_pattern, is_display_math)
@@ -819,6 +811,8 @@ class LatexTagStage(BasePipelineStage):
             (r'\\\[(.+?)\\\]', True),
             # \(...\) (inline math)
             (r'\\\((.+?)\\\)', False),
+            # Bare LaTeX math environments from OCR/LLM output.
+            (r'(\\begin\{(?!tabular\})[^}]+\}.*?\\end\{[^}]+\})', True),
             # $...$ (inline math) --last to avoid matching $$ content
             (r'(?<!\$)\$(?!\$)([^$]+)\$(?!\$)', False),
         ]
@@ -895,6 +889,9 @@ class LatexTagStage(BasePipelineStage):
                     return match.group(0)
 
             html = re.sub(pattern, _replace_match, html, flags=re.DOTALL)
+
+        if not original_balanced and success_count == 0:
+            fail_count += 1
 
         return html, success_count, fail_count
 
@@ -1050,6 +1047,11 @@ class LatexTagStage(BasePipelineStage):
                     html = container.get(field_name, "")
                     if not html:
                         return
+                    repaired_html = repair_text_markup(html)
+                    if repaired_html != html:
+                        html = repaired_html
+                        container[field_name] = html
+                        file_modified = True
                     html, tables_converted = _convert_tabular_blocks(html)
                     if tables_converted > 0:
                         container[field_name] = html
@@ -1833,15 +1835,15 @@ class LatexTagStage(BasePipelineStage):
                                     s_part = ""
                                     try:
                                         latex_json = json.loads(content_text)
-                                        q_part = latex_json.get("question", "")
-                                        s_part = latex_json.get("solution", "")
+                                        q_part = repair_text_markup(latex_json.get("question", ""))
+                                        s_part = repair_text_markup(latex_json.get("solution", ""))
                                     except json.JSONDecodeError:
                                         # Fallback: old QUESTION:/SOLUTION: split format
-                                        q_part = content_text
+                                        q_part = repair_text_markup(content_text)
                                         if "QUESTION:" in content_text and "SOLUTION:" in content_text:
                                             parts = content_text.split("SOLUTION:", 1)
-                                            q_part = parts[0].replace("QUESTION:", "", 1).strip()
-                                            s_part = parts[1].strip()
+                                            q_part = repair_text_markup(parts[0].replace("QUESTION:", "", 1).strip())
+                                            s_part = repair_text_markup(parts[1].strip())
 
                                     # Write back based on question type
                                     if qtype == "passageQuestion":

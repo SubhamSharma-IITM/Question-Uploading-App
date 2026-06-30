@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.pipeline.base import BasePipelineStage
 from app.config import settings
+from app.pipeline.markup_repair import slice_with_markup_repair
 
 
 # ── Constants (matched to production PCMB_Cached_Mapper.py) ───────────────
@@ -90,6 +91,16 @@ def _slice_content(raw_lines: List[str], start: int, end: int) -> Optional[str]:
     if start > end:
         return None
     return "".join(raw_lines[start:end + 1]).strip()
+
+
+def _slice_content_repaired(
+    raw_lines: List[str],
+    start: int,
+    end: int,
+) -> Tuple[Optional[str], Optional[int]]:
+    """Slice content and repair common OCR/LLM markup boundary cuts."""
+    content, effective_end, _changed = slice_with_markup_repair(raw_lines, start, end)
+    return content, effective_end
 
 
 # ── Subject normalization (verbatim from production) ────────────────────────
@@ -822,7 +833,9 @@ def _process_item(
         return None
 
     # Slice question content
-    q_content = _slice_content(raw_lines, q_start, q_end)
+    q_content, q_effective_end = _slice_content_repaired(raw_lines, q_start, q_end)
+    if q_effective_end is not None:
+        q_end = q_effective_end
     if _is_garbage(q_content):
         return None
 
@@ -836,7 +849,9 @@ def _process_item(
         if s_start is not None and s_end is not None:
             # Solution should not overlap question
             if s_start > q_end:
-                s_content = _slice_content(raw_lines, s_start, s_end)
+                s_content, s_effective_end = _slice_content_repaired(raw_lines, s_start, s_end)
+                if s_content and s_effective_end is not None:
+                    s_end = s_effective_end
 
     # Normalize subject
     subject = _normalize_subject(item.get("subject"))
@@ -975,12 +990,17 @@ def _process_match_item(
         return None
 
     # Slice question content (matchQuestion -> tabular content allowed)
-    q_content = _slice_content(raw_lines, q_start_idx, q_end_idx)
+    q_content, q_effective_end = _slice_content_repaired(raw_lines, q_start_idx, q_end_idx)
+    if q_effective_end is not None:
+        q_end_idx = q_effective_end
+        q_end = q_effective_end
     if _is_garbage(q_content, qtype="matchQuestion"):
         return None
 
     # Slice solution if available
     s_content = ""
+    sol_ls = None
+    sol_le = None
     if isinstance(s_range, dict):
         s_start = s_range.get("start")
         s_end = s_range.get("end")
@@ -988,23 +1008,17 @@ def _process_match_item(
             s_start_idx = int(s_start)
             s_end_idx = int(s_end)
             if 0 <= s_start_idx <= s_end_idx < len(raw_lines):
-                s_content = _slice_content(raw_lines, s_start_idx, s_end_idx)
+                s_content, s_effective_end = _slice_content_repaired(raw_lines, s_start_idx, s_end_idx)
+                if s_content and s_effective_end is not None:
+                    s_end_idx = s_effective_end
+                if s_content:
+                    sol_ls = s_start_idx
+                    sol_le = s_end_idx
 
     # Convert source labels -> canonical list-of-lists
     answer_mapping = _convert_match_answer_mapping(answer_source)
 
     accepted_ranges.append((q_start_idx, q_end_idx))
-
-    # Capture solution line range (parity with _process_item / passage sub-questions).
-    sol_ls = None
-    sol_le = None
-    if isinstance(s_range, dict) and s_content:
-        try:
-            sol_ls = int(s_range.get("start"))
-            sol_le = int(s_range.get("end"))
-        except (TypeError, ValueError):
-            sol_ls = None
-            sol_le = None
 
     return {
         "questionType": "matchQuestion",
@@ -1077,9 +1091,12 @@ def _process_passage_item(
         return None
 
     # Slice passage stem content (0-indexed)
-    passage_content = _slice_content(raw_lines, p_start_idx, p_end_idx)
+    passage_content, p_effective_end = _slice_content_repaired(raw_lines, p_start_idx, p_end_idx)
     if not passage_content or len(passage_content.strip()) < 10:
         return None
+    if p_effective_end is not None:
+        p_end_idx = p_effective_end
+        p_end = p_effective_end
 
     # Process sub-questions
     sub_questions_raw = item.get("sub_questions", [])
@@ -1102,9 +1119,12 @@ def _process_passage_item(
         sq_start_idx = max(0, sq_start)
         sq_end_idx = min(sq_end, len(raw_lines) - 1)
 
-        q_content = _slice_content(raw_lines, sq_start_idx, sq_end_idx)
+        q_content, sq_effective_end = _slice_content_repaired(raw_lines, sq_start_idx, sq_end_idx)
         if not q_content or _is_garbage(q_content):
             continue
+        if sq_effective_end is not None:
+            sq_end_idx = sq_effective_end
+            sq_end = sq_effective_end
 
         # Sub-question solution
         ss_range = sq.get("solution") or {}
@@ -1117,7 +1137,10 @@ def _process_passage_item(
             if ss_start is not None and ss_end is not None:
                 ss_start_idx = ss_start
                 ss_end_idx = ss_end
-                s_content = _slice_content(raw_lines, ss_start_idx, ss_end_idx)
+                s_content, ss_effective_end = _slice_content_repaired(raw_lines, ss_start_idx, ss_end_idx)
+                if s_content and ss_effective_end is not None:
+                    ss_end_idx = ss_effective_end
+                    ss_end = ss_effective_end
                 # Do NOT pull solution end into overall_end — solutions live in a
                 # separate section far below questions; using ss_end as the cursor
                 # advance signal causes the chunker to skip whole exercises.
