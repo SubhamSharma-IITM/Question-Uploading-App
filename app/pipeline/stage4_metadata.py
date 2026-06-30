@@ -21,6 +21,7 @@ Key rules (from CLAUDE.md):
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -472,6 +473,66 @@ def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
     return intro_html, list_i, list_ii
 
 
+# ── Repair Stage-2 LaTeX env split across passage / sub-question boundary ─
+def _repair_split_latex_env(passage_raw: str, sub_questions: list) -> Tuple[str, list]:
+    """Stitch any \\begin{X}...\\end{X} block split by Stage 2 LLM.
+
+    Stage 2 Gemini sometimes cuts passage_content mid-environment, placing
+    \\begin{X}...rows/items... in passage_content but leaving the orphaned
+    \\end{X} at the start of a sub-question.  Stage 7's converters need both
+    tags in the same field to match, so without this repair the raw LaTeX
+    leaks into the final upload.
+
+    Covers ALL environment names: tabular, enumerate, itemize, align,
+    cases, figure, etc.
+
+    Triggers only when:
+      - passage has more \\begin{X} than \\end{X} for some env name X, AND
+      - a sub-question has \\end{X} preceded only by whitespace / \\hline /
+        \\\\ noise (never fires when real question text precedes the tag).
+
+    Returns (repaired_passage_raw, repaired_sub_questions).
+    """
+    if not passage_raw or not sub_questions:
+        return passage_raw, sub_questions
+
+    begins = Counter(re.findall(r'\\begin\{([^}]+)\}', passage_raw))
+    ends   = Counter(re.findall(r'\\end\{([^}]+)\}',   passage_raw))
+    unbalanced = {env for env, cnt in begins.items() if cnt > ends.get(env, 0)}
+
+    if not unbalanced:
+        return passage_raw, sub_questions
+
+    sqs = [dict(sq) for sq in sub_questions]
+
+    for env in unbalanced:
+        end_tag = f"\\end{{{env}}}"
+
+        for i, sq in enumerate(sqs):
+            q_key = "question_content" if "question_content" in sq else "question"
+            sq_content = sq.get(q_key, "")
+            if not sq_content:
+                continue
+
+            end_pos = sq_content.find(end_tag)
+            if end_pos < 0:
+                continue
+
+            # Only stitch when the text BEFORE \\end{X} is pure noise:
+            # whitespace, \\hline, or \\ row-end.  Real question content
+            # before the tag means this is not a clean boundary split.
+            prefix = sq_content[:end_pos]
+            if re.sub(r'\\hline|\\\\|\s', '', prefix):
+                continue
+
+            end_after = end_pos + len(end_tag)
+            passage_raw = passage_raw.rstrip() + "\n" + sq_content[:end_after]
+            sqs[i][q_key] = sq_content[end_after:].lstrip()
+            break  # env repaired; move to next unbalanced env
+
+    return passage_raw, sqs
+
+
 # ── Parse Stage-2-emitted LaTeX tabular -> list_i / list_ii ──────────────
 def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
     """Parse a raw match-type question_content (LaTeX `tabular` block) into
@@ -680,6 +741,17 @@ def _parse_match_latex_tabular(content: str) -> Tuple[str, list, list]:
             )
             lii_content_html, _ = _replace_md_images_with_img(c3.strip())
             list_ii.append({"label": lii_label_can, "content": lii_content_html})
+
+    if not list_i and not list_ii:
+        # Tabular found but no valid List-I/List-II items extracted — most
+        # commonly a wrong column count (e.g. 2-col {ll} with empty cells
+        # instead of the expected 4-col List-I/List-II layout).  Returning
+        # only intro_html would silently drop the tabular block.  Instead
+        # return the full original content so _build_match_table_html wraps
+        # it in <p>...</p> and Stage 7 can still convert it via
+        # _convert_tabular_blocks.
+        converted, _ = _replace_md_images_with_img(content)
+        return converted, [], []
 
     return intro_html, list_i, list_ii
 
@@ -917,13 +989,20 @@ def _build_metadata_v2(
         #   - inner has only 4 fields: ques, solution, answer, passage (back-ref)
         #   - inner does NOT include quesImages/solutionImages
         passage_raw = entry.get("passage_content", "")
+        sub_questions = list(entry.get("sub_questions", []))
+
+        # Repair tabular blocks that Stage 2 LLM split across the
+        # passage / sub-question boundary (\\begin in passage, \\end in sub-q 1).
+        # Must run BEFORE image/bold conversion so Stage 7 sees a complete block.
+        passage_raw, sub_questions = _repair_split_latex_env(passage_raw, sub_questions)
+
         if passage_raw:
             passage_raw, _ = _replace_md_images_with_img(passage_raw)
             passage_raw = _convert_markdown_bold(passage_raw)
         passage_html = _wrap_h3(passage_raw)
 
         sub_questions_out = []
-        for sq in entry.get("sub_questions", []):
+        for sq in sub_questions:
             sq_type = sq.get("questionType", "integerQuestion")
             sq_answer = _normalize_answer(
                 sq.get("answer_key", sq.get("answer", "")),
