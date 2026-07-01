@@ -457,10 +457,46 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
     intro_lines = []
     list_i = []
     list_ii = []
+    pending_item = None
+    pending_lines = []
+
+    def _is_pure_col_header_line(value: str) -> bool:
+        return bool(re.fullmatch(
+            r'[\s|–\-]*(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*(?:(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*)?',
+            value, re.IGNORECASE
+        ))
+
+    def _append_item(lbl: str, val: str) -> None:
+        lbl_upper = lbl.upper()
+        val = val.strip()
+        if not val:
+            return
+        val_html, _ = _replace_md_images_with_img(val)
+
+        if lbl_upper in ("A", "B", "C", "D", "E", "1", "2", "3", "4"):
+            lbl_can = _LIST_I_LABEL_MAP.get(lbl.upper(), lbl)
+            list_i.append({"label": lbl_can, "content": val_html})
+        elif lbl_upper in ("P", "Q", "R", "S", "T"):
+            lbl_can = _LIST_II_LABEL_MAP.get(lbl.lower(), _LIST_II_LABEL_MAP.get(lbl.upper(), lbl))
+            list_ii.append({"label": lbl_can, "content": val_html})
+
+    def _flush_pending() -> None:
+        nonlocal pending_item, pending_lines
+        if pending_item:
+            _append_item(pending_item, "\n".join(pending_lines))
+        pending_item = None
+        pending_lines = []
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            continue
+
+        # Skip pure standalone column/list header lines (e.g. "Column-I Column-II",
+        # "List - I", "List-II"). A line that merely CONTAINS the word "column" but
+        # also has label content (e.g. the full single-line blob from OCR) must NOT
+        # be skipped here — it would silently drop the entire question content.
+        if _is_pure_col_header_line(stripped):
             continue
 
         # Look for inline columns: (A) some text (P) some text
@@ -469,6 +505,7 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
             stripped
         )
         if match_inline:
+            _flush_pending()
             lbl_i, val_i, lbl_ii, val_ii = match_inline.groups()
             val_i = val_i.strip()
             val_ii = val_ii.strip()
@@ -487,6 +524,7 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
         # e.g., (A) at t = 0  or  (P) Total energy...
         match_single = re.match(r"^\s*[\(\$]*\s*([A-Ea-e1-4|P-Tp-t])\s*[\)\.\$]\s+(.*)$", stripped)
         if match_single:
+            _flush_pending()
             lbl, val = match_single.groups()
             lbl_upper = lbl.upper()
             val = val.strip()
@@ -502,30 +540,25 @@ def _parse_match_plain_text(content: str) -> Tuple[str, list, list]:
                     intro_lines.append(line)
                 continue
 
-            val_html, _ = _replace_md_images_with_img(val)
-
-            if lbl_upper in ("A", "B", "C", "D", "E", "1", "2", "3", "4"):
-                lbl_can = _LIST_I_LABEL_MAP.get(lbl.upper(), lbl)
-                list_i.append({"label": lbl_can, "content": val_html})
-            elif lbl_upper in ("P", "Q", "R", "S", "T"):
-                lbl_can = _LIST_II_LABEL_MAP.get(lbl.lower(), _LIST_II_LABEL_MAP.get(lbl.upper(), lbl))
-                list_ii.append({"label": lbl_can, "content": val_html})
+            _append_item(lbl, val)
             continue
 
-        # Skip pure standalone column/list header lines (e.g. "Column-I Column-II",
-        # "List - I", "List-II"). A line that merely CONTAINS the word "column" but
-        # also has label content (e.g. the full single-line blob from OCR) must NOT
-        # be skipped here — it would silently drop the entire question content.
-        _is_pure_col_header = re.fullmatch(
-            r'[\s|–\-]*(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*(?:(?:column|list)[\s|–\-]*i{1,2}[\s|–\-]*)?',
-            stripped, re.IGNORECASE
-        )
-        if _is_pure_col_header:
+        # OCR often places the label on one line and the image/text on following
+        # lines. Start a pending item for "(A)" / "(P)" without same-line content.
+        match_label_only = re.match(r"^\s*[\(\$]*\s*([A-Ea-e1-4|P-Tp-t])\s*[\)\.\$]\s*$", stripped)
+        if match_label_only:
+            _flush_pending()
+            pending_item = match_label_only.group(1)
+            pending_lines = []
             continue
 
         # If it doesn't match either, and we haven't started parsing items, it's part of the intro
-        if not list_i and not list_ii:
+        if pending_item:
+            pending_lines.append(line)
+        elif not list_i and not list_ii:
             intro_lines.append(line)
+
+    _flush_pending()
 
     intro_raw = "\n".join(intro_lines).strip()
     intro_html, _ = _replace_md_images_with_img(intro_raw)
@@ -558,7 +591,7 @@ def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
     intro_raw = content[:first_li.start()].strip()
     items_str = content[first_li.start():]
 
-    parts = re.split(r'(?=\(\s*[A-Da-d1-4P-Sp-t]\s*\)\s)', items_str)
+    parts = re.split(r'(?=\(\s*[A-Da-d1-4P-Tp-t]\s*\)\s)', items_str)
 
     list_i: list = []
     list_ii: list = []
@@ -566,7 +599,7 @@ def _parse_match_inline_blob(content: str) -> Tuple[str, list, list]:
         part = part.strip()
         if not part:
             continue
-        lm = re.match(r'^\(\s*([A-Da-d1-4P-Sp-t])\s*\)\s+(.*)', part, re.DOTALL)
+        lm = re.match(r'^\(\s*([A-Da-d1-4P-Tp-t])\s*\)\s+(.*)', part, re.DOTALL)
         if not lm:
             continue
         lbl = lm.group(1).upper()
